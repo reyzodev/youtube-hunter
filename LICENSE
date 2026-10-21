@@ -1,0 +1,25 @@
+YouTube Hunter — Proprietary License
+
+Copyright (c) 2026 YouTube Hunter. All rights reserved.
+
+This software (including its source code, installer and compiled binaries) is
+the property of the copyright holder and is provided as-is, for reference and
+for the installation and support of the application.
+
+1. You may download and install the released application and use it for your
+   own purposes.
+2. You may read the source in this repository to understand how the app works,
+   to verify what it does with your data, or to file informed bug reports.
+3. You may NOT redistribute the application or any modified version of it,
+   sell it, publish derivative source, or remove this notice, without prior
+   written permission from the copyright holder.
+4. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF IT.
+
+Third-party components keep their own licenses; in particular yt-dlp
+(Unlicense), FFmpeg (LGPL/GPL builds), Qt / PySide6 (LGPLv3), Inno Setup and
+the bundled fonts (see fonts/ for their notices).

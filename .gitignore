@@ -1,0 +1,38 @@
+# ── build output ────────────────────────────────────────────────────────────
+build/
+dist/
+Output/
+*.spec.bak
+
+# ── build environment ───────────────────────────────────────────────────────
+.build-venv/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ── binaries that are too large for git (see README → Build from source) ────
+assets/bin/
+*.exe
+
+# ── release / source archives ───────────────────────────────────────────────
+*.zip
+*.7z
+*.rar
+Archive/
+# the extracted copy of a source bundle (regenerate with the bundle script)
+YouTubeHunter-Source/
+
+# ── local workspace data (agent memory, screenshots taken while testing) ────
+.workbuddy-ai/
+.claude/
+*.log
+
+# ── the separate C# port lives in its own repository ────────────────────────
+NicheScope-CSharp/
+
+# ── OS noise ────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store

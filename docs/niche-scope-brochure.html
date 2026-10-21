@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-lang="fa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>نیچ اسکوپ — برگه‌ی معرفی / Niche Scope — Product Sheet</title>
+<meta name="description" content="Niche Scope — a Windows research desk for YouTube. Bilingual product sheet, print-ready A4.">
+<style>
+/* ── faces (local, offline) ─────────────────────────────────────────── */
+@font-face{font-family:'IRANYekanX';src:url('fonts/IRANYekanX-Regular.ttf') format('truetype');font-weight:400;font-display:swap}
+@font-face{font-family:'IRANYekanX';src:url('fonts/IRANYekanX-Medium.ttf') format('truetype');font-weight:500;font-display:swap}
+@font-face{font-family:'IRANYekanX';src:url('fonts/IRANYekanX-DemiBold.ttf') format('truetype');font-weight:600;font-display:swap}
+@font-face{font-family:'IRANYekanX';src:url('fonts/IRANYekanX-Bold.ttf') format('truetype');font-weight:700;font-display:swap}
+@font-face{font-family:'IRANYekanX';src:url('fonts/IRANYekanX-ExtraBlack.ttf') format('truetype');font-weight:900;font-display:swap}
+@font-face{font-family:'Vazirmatn';src:url('fonts/Vazirmatn-Regular.ttf') format('truetype');font-weight:400;font-display:swap}
+@font-face{font-family:'Vazirmatn';src:url('fonts/Vazirmatn-Bold.ttf') format('truetype');font-weight:700;font-display:swap}
+@font-face{font-family:'Hanken Grotesk';src:url('fonts/HankenGrotesk.ttf') format('truetype');font-weight:100 900;font-display:swap}
+
+/* ── tokens ─────────────────────────────────────────────────────────── */
+:root{
+  --desk:#1C1E22;
+  --paper:#FBFAF8;
+  --ink:#17181B;
+  --ink-2:#61646B;
+  --rule:#DEDCD7;
+  --signal:#D40000;
+  --signal-tint:rgba(212,0,0,.07);
+  --gauge:#0E6E5B;
+  --fa:'IRANYekanX','Vazirmatn',Tahoma,'Segoe UI',sans-serif;
+  --la:'Hanken Grotesk','Segoe UI',system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--desk);color:var(--ink);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3,h4,p,ul,ol,dl,dd,figure{margin:0;padding:0}
+ul{list-style:none}
+
+/* ── toolbar (screen only) ──────────────────────────────────────────── */
+.toolbar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+  justify-content:space-between;padding:11px 20px;background:rgba(24,26,30,.94);
+  border-block-end:1px solid #2A2D33;color:#E8E6E1;font-family:var(--la);font-size:13px}
+@supports (backdrop-filter:blur(6px)){.toolbar{backdrop-filter:blur(8px)}}
+.tb-mark{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.005em}
+.tb-dot{inline-size:8px;block-size:8px;background:var(--signal);border-radius:50%;flex:none}
+.tb-set{display:flex;gap:8px;align-items:center}
+.tb-lab{color:#8D9099;font-size:12px}
+.btn{appearance:none;border:1px solid #383C44;background:#22252B;color:#E8E6E1;font:inherit;
+  padding:7px 12px;border-radius:2px;cursor:pointer;transition:border-color .15s,background .15s}
+.btn:hover{border-color:#6A707B}
+.btn[aria-pressed="true"]{background:var(--signal);border-color:var(--signal);color:#fff}
+.btn-go{background:#EDEBE6;color:#17181B;border-color:#EDEBE6;font-weight:600}
+.btn-go:hover{background:#fff;border-color:#fff}
+.btn:focus-visible,a:focus-visible{outline:2px solid #fff;outline-offset:2px}
+html[data-lang="fa"] .t-en,html[data-lang="en"] .t-fa{display:none}
+html[data-lang="en"]{direction:ltr}
+html[data-lang="en"] body{font-family:var(--la)}
+
+/* ── sheet ──────────────────────────────────────────────────────────── */
+.sheet{inline-size:210mm;min-block-size:297mm;margin:26px auto;background:var(--paper);
+  box-shadow:0 1px 0 rgba(0,0,0,.5),0 18px 50px rgba(0,0,0,.45);
+  padding:17mm 16mm 14mm;font-family:var(--fa);position:relative}
+html[data-lang="en"] .sheet{font-family:var(--la)}
+.sheet + .sheet{margin-block-start:26px}
+
+/* ── masthead ───────────────────────────────────────────────────────── */
+.mast{display:grid;grid-template-columns:1fr auto;gap:8mm;align-items:end;
+  padding-block-end:5mm;border-block-end:2px solid var(--ink)}
+.mast-id{display:flex;align-items:baseline;gap:10px;margin-block-end:7px}
+.mast-glyph{font-family:var(--la);font-weight:800;font-size:15px;letter-spacing:-.01em;
+  color:#fff;background:var(--signal);padding:3px 7px 4px;border-radius:2px;flex:none}
+.mast-kind{font-size:12.5px;color:var(--ink-2);font-weight:500}
+h1{font-size:42px;line-height:1.12;font-weight:900;letter-spacing:-.018em;max-inline-size:15ch}
+html[data-lang="fa"] h1{letter-spacing:0;line-height:1.28;font-size:38px}
+.mast-sub{margin-block-start:9px;font-size:14.5px;line-height:1.85;color:var(--ink-2);max-inline-size:46ch}
+html[data-lang="en"] .mast-sub{line-height:1.6}
+.mast-meta{font-family:var(--la);font-size:11.5px;color:var(--ink-2);text-align:end;line-height:2.1;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.mast-meta b{display:block;color:var(--ink);font-weight:700;font-size:12.5px}
+
+/* ── lede + gauge ───────────────────────────────────────────────────── */
+.lede{display:grid;grid-template-columns:1.45fr .95fr;gap:9mm;padding-block:6mm;
+  border-block-end:1px solid var(--rule)}
+.lede p{font-size:14px;line-height:2.05;color:var(--ink);max-inline-size:56ch}
+html[data-lang="en"] .lede p{line-height:1.68}
+.lede p + p{margin-block-start:9px;color:var(--ink-2)}
+.lede em{font-style:normal;box-shadow:inset 0 -.42em 0 var(--signal-tint)}
+
+/* the one loud element: a real quota ledger, drawn from the app's domain */
+.gauge{border:1px solid var(--ink);padding:4mm 4mm 3.5mm;background:#fff}
+.gauge-cap{font-size:12px;font-weight:600;line-height:1.7;margin-block-end:3mm;
+  padding-block-end:2.5mm;border-block-end:1px solid var(--rule)}
+.gauge-cap span{display:block;color:var(--ink-2);font-weight:400;font-size:11px;margin-block-start:2px}
+.gauge-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:7px;margin-block-end:7px}
+.gauge-row:last-of-type{margin-block-end:0}
+.gauge-name{font-size:11.5px;line-height:1.5}
+.gauge-num{font-family:var(--la);font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums;
+  color:var(--ink);direction:ltr;white-space:nowrap}
+.gauge-bar{grid-column:1/-1;block-size:7px;background:#EEECE7;position:relative;overflow:hidden}
+.gauge-bar i{position:absolute;inset-block:0;inset-inline-start:0;background:var(--signal);display:block}
+.gauge-bar.free i{background:var(--gauge);inline-size:2px}
+.gauge-foot{margin-block-start:3.5mm;padding-block-start:2.5mm;border-block-start:1px solid var(--rule);
+  font-size:10.5px;line-height:1.75;color:var(--ink-2)}
+
+/* ── room list: the app is ten rooms, so the page is ten rows ────────── */
+.rooms{padding-block:6mm}
+.rooms-hd{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:baseline;margin-block-end:4mm}
+h2{font-size:19px;font-weight:700;line-height:1.5;letter-spacing:-.008em}
+html[data-lang="fa"] h2{letter-spacing:0}
+.rooms-hd p{font-size:12px;color:var(--ink-2);line-height:1.7;max-inline-size:40ch}
+.room{display:grid;grid-template-columns:22mm 1fr 30mm;gap:6mm;align-items:start;
+  padding-block:3.2mm;border-block-start:1px solid var(--rule);break-inside:avoid}
+.room:first-of-type{border-block-start:1px solid var(--ink)}
+.room-n{font-family:var(--la);font-size:11px;font-weight:700;color:var(--signal);
+  font-variant-numeric:tabular-nums;padding-block-start:2px;direction:ltr;
+  display:flex;align-items:baseline;gap:6px}
+.room-n small{color:var(--ink-2);font-weight:500;font-size:10px}
+.room-b h3{font-size:13.5px;font-weight:700;line-height:1.6;margin-block-end:2px}
+.room-b p{font-size:11.8px;line-height:1.82;color:var(--ink-2);max-inline-size:58ch}
+html[data-lang="en"] .room-b p{line-height:1.6}
+.room-cost{font-family:var(--la);font-size:10.5px;line-height:1.6;text-align:end;padding-block-start:3px;
+  font-variant-numeric:tabular-nums;direction:ltr}
+.room-cost b{display:block;font-size:11px;font-weight:700;color:var(--gauge)}
+.room-cost.paid b{color:var(--signal)}
+.room-cost span{color:var(--ink-2)}
+
+/* ── page 2: workflow, specs, close ─────────────────────────────────── */
+.flow{padding-block:5mm 6mm}
+.flow-track{display:grid;grid-template-columns:repeat(4,1fr);gap:5mm;margin-block-start:4mm}
+.step{border-block-start:2px solid var(--ink);padding-block-start:3mm;break-inside:avoid}
+.step-n{font-family:var(--la);font-size:10.5px;font-weight:700;color:var(--ink-2);
+  font-variant-numeric:tabular-nums;direction:ltr;margin-block-end:4px}
+.step h4{font-size:12.5px;font-weight:700;line-height:1.55;margin-block-end:3px}
+.step p{font-size:11px;line-height:1.8;color:var(--ink-2)}
+html[data-lang="en"] .step p{line-height:1.55}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:9mm;padding-block:6mm;
+  border-block-start:1px solid var(--rule)}
+.spec{display:grid;grid-template-columns:26mm 1fr;gap:5mm;padding-block:2.6mm;
+  border-block-end:1px solid var(--rule);font-size:11.5px;line-height:1.75}
+.spec:first-of-type{border-block-start:1px solid var(--ink)}
+.spec dt{color:var(--ink-2)}
+.spec dd{font-weight:600}
+.spec dd small{display:block;font-weight:400;color:var(--ink-2);font-size:10.5px;line-height:1.6;margin-block-start:1px}
+.ltr{direction:ltr;font-family:var(--la);font-variant-numeric:tabular-nums}
+
+.limits li{font-size:11.5px;line-height:1.8;padding-inline-start:11px;position:relative;margin-block-end:6px}
+.limits li::before{content:"";position:absolute;inset-inline-start:0;inset-block-start:.68em;
+  inline-size:5px;block-size:1px;background:var(--signal)}
+.limits li b{font-weight:600}
+html[data-lang="en"] .limits li{line-height:1.6}
+
+.close{margin-block-start:6mm;padding:5mm 5mm 4.5mm;background:var(--ink);color:#F2F0EC;
+  display:grid;grid-template-columns:1fr auto;gap:7mm;align-items:center;break-inside:avoid}
+.close h3{font-size:16px;font-weight:700;line-height:1.6;margin-block-end:4px;color:#fff}
+.close p{font-size:11.5px;line-height:1.8;color:#A8AAB0;max-inline-size:52ch}
+.close-cta{font-family:var(--la);font-size:11px;line-height:1.9;text-align:end;color:#A8AAB0;
+  direction:ltr;white-space:nowrap}
+.close-cta b{display:block;color:#fff;font-size:13px;font-weight:700}
+
+.colophon{margin-block-start:5mm;padding-block-start:3mm;border-block-start:1px solid var(--rule);
+  display:flex;flex-wrap:wrap;gap:5mm;justify-content:space-between;
+  font-family:var(--la);font-size:10px;color:var(--ink-2);direction:ltr}
+
+/* ── responsive (screen) ────────────────────────────────────────────── */
+@media (max-width:840px){
+  .sheet{inline-size:auto;max-inline-size:100%;margin:14px 10px;padding:9mm 7mm}
+  .mast,.lede,.split{grid-template-columns:1fr;gap:5mm}
+  .mast-meta{text-align:start}
+  .flow-track{grid-template-columns:1fr 1fr}
+  .room{grid-template-columns:16mm 1fr;gap:4mm}
+  .room-cost{grid-column:2;text-align:start;padding-block-start:4px}
+  .close{grid-template-columns:1fr}
+  .close-cta{text-align:start}
+  h1{font-size:30px}
+  html[data-lang="fa"] h1{font-size:27px}
+}
+@media (max-width:520px){.flow-track{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ── print: A4, two pages, no chrome ────────────────────────────────── */
+@page{size:A4;margin:0}
+@media print{
+  body{background:#fff}
+  .toolbar,.noprint{display:none!important}
+  .sheet{inline-size:210mm;min-block-size:297mm;margin:0;box-shadow:none;
+    padding:15mm 15mm 12mm;break-after:page;page-break-after:always}
+  .sheet:last-of-type{break-after:auto;page-break-after:auto}
+  *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+  .room,.step,.close,.gauge,.spec{break-inside:avoid;page-break-inside:avoid}
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar noprint">
+  <div class="tb-mark"><span class="tb-dot"></span>Niche Scope · برگه‌ی معرفی</div>
+  <div class="tb-set">
+    <span class="tb-lab">زبان / Language</span>
+    <button class="btn" id="lang-fa" aria-pressed="true" type="button">فارسی</button>
+    <button class="btn" id="lang-en" aria-pressed="false" type="button">English</button>
+    <button class="btn btn-go" id="print" type="button">چاپ / PDF</button>
+  </div>
+</div>
+
+<!-- ══ SHEET 1 ══════════════════════════════════════════════════════ -->
+<section class="sheet" aria-label="صفحه ۱">
+
+  <header class="mast">
+    <div>
+      <div class="mast-id">
+        <span class="mast-glyph">NS</span>
+        <span class="mast-kind">
+          <span class="t-fa">میز تحقیق یوتیوب · برنامه‌ی ویندوز</span>
+          <span class="t-en">A YouTube research desk · Windows app</span>
+        </span>
+      </div>
+      <h1>
+        <span class="t-fa">نیچ اسکوپ</span>
+        <span class="t-en">Niche Scope</span>
+      </h1>
+      <p class="mast-sub">
+        <span class="t-fa">کانال‌های کوچکی که اعداد بزرگ می‌زنند را پیدا کن، بفهم چرا کار کرده‌اند، و ویدیوی بعدی‌ات را بساز.</span>
+        <span class="t-en">Find small channels pulling big numbers, understand why they worked, and build your next video from what you learn.</span>
+      </p>
+    </div>
+    <div class="mast-meta">
+      <b>v2 · 2026</b>
+      <span class="t-fa">ویندوز ۱۰ / ۱۱</span><span class="t-en">Windows 10 / 11</span><br>
+      <span class="t-fa">فارسی و انگلیسی</span><span class="t-en">Persian &amp; English</span><br>
+      <span class="t-fa">تم روشن و تیره</span><span class="t-en">Light &amp; dark theme</span>
+    </div>
+  </header>
+
+  <div class="lede">
+    <div>
+      <p>
+        <span class="t-fa">نیچ اسکوپ یک ابزار تک‌کاره نیست؛ یک میز کار است. ده اتاق دارد و هر اتاق یک قدم از یک کار واقعی را برمی‌دارد: از خالی‌بودن صفحه تا فایل آماده‌ی آپلود. کاری که بین این اتاق‌ها می‌گذرد <em>روی همان دستگاه شما</em> ذخیره می‌شود — نه روی سرور کسی.</span>
+        <span class="t-en">Niche Scope is not a single-purpose tool; it is a desk. Ten rooms, each taking one step of real work: from an empty page to a file ready to upload. Everything that passes between those rooms is saved <em>on your own machine</em> — not on someone's server.</span>
+      </p>
+      <p>
+        <span class="t-fa">تفاوت اصلی‌اش با ابزارهای مشابه این است که سهمیه‌ی API یوتیوب را مثل بودجه خرج می‌کند و همیشه به شما نشان می‌دهد چقدر مانده. هر جست‌وجویی که یک بار انجام دهید، برای همیشه در آرشیو می‌ماند و باز کردنش دیگر هیچ هزینه‌ای ندارد.</span>
+        <span class="t-en">What sets it apart is that it treats the YouTube API quota as a budget and always shows you what is left. Every search you run once is archived forever, and reopening it costs nothing.</span>
+      </p>
+    </div>
+
+    <aside class="gauge" aria-label="سهمیه">
+      <p class="gauge-cap">
+        <span class="t-fa">بودجه‌ی روزانه‌ی API</span>
+        <span class="t-en">Daily API budget</span>
+        <span>
+          <span class="t-fa">۱۰٬۰۰۰ واحد به هر کلید · قیمت‌های واقعی گوگل</span>
+          <span class="t-en">10,000 units per key · Google's real prices</span>
+        </span>
+      </p>
+
+      <div class="gauge-row">
+        <span class="gauge-name"><span class="t-fa">یک جست‌وجوی کلیدواژه</span><span class="t-en">One keyword search</span></span>
+        <span class="gauge-num">100</span>
+        <span class="gauge-bar"><i style="inline-size:100%"></i></span>
+      </div>
+      <div class="gauge-row">
+        <span class="gauge-name"><span class="t-fa">آمار ۵۰ ویدیو</span><span class="t-en">Stats for 50 videos</span></span>
+        <span class="gauge-num">1</span>
+        <span class="gauge-bar"><i style="inline-size:1%"></i></span>
+      </div>
+      <div class="gauge-row">
+        <span class="gauge-name"><span class="t-fa">باز کردن دوباره از آرشیو</span><span class="t-en">Reopening from the archive</span></span>
+        <span class="gauge-num">0</span>
+        <span class="gauge-bar free"><i></i></span>
+      </div>
+      <div class="gauge-row">
+        <span class="gauge-name"><span class="t-fa">تحقیق کلیدواژه</span><span class="t-en">Keyword research</span></span>
+        <span class="gauge-num">0</span>
+        <span class="gauge-bar free"><i></i></span>
+      </div>
+
+      <p class="gauge-foot">
+        <span class="t-fa">صفحه‌ی «مصرف و سهمیه» مصرف هر کلید را به‌تفکیک نوع درخواست نگه می‌دارد و تخمین می‌زند تا آخر روز چقدر جا دارید.</span>
+        <span class="t-en">The Usage &amp; Quota page records spend per key, broken down by request type, and estimates how much runway is left in the day.</span>
+      </p>
+    </aside>
+  </div>
+
+  <section class="rooms">
+    <div class="rooms-hd">
+      <h2><span class="t-fa">ده اتاق</span><span class="t-en">Ten rooms</span></h2>
+      <p>
+        <span class="t-fa">هر ردیف یک صفحه‌ی برنامه است. ستون آخر می‌گوید سهمیه می‌خورد یا نه.</span>
+        <span class="t-en">Each row is one page of the app. The last column says whether it spends quota.</span>
+      </p>
+    </div>
+
+    <article class="room">
+      <div class="room-n">01</div>
+      <div class="room-b">
+        <h3><span class="t-fa">اسکرپر</span><span class="t-en">Scraper</span></h3>
+        <p>
+          <span class="t-fa">یک کانال یا کلیدواژه بدهید و تا هزاران ویدیو را با آمار، توضیحات و رونوشت بکشید بیرون. خروجی CSV، JSON Lines، اکسل یا SQLite. اگر وسط کار قطع شد، دفعه‌ی بعد از همان‌جا ادامه می‌دهد.</span>
+          <span class="t-en">Point it at a channel or a keyword and pull thousands of videos with stats, descriptions and transcripts. Exports to CSV, JSON Lines, Excel or SQLite. If a run is cut off, the next one resumes where it stopped.</span>
+        </p>
+      </div>
+      <div class="room-cost paid">
+        <b>100 / 1</b>
+        <span><span class="t-fa">جست‌وجو / ۵۰ ویدیو</span><span class="t-en">search / 50 videos</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">02</div>
+      <div class="room-b">
+        <h3><span class="t-fa">نیچ فایندر</span><span class="t-en">Niche Finder</span></h3>
+        <p>
+          <span class="t-fa">قلب برنامه. تمام یوتیوب را می‌گردد و کانال‌های کوچکی را بالا می‌آورد که بازدیدشان چند برابر تعداد مشترکشان است — با فیلتر مشترک، بازدید و بازه‌ی زمانی.</span>
+          <span class="t-en">The core of the app. It searches all of YouTube and surfaces small channels whose views are a multiple of their subscriber count — filtered by subscribers, views and time window.</span>
+        </p>
+      </div>
+      <div class="room-cost paid">
+        <b>100</b>
+        <span><span class="t-fa">هر جست‌وجو</span><span class="t-en">per search</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">03</div>
+      <div class="room-b">
+        <h3><span class="t-fa">تحقیق کلیدواژه</span><span class="t-en">Keyword Research</span></h3>
+        <p>
+          <span class="t-fa">از تقاضا شروع می‌کند، نه از حدس شما: پیشنهادهای خودکار یوتیوب و روند گوگل ترندز را می‌گیرد و در برابر عرضه‌ی موجود امتیاز می‌دهد. بدون مصرف سهمیه‌ی یوتیوب.</span>
+          <span class="t-en">Starts from demand instead of your guess: it reads YouTube autocomplete and Google Trends, then scores each term against the supply already on the platform. Spends no YouTube quota.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>0</b>
+        <span><span class="t-fa">رایگان</span><span class="t-en">free</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">04</div>
+      <div class="room-b">
+        <h3><span class="t-fa">آرشیو جست‌وجو</span><span class="t-en">Search Archive</span></h3>
+        <p>
+          <span class="t-fa">هر جست‌وجویی که اجرا کنید همیشه اینجا می‌ماند. باز کردن، فیلتر کردن دوباره و گرفتن خروجی از آن هیچ واحدی خرج نمی‌کند.</span>
+          <span class="t-en">Every search you run stays here for good. Reopening it, re-filtering it or exporting it spends nothing.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>0</b>
+        <span><span class="t-fa">رایگان</span><span class="t-en">free</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">05</div>
+      <div class="room-b">
+        <h3><span class="t-fa">بررسی مانیتایز</span><span class="t-en">Monetize Checker</span></h3>
+        <p>
+          <span class="t-fa">پروفایل کانال، تخمین واجد شرایط بودن برای برنامه‌ی همکاری، و ماتریس درآمد روزانه/ماهانه/سالانه بر پایه‌ی بازه‌ی CPM. تخمین است، نه گزارش رسمی — و همین را صریح می‌گوید.</span>
+          <span class="t-en">Channel profile, an estimate of Partner Program eligibility, and a daily / monthly / yearly revenue matrix based on a CPM range. It is an estimate, not an official report — and it says so plainly.</span>
+        </p>
+      </div>
+      <div class="room-cost paid">
+        <b>1</b>
+        <span><span class="t-fa">هر کانال</span><span class="t-en">per channel</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">06</div>
+      <div class="room-b">
+        <h3><span class="t-fa">موضوع‌سنج</span><span class="t-en">Niche Scan</span></h3>
+        <p>
+          <span class="t-fa">هر مجموعه‌ای از نتایج را به یک بریف تحلیلی تبدیل می‌کند: میانه در کنار میانگین، شیب توزیع، مومنتوم، ترکیب مدت و تازگی، و تمرکز کانال‌ها. هر ادعای هوش مصنوعی برچسب دارد: مشاهده‌شده، استنباط، یا نیازمند استودیو.</span>
+          <span class="t-en">Turns any set of results into an analytical brief: median beside average, skew, momentum, duration and recency mix, channel concentration. Every AI claim is labelled — observed, inferred, or needs Studio.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>0</b>
+        <span><span class="t-fa">رایگان</span><span class="t-en">free</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">07</div>
+      <div class="room-b">
+        <h3><span class="t-fa">ایده‌های هوش مصنوعی</span><span class="t-en">AI Ideas</span></h3>
+        <p>
+          <span class="t-fa">ویدیوهایی را که پیدا کرده‌اید به‌عنوان مرجع تیک بزنید، زاویه‌ی خودتان را بنویسید، و یک نقشه‌ی کامل بگیرید: عنوان‌ها، هوک، ساختار، لیست شات و توضیح سئو. برای شورت‌ها یک «آنتی‌هوک» هم می‌سازد.</span>
+          <span class="t-en">Tick the videos you found as references, describe your own angle, and get a full blueprint: titles, hook, structure, shot list and SEO description. For Shorts it also writes an anti-hook.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>AI</b>
+        <span><span class="t-fa">کلید خودتان</span><span class="t-en">your own key</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">08</div>
+      <div class="room-b">
+        <h3><span class="t-fa">آزمایشگاه محتوا</span><span class="t-en">Content Lab</span></h3>
+        <p>
+          <span class="t-fa">سه تب: کتابخانه‌ی نقشه‌های ذخیره‌شده، گزارش کانال، و تله‌پرامپتر. گزارش کانال یک فایل HTML مستقل می‌سازد — با نمودارهای واقعی از داده‌ی خودتان، تم روشن/تیره و آماده‌ی چاپ روی A4.</span>
+          <span class="t-en">Three tabs: your library of saved blueprints, the channel report, and the teleprompter. The channel report builds a self-contained HTML file — real charts from your own data, a light/dark toggle, and A4-ready print.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>AI</b>
+        <span><span class="t-fa">کلید خودتان</span><span class="t-en">your own key</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">09</div>
+      <div class="room-b">
+        <h3><span class="t-fa">دانلودها</span><span class="t-en">Downloads</span></h3>
+        <p>
+          <span class="t-fa">صف دانلود با پیشرفت زنده و انتخاب کیفیت برای هر ویدیو. فایل یا پوشه‌اش را مستقیم از همان ردیف باز کنید.</span>
+          <span class="t-en">A download queue with live progress and a per-video quality picker. Open the finished file or its folder straight from the row.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>0</b>
+        <span><span class="t-fa">رایگان</span><span class="t-en">free</span></span>
+      </div>
+    </article>
+
+    <article class="room">
+      <div class="room-n">10</div>
+      <div class="room-b">
+        <h3><span class="t-fa">مصرف و سهمیه</span><span class="t-en">Usage &amp; Quota</span></h3>
+        <p>
+          <span class="t-fa">امروز چند واحد رفته، به تفکیک نوع درخواست؛ نمودار ۷ یا ۳۰ روزه؛ مصرف هر کلید با برچسب سلامت؛ و جدول «هزینه‌ی هر کار» تا قبل از زدن دکمه بدانید چه می‌پردازید.</span>
+          <span class="t-en">Units spent today by request type; a 7- or 30-day chart; per-key spend with a health label; and a cost-per-task table so you know the price before you press the button.</span>
+        </p>
+      </div>
+      <div class="room-cost">
+        <b>0</b>
+        <span><span class="t-fa">رایگان</span><span class="t-en">free</span></span>
+      </div>
+    </article>
+  </section>
+
+  <div class="colophon">
+    <span>Niche Scope — product sheet</span>
+    <span>1 / 2</span>
+  </div>
+</section>
+
+<!-- ══ SHEET 2 ══════════════════════════════════════════════════════ -->
+<section class="sheet" aria-label="صفحه ۲">
+
+  <header class="mast">
+    <div>
+      <div class="mast-id">
+        <span class="mast-glyph">NS</span>
+        <span class="mast-kind">
+          <span class="t-fa">یک روز کاری · مشخصات · مرزها</span>
+          <span class="t-en">A working day · Specifications · Boundaries</span>
+        </span>
+      </div>
+      <h1>
+        <span class="t-fa">از صفحه‌ی خالی تا فایل آماده</span>
+        <span class="t-en">From an empty page to a finished file</span>
+      </h1>
+    </div>
+    <div class="mast-meta">
+      <b>2 / 2</b>
+      <span class="t-fa">برگه‌ی معرفی</span><span class="t-en">Product sheet</span>
+    </div>
+  </header>
+
+  <section class="flow">
+    <div class="rooms-hd">
+      <h2><span class="t-fa">مسیر معمول کار</span><span class="t-en">The usual path</span></h2>
+      <p>
+        <span class="t-fa">اتاق‌ها به هم وصل‌اند: خروجی هر مرحله ورودی مرحله‌ی بعد است.</span>
+        <span class="t-en">The rooms connect: what comes out of one step goes into the next.</span>
+      </p>
+    </div>
+
+    <div class="flow-track">
+      <div class="step">
+        <div class="step-n">01</div>
+        <h4><span class="t-fa">یک کلیدواژه پیدا کنید</span><span class="t-en">Find a keyword</span></h4>
+        <p>
+          <span class="t-fa">تحقیق کلیدواژه از تقاضای واقعی شروع می‌کند و چند عبارت با بالاترین امتیاز را بالا می‌آورد.</span>
+          <span class="t-en">Keyword Research starts from real demand and surfaces the terms with the best score.</span>
+        </p>
+      </div>
+      <div class="step">
+        <div class="step-n">02</div>
+        <h4><span class="t-fa">آوت‌لایرها را شکار کنید</span><span class="t-en">Hunt the outliers</span></h4>
+        <p>
+          <span class="t-fa">نیچ فایندر همان عبارت را در کل یوتیوب می‌گردد و کانال‌های کوچک با بازدید بزرگ را جدا می‌کند.</span>
+          <span class="t-en">Niche Finder runs that term across YouTube and separates the small channels with big views.</span>
+        </p>
+      </div>
+      <div class="step">
+        <div class="step-n">03</div>
+        <h4><span class="t-fa">بفهمید چرا کار کرده</span><span class="t-en">Understand why</span></h4>
+        <p>
+          <span class="t-fa">موضوع‌سنج همان نتایج را می‌خواند و یک بریف با ادعاهای برچسب‌خورده می‌دهد.</span>
+          <span class="t-en">Niche Scan reads those results and returns a brief with every claim labelled.</span>
+        </p>
+      </div>
+      <div class="step">
+        <div class="step-n">04</div>
+        <h4><span class="t-fa">بسازید و ضبط کنید</span><span class="t-en">Build it and record</span></h4>
+        <p>
+          <span class="t-fa">ایده‌های هوش مصنوعی نقشه را می‌نویسد و تله‌پرامپتر آزمایشگاه محتوا متن را جلوی دوربین می‌برد.</span>
+          <span class="t-en">AI Ideas writes the blueprint and the Content Lab teleprompter takes the script to camera.</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <div class="split">
+    <div>
+      <div class="rooms-hd">
+        <h2><span class="t-fa">مشخصات</span><span class="t-en">Specifications</span></h2>
+      </div>
+      <dl>
+        <div class="spec">
+          <dt><span class="t-fa">سیستم</span><span class="t-en">System</span></dt>
+          <dd><span class="ltr">Windows 10 / 11</span>
+            <small><span class="t-fa">برنامه‌ی دسکتاپ، بدون نیاز به مرورگر</span><span class="t-en">Desktop app, no browser needed</span></small>
+          </dd>
+        </div>
+        <div class="spec">
+          <dt><span class="t-fa">زبان</span><span class="t-en">Language</span></dt>
+          <dd><span class="t-fa">فارسی و انگلیسی</span><span class="t-en">Persian &amp; English</span>
+            <small><span class="t-fa">راست‌به‌چپ کامل، با فونت‌های همراه برنامه</span><span class="t-en">Full right-to-left, with fonts bundled in</span></small>
+          </dd>
+        </div>
+        <div class="spec">
+          <dt><span class="t-fa">خروجی داده</span><span class="t-en">Data exports</span></dt>
+          <dd><span class="ltr">CSV · JSON Lines · XLSX · SQLite</span>
+            <small><span class="t-fa">نوشتن اتمیک؛ فایل نیمه‌خراب باقی نمی‌ماند</span><span class="t-en">Written atomically; no half-broken files</span></small>
+          </dd>
+        </div>
+        <div class="spec">
+          <dt><span class="t-fa">گزارش</span><span class="t-en">Reports</span></dt>
+          <dd><span class="t-fa">HTML مستقل</span><span class="t-en">Self-contained HTML</span>
+            <small><span class="t-fa">نمودار واقعی، تم روشن/تیره، چاپ روی A4</span><span class="t-en">Real charts, light/dark, A4 print</span></small>
+          </dd>
+        </div>
+        <div class="spec">
+          <dt><span class="t-fa">هوش مصنوعی</span><span class="t-en">AI providers</span></dt>
+          <dd><span class="ltr">OpenAI · Anthropic · Gemini</span>
+            <small><span class="t-fa">یا هر سرویس سازگار؛ کلید خودتان، پشت پروکسی هم کار می‌کند</span><span class="t-en">Or any compatible service; your own key, works behind a proxy</span></small>
+          </dd>
+        </div>
+        <div class="spec">
+          <dt><span class="t-fa">داده‌ی شما</span><span class="t-en">Your data</span></dt>
+          <dd><span class="t-fa">روی همین دستگاه</span><span class="t-en">Stays on this machine</span>
+            <small><span class="t-fa">آرشیو و ایده‌ها در SQLite محلی؛ کلیدها در فایل تنظیمات خودتان</span><span class="t-en">Archive and ideas in local SQLite; keys in your own config file</span></small>
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    <div>
+      <div class="rooms-hd">
+        <h2><span class="t-fa">چه کاری نمی‌کند</span><span class="t-en">What it will not do</span></h2>
+      </div>
+      <ul class="limits">
+        <li>
+          <span class="t-fa"><b>عدد از خودش نمی‌سازد.</b> همه‌ی آمار از YouTube Data API می‌آید و همه‌ی محاسبه‌ها روی همان داده انجام می‌شود.</span>
+          <span class="t-en"><b>It does not invent numbers.</b> Every statistic comes from the YouTube Data API, and every calculation is done on that same data.</span>
+        </li>
+        <li>
+          <span class="t-fa"><b>وضعیت مانیتایز را تأیید نمی‌کند.</b> این عدد از API عمومی یوتیوب در دسترس نیست؛ آنچه می‌بینید یک تخمین است و برنامه همین را می‌نویسد.</span>
+          <span class="t-en"><b>It does not confirm monetization status.</b> That is not available from YouTube's public API; what you see is an estimate, and the app says so.</span>
+        </li>
+        <li>
+          <span class="t-fa"><b>جای یوتیوب استودیو را نمی‌گیرد.</b> نرخ کلیک و زمان تماشا فقط برای کانال خودتان و فقط داخل استودیو دیده می‌شود. هر ادعایی که به این داده نیاز دارد، برچسب «نیازمند استودیو» می‌خورد.</span>
+          <span class="t-en"><b>It is not a replacement for YouTube Studio.</b> Click-through rate and watch time exist only for your own channel, inside Studio. Any claim that needs them is labelled “needs Studio”.</span>
+        </li>
+        <li>
+          <span class="t-fa"><b>سهمیه‌ی یوتیوب را دور نمی‌زند.</b> ۱۰٬۰۰۰ واحد در روز سقف گوگل است. کاری که برنامه می‌کند این است که ارزان‌ترین راه را انتخاب کند و مصرف را جلوی چشم شما بگذارد.</span>
+          <span class="t-en"><b>It does not get around the YouTube quota.</b> 10,000 units a day is Google's ceiling. What the app does is take the cheapest route and keep the spend in front of you.</span>
+        </li>
+        <li>
+          <span class="t-fa"><b>کلید API همراهش نمی‌آید.</b> کلید یوتیوب و کلید هوش مصنوعی را خودتان یک بار در تنظیمات وارد می‌کنید و روی همان دستگاه می‌ماند.</span>
+          <span class="t-en"><b>It does not ship with API keys.</b> You enter your YouTube key and your AI key once in Settings, and they stay on that machine.</span>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="close">
+    <div>
+      <h3><span class="t-fa">اولین اجرا: دو کلید و یک جست‌وجو</span><span class="t-en">First run: two keys and one search</span></h3>
+      <p>
+        <span class="t-fa">کلید YouTube Data API را در تنظیمات بگذارید، یک سرویس هوش مصنوعی انتخاب کنید، و یک کلیدواژه بزنید. راهنمای اولین اجرا شما را از همان اول تا ساخت اولین نقشه می‌برد.</span>
+        <span class="t-en">Paste your YouTube Data API key in Settings, pick an AI provider, and run one keyword. The first-run tour walks you from there to your first blueprint.</span>
+      </p>
+    </div>
+    <div class="close-cta">
+      <b>10 <span class="t-fa">اتاق</span><span class="t-en">rooms</span></b>
+      <span class="t-fa">۴ تای اول رایگان</span><span class="t-en">first 4 spend nothing</span>
+    </div>
+  </div>
+
+  <div class="colophon">
+    <span>Niche Scope — product sheet</span>
+    <span>2 / 2</span>
+  </div>
+</section>
+
+<script>
+(function(){
+  var html = document.documentElement,
+      fa   = document.getElementById('lang-fa'),
+      en   = document.getElementById('lang-en');
+
+  function setLang(lang){
+    html.setAttribute('lang', lang);
+    html.setAttribute('dir', lang === 'fa' ? 'rtl' : 'ltr');
+    html.setAttribute('data-lang', lang);
+    fa.setAttribute('aria-pressed', String(lang === 'fa'));
+    en.setAttribute('aria-pressed', String(lang === 'en'));
+    document.title = lang === 'fa'
+      ? 'نیچ اسکوپ — برگه‌ی معرفی'
+      : 'Niche Scope — Product Sheet';
+  }
+
+  fa.addEventListener('click', function(){ setLang('fa'); });
+  en.addEventListener('click', function(){ setLang('en'); });
+  document.getElementById('print').addEventListener('click', function(){ window.print(); });
+})();
+</script>
+</body>
+</html>
