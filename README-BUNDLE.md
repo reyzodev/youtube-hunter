@@ -3,7 +3,7 @@
 A trimmed copy of the project: everything needed to **run and read** the app,
 with the build output and the 139 MB ffprobe binary left out.
 
-**Version: 1.1.1** (internal 3.41.5) — rebranded from Niche Scope (new logo,
+**Version: 1.0.0** (internal 3.51) — rebranded from Niche Scope (new logo,
 `YouTubeHunter.exe`, `YouTubeHunter-Setup.exe`). Internals kept on purpose so existing installs keep
 working: the QML module is still `NicheScope`, the per-user runtime folder is
 still `NicheScope`, the config folder is still `%APPDATA%\YoutubeScrapperCyber`
@@ -15,7 +15,9 @@ rebrand is written up in `docs/CHANGES-rebrand-youtube-hunter.md`.
 
 A Windows desktop app (Python + PySide6 / Qt Quick QML) for YouTube research:
 scrape a channel, find outlier videos, turn them into content blueprints,
-download them, and cut clips. Entry point is **`main_qml.py`**.
+download them, and cut clips — plus a Chrome/Edge extension
+(`browser-extension/`) that puts the download and cut panel on the YouTube page.
+Entry point is **`main_qml.py`**.
 
 ## How to run it
 
@@ -38,7 +40,7 @@ user's config; no keys are in the source.
 |---|---|---|
 | `assets/bin/ffprobe.exe` | 139 MB, larger than everything else combined | Everything runs; only **mp3 audio downloads**, the **local-file probe** in the video cutter, and the quality probe need it. Drop it back in and those work. |
 | `assets/bin/deno.exe` | 93 MB JS runtime (yt-dlp's YouTube challenge solver) | Everything runs; the app **downloads it on demand** the first time a YouTube download needs it — the built installer carries it pre-bundled, so end users never fetch it. |
-| `assets/bin/bgutil-pot.exe` | 45 MB PO Token helper (bgutil-pot 0.8.1, GPL-3.0) | Everything runs, but **downloads, resumes and YouTube cut-links stay locked** — since 3.41.5 it is a required part of the download engine. Put it back (plus `bgutil-pot-NOTICE.txt` and `bgutil-pot-GPL-3.0.txt`) or install it from the app's setup dialog; the built installer carries it. |
+| `assets/bin/bgutil-pot.exe` | 45 MB PO Token helper (bgutil-pot 0.8.1, GPL-3.0) | Everything runs, but **downloads, resumes and YouTube cut-links stay locked** — since 3.41.5/1.0.0 it is a required part of the download engine. Put it back (plus `bgutil-pot-NOTICE.txt` and `bgutil-pot-GPL-3.0.txt`) or install it from the app's setup dialog; the built installer carries it. |
 | `dist/`, `build/`, `Output/` | PyInstaller + Inno Setup output (~670 MB) | Regenerate with `build.bat`. |
 | `.build-venv/` | the isolated build venv (~870 MB) | Create your own; see above. |
 | `__pycache__/`, `*.pyc` | compiled copies of the `.py` files that are here | none. |
@@ -55,6 +57,8 @@ app/                   all source: Python backend, QML UI, Persian strings
   locales/fa.py        Persian translations (English text is the lookup key)
 fonts/                 the bundled Persian + Latin fonts
 assets/                icons (v8 SVG set + app icon) — no binaries
+browser-extension/     the Hunter button (MV3: content.js, panel.css, background.js)
+                       — talks to the app's local bridge on 127.0.0.1:47391
 tools/                 build_icons.py / scale_nav_icons.py (icon art) and
                        check_hover_flicker.py — the hover "blink" lint
 docs/                  README, BUILD, the Persian changelog, the brochure

@@ -1,31 +1,29 @@
-# YouTube Hunter — source bundle (formerly Niche Scope)
+# YouTube Hunter — source bundle
 
 A trimmed copy of the project: everything needed to **run and read** the app,
 with the build output and the 139 MB ffprobe binary left out.
 
-**Version: 1.1.0** (internal history: 3.41.0) — a live activity card that follows a running download / cut onto the desktop, a custom right-click menu for every text field
-(`components/EditMenu.qml`, Qt 6.9+ `ContextMenu`), desktop "away notices" (a
-toast in the corner of the screen when a long job finishes while you are in
-another app), native maximize / restore / Aero-snap instead of the per-frame
-geometry tween, and `PageFreeze` so a hidden page stops re-laying-out on every
-resize tick. AI Chat
-("Scope", index 13 of 14), Settings v18 redesign, visual identity v6 "Graphite", lazy
-page loading, trimmed Qt payload. The Persian changelog (`docs/CHANGES-fa.md`)
-has the full history; `docs/CHANGES-v3.40-fa.md` covers this release.
+**Version: 1.0.0** (internal 3.51) — rebranded from Niche Scope (new logo,
+`YouTubeHunter.exe`, `YouTubeHunter-Setup.exe`). Internals kept on purpose so existing installs keep
+working: the QML module is still `NicheScope`, the per-user runtime folder is
+still `NicheScope`, the config folder is still `%APPDATA%\YoutubeScrapperCyber`
+and the installer AppId is unchanged (so it upgrades an existing install in
+place). The Persian changelog (`docs/CHANGES-fa.md`) has the full history; the
+rebrand is written up in `docs/CHANGES-rebrand-youtube-hunter.md`.
 
 ## What the app is
 
 A Windows desktop app (Python + PySide6 / Qt Quick QML) for YouTube research:
-scrape a channel or keyword, find outlier videos, turn them into content
-blueprints, download them, and cut clips. Entry point is **`main_qml.py`**.
-The legacy QWidgets build (`main.py`, `app/ui/window|dialogs|widgets`) was removed in v3.25.
+scrape a channel, find outlier videos, turn them into content blueprints,
+download them, and cut clips — plus a Chrome/Edge extension
+(`browser-extension/`) that puts the download and cut panel on the YouTube page.
+Entry point is **`main_qml.py`**.
 
 ## How to run it
 
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
-.venv/Scripts/pip install yt-dlp imageio-ffmpeg      # downloads + cutting
 .venv/Scripts/python main_qml.py
 ```
 
@@ -42,6 +40,7 @@ user's config; no keys are in the source.
 |---|---|---|
 | `assets/bin/ffprobe.exe` | 139 MB, larger than everything else combined | Everything runs; only **mp3 audio downloads**, the **local-file probe** in the video cutter, and the quality probe need it. Drop it back in and those work. |
 | `assets/bin/deno.exe` | 93 MB JS runtime (yt-dlp's YouTube challenge solver) | Everything runs; the app **downloads it on demand** the first time a YouTube download needs it — the built installer carries it pre-bundled, so end users never fetch it. |
+| `assets/bin/bgutil-pot.exe` | 45 MB PO Token helper (bgutil-pot 0.8.1, GPL-3.0) | Everything runs, but **downloads, resumes and YouTube cut-links stay locked** — since 3.41.5/1.0.0 it is a required part of the download engine. Put it back (plus `bgutil-pot-NOTICE.txt` and `bgutil-pot-GPL-3.0.txt`) or install it from the app's setup dialog; the built installer carries it. |
 | `dist/`, `build/`, `Output/` | PyInstaller + Inno Setup output (~670 MB) | Regenerate with `build.bat`. |
 | `.build-venv/` | the isolated build venv (~870 MB) | Create your own; see above. |
 | `__pycache__/`, `*.pyc` | compiled copies of the `.py` files that are here | none. |
@@ -54,11 +53,14 @@ app/                   all source: Python backend, QML UI, Persian strings
   qml/                 every screen (Main.qml + pages/ + components/)
   qml_backend/         the ViewModels the QML talks to
   core/                the actual logic (YouTube API, niche search, cutter, AI)
-  ui/                  icons / fonts / theme helpers shared with the legacy build
+  ui/                  icons / fonts / theme helpers (remixicon map, palettes)
   locales/fa.py        Persian translations (English text is the lookup key)
 fonts/                 the bundled Persian + Latin fonts
-assets/                icons and app images (no binaries)
-tools/                 check_hover_flicker.py — the hover "blink" lint
+assets/                icons (v8 SVG set + app icon) — no binaries
+browser-extension/     the Hunter button (MV3: content.js, panel.css, background.js)
+                       — talks to the app's local bridge on 127.0.0.1:47391
+tools/                 build_icons.py / scale_nav_icons.py (icon art) and
+                       check_hover_flicker.py — the hover "blink" lint
 docs/                  README, BUILD, the Persian changelog, the brochure
                        (DOWNLOAD-FORMAT-fa.md documents the download/format work)
 screenshots/           current UI, for reference
@@ -83,7 +85,8 @@ These are the ones that silently produce wrong output rather than an error:
   page; a page is instantiated the first time it is shown and then kept, so
   navigating back is instant and page state survives. Building every page up
   front cost 3.4 s of the ~5 s startup, which is why this changed. The indices
-  still matter: Downloads = 8, Niche Scan = 11, Video Cutter = 12, AI Chat = 13 (see `PAGE_*` in
+  still matter: Downloads = 8, Niche Scan = 11, Video Cutter = 12,
+  AI Chat = 13 (see `PAGE_*` in
   `app/qml_backend/app_controller.py`). A new page goes at the END of the stack
   so no existing index moves. Verify with `.workbuddy-ai/verify-lazy-pages.py`,
   which counts the built Loaders rather than trusting a screenshot.
