@@ -19,24 +19,23 @@ import statistics
 from datetime import datetime
 from html import escape as html_escape
 
-from app.locales.fa import FA_STRINGS
-
-# ── bilingual render state ───────────────────────────────────────────────
-# Rendering is synchronous and single-threaded per report, so a module-level
-# "current pane language" is enough. Always set through render_lang().
-_STATE = {"lang": "fa"}
+# ── render state (English only) ──────────────────────────────────────────
+# The report renderer used to emit a Persian pane next to the English one. The
+# app is English-only now, so these helpers stay (call sites unchanged) but
+# always resolve to English.
+_STATE = {"lang": "en"}
 
 
 class render_lang:
-    """`with render_lang("en"):` — render everything inside in that language."""
+    """`with render_lang("en"):` — kept for call-site compatibility."""
 
     def __init__(self, lang):
-        self.lang = "en" if lang == "en" else "fa"
-        self._prev = "fa"
+        self.lang = "en"
+        self._prev = "en"
 
     def __enter__(self):
         self._prev = _STATE["lang"]
-        _STATE["lang"] = self.lang
+        _STATE["lang"] = "en"
         return self
 
     def __exit__(self, *exc):
@@ -49,25 +48,18 @@ def cur_lang():
 
 
 def _t(fa, en):
-    """Pick the string for the pane being rendered."""
-    return en if _STATE["lang"] == "en" else fa
+    """Pick the string for the report. English only."""
+    return en
 
 
 def tk(en_key):
-    """An English UI key (the app's own tr() vocabulary) in the pane language —
-    independent of the app's CURRENT language, so both panes come out right."""
-    if _STATE["lang"] == "en":
-        return en_key
-    return FA_STRINGS.get(en_key, en_key)
-
-
-_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+    """An English UI key — the report is English, so this is the key itself."""
+    return en_key
 
 
 def num(n):
-    """A number/str with Persian digits in the fa pane, plain in en."""
-    s = str(n)
-    return s.translate(_FA_DIGITS) if _STATE["lang"] == "fa" else s
+    """A number/str, plain digits."""
+    return str(n)
 
 
 def pct_sign():

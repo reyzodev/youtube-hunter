@@ -8,8 +8,7 @@ with the build output and the 139 MB ffprobe binary left out.
 working: the QML module is still `NicheScope`, the per-user runtime folder is
 still `NicheScope`, the config folder is still `%APPDATA%\YoutubeScrapperCyber`
 and the installer AppId is unchanged (so it upgrades an existing install in
-place). The Persian changelog (`docs/CHANGES-fa.md`) has the full history; the
-rebrand is written up in `docs/CHANGES-rebrand-youtube-hunter.md`.
+place).
 
 ## What the app is
 
@@ -49,19 +48,18 @@ user's config; no keys are in the source.
 
 ```
 main_qml.py            the app entry point
-app/                   all source: Python backend, QML UI, Persian strings
+app/                   all source: Python backend, QML UI
   qml/                 every screen (Main.qml + pages/ + components/)
   qml_backend/         the ViewModels the QML talks to
   core/                the actual logic (YouTube API, niche search, cutter, AI)
   ui/                  icons / fonts / theme helpers (remixicon map, palettes)
-  locales/fa.py        Persian translations (English text is the lookup key)
-fonts/                 the bundled Persian + Latin fonts
+fonts/                 the bundled UI fonts
 assets/                icons (v8 SVG set + app icon) — no binaries
 browser-extension/     the Hunter button (MV3: content.js, panel.css, background.js)
                        — talks to the app's local bridge on 127.0.0.1:47391
 tools/                 build_icons.py / scale_nav_icons.py (icon art) and
                        check_hover_flicker.py — the hover "blink" lint
-docs/                  README, BUILD, the Persian changelog, the brochure
+docs/                  install, extension, build notes, release notes
                        (DOWNLOAD-FORMAT-fa.md documents the download/format work)
 screenshots/           current UI, for reference
 ```

@@ -1,161 +1,95 @@
-# ساخت بیلد (Build) — Niche Scope
+# Build & packaging
 
-این راهنما توضیح می‌ده چطور یه نسخه‌ی قابل‌اجرا بسازی که **روی هر کامپیوتر ویندوزی بدون نصب پایتون، بدون اینترنت و بدون ارور باز بشه**.
+How `YouTubeHunter-Setup.exe` is produced, and what to check when a build
+behaves differently on someone else's machine.
 
----
+## One command
 
-## روش سریع (پیشنهادی)
-
-فقط کافیه روی فایل زیر دابل‌کلیک کنی:
-
-```bash
+```bat
 build.bat
 ```
 
-این اسکریپت خودش همه‌چی رو انجام می‌ده:
+It does six things, in this order, and stops with a clear message when an input
+is missing:
 
-1. یه محیط ایزوله می‌سازه (`.build-venv`) تا با پایتون سیستم قاطی نشه
-2. تمام وابستگی‌ها رو نصب می‌کنه (شامل `yt-dlp` و `ffmpeg` برای دانلود ویدیو)
-3. **قبل از بیلد** همه‌ی ورودی‌ها رو چک می‌کنه (فونت‌ها، `ffprobe`، ماژول‌های QML، دیسکاوری‌داک‌های گوگل) تا وقتِ چند دقیقه‌ای PyInstaller هدر نره
-4. با PyInstaller و فایل تنظیمات `YoutubeScrapper.spec` بیلد می‌گیره
-5. **بعد از بیلد** خروجی رو چک می‌کنه — ماژول‌های QML و `ffmpeg`/`ffprobe` چیزهایی‌ان که اگر جا بمونن، بیلد فقط **روی کامپیوتر مشتری** خطا می‌ده
-6. اگر Inno Setup نصب باشه، خودش `setup.exe` رو هم می‌سازه
+1. **Finds Python** (3.11+ 64-bit).
+2. **Creates `.build-venv`** — an isolated build environment, so the machine's
+   own Python install is never touched.
+3. **Installs the pinned dependencies** from `requirements.txt`, plus `yt-dlp`,
+   `imageio-ffmpeg` and `pyinstaller`, and forces imageio to fetch its FFmpeg
+   binary now (the spec bundles it).
+4. **Verifies every build input** before spending minutes in PyInstaller:
+   `main_qml.py`, `app/qml/Main.qml`, `app/qml/qmldir`, `fonts/`,
+   `assets/bin/ffprobe.exe`, `assets/bin/deno.exe`, `assets/bin/bgutil-pot.exe`,
+   the Qt/QML runtime in the venv, the Google discovery documents, and that
+   `APP_VERSION` imports.
+5. **Runs PyInstaller** with `YoutubeScrapper.spec` (onedir) and then verifies
+   the output — the Qt QML modules, the QtMultimedia **backend plugin**, the
+   bundled app QML, the three binaries, the fonts and the YouTube discovery
+   document. These are the pieces that go missing silently and only fail on a
+   machine that has no Qt.
+6. **Compiles the installer** with Inno Setup 6 (`installer.iss`), if it is
+   installed.
 
-خروجی‌ها:
+Output:
 
 ```
-dist\NicheScope\NicheScope.exe      ← خود برنامه (کل پوشه لازمه)
-Output\NicheScope-Setup.exe         ← نصاب تک‌فایلی برای مشتری
+dist\YouTubeHunter\YouTubeHunter.exe     the app (onedir — ship the whole folder)
+Output\YouTubeHunter-Setup.exe           the installer (~170 MB)
 ```
 
----
+## The three binaries that are not in the repository
 
-## چطوری به بقیه بدم که بدون ارور باز بشه؟
-
-دو راه داری. هر دو تست‌شده و پایدارن:
-
-### راه ۱ — نصاب حرفه‌ای (setup.exe) — پیشنهادی
-`build.bat` خودش این رو می‌سازه (اگر Inno Setup نصب باشه). دستی هم می‌تونی:
-
-1. [Inno Setup 6.3+](https://jrsoftware.org/isdl.php) رو نصب کن
-2. فایل `installer.iss` رو باهاش باز کن و دکمه‌ی **Build** رو بزن
-   (یا از خط فرمان: `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss`)
-3. خروجی توی `Output\NicheScope-Setup.exe` ساخته می‌شه — همینو بفرست
-
-نصاب به‌صورت پیش‌فرض **بدون نیاز به دسترسی ادمین** نصب می‌کنه (کمترین احتمال خطا).
-اگر روی ماشینی نصب همه‌کاربره بخوای، توی صفحه‌ی انتخاب مسیر گزینه‌اش هست.
-
-### راه ۲ — کل پوشه رو زیپ کن (ساده‌ترین)
-کل پوشه‌ی `dist\NicheScope\` رو زیپ کن و بده به طرف. اون فقط اکسترکت می‌کنه و `NicheScope.exe` رو اجرا می‌کنه. **حتماً کل پوشه رو بده، نه فقط فایل exe تنها** — چون فایل‌های کنار exe (پوشه‌ی `_internal`) لازمن.
-
----
-
-## چرا این بیلد کمترین ارور رو داره؟
-
-مشکلاتی که باعث می‌شد روی سیستم بعضی‌ها باز نشه، همه برطرف شدن:
-
-| مشکل قبلی | راه‌حل توی این بیلد |
-|-----------|---------------------|
-| فونت‌ها و عکس‌ها پیدا نمی‌شدن | `app/paths.py` حالا مسیر `_MEIPASS` بیلد رو تشخیص می‌ده؛ پوشه‌های `fonts/` و `assets/` داخل بیلد بسته می‌شن |
-| دانلود ویدیو موقع اجرا `pip install` می‌زد (توی بیلد کار نمی‌کنه) | `yt-dlp` و باینری واقعی `ffmpeg` داخل بیلد بسته شدن؛ کاملاً آفلاین کار می‌کنه |
-| دانلود صوتی (mp3) روی سیستم مشتری خطا می‌داد | `assets/bin/ffprobe.exe` هم داخل بیلد بسته می‌شه (imageio فقط `ffmpeg` داره) |
-| YouTube API روی سیستم مقصد خطا می‌داد | فایل‌های discovery گوگل (`googleapiclient`) داخل بیلد بسته شدن |
-| ماژول‌های مخفی yt-dlp پیدا نمی‌شدن | با `collect_submodules` همه جمع شدن |
-| آنتی‌ویروس فایل تکی رو قرنطینه می‌کرد | خروجی **onedir** (پوشه‌ای) ساخته می‌شه، نه فایل تکی؛ فشرده‌سازی UPX هم خاموشه |
-| فایل exe هیچ نسخه/ناشری نداشت | `version_info.txt` روی exe مهر می‌شه (Properties → Details) |
-| نسخه‌ی نصاب با نسخه‌ی خود برنامه یکی نبود | هر سه از یک عدد می‌خونن: `app/constants.py` → `APP_VERSION` (نصاب `installer.iss` کپیِ همون عدده) |
-| `installer.iss` اصلاً کامپایل نمی‌شد | `AppId` یه GUID معتبر شد؛ قبلاً `NICHESCOPE0001` داشت که Inno Setup قبولش نمی‌کنه |
-
-> **مدل onefile چرا نه؟** فایل تکی هر بار موقع باز شدن ~۲۰۰ مگابایت رو توی پوشه‌ی temp اکسترکت می‌کنه — هم کند باز می‌شه، هم شماره‌ی یک دلیل قرنطینه‌شدن توسط آنتی‌ویروسه. مدل پوشه‌ای فوری باز می‌شه و پایدارتره.
-
----
-
-## در نسخهٔ ۳.۱۳.۰ به بیلد چه اضافه شد
-
-### ۱) حذف ماژول‌های Qt که برنامه هیچ‌وقت باز نمی‌کند
-هوک Qt **همهٔ** ماژول‌ها را جمع می‌کند، نه آن‌هایی که برنامه `import` می‌کند.
-فهرست کامل importهای QML پروژه این است: `QtQuick`، `QtQuick.Controls.Basic`،
-`QtQuick.Dialogs`، `QtQuick.Effects`، `QtQuick.Layouts`، `QtQuick.Shapes`،
-`QtQuick.Window`، `QtMultimedia` و `NicheScope`. هر چیز دیگری مرده است.
-
-قبل از حذف، جدول import تمام DLLهای بیلد خوانده و بستار وابستگی حساب شد
-(`python .workbuddy-ai/qt-trim-analysis.py dist/NicheScope/_internal`). این کار
-لازم است چون اگر DLLی که `Qt6Quick` به آن **لینک استاتیک** دارد حذف شود،
-برنامه اصلاً بالا نمی‌آید — خطای مؤدبانه نمی‌دهد. نتیجه: ۵۰۹ مگابایت به‌جای
-۵۸۴ (۷۵ مگابایت کم‌تر، ۱۶۷۹ فایل).
-
-`QtOpenGL.pyd` عمداً می‌ماند: در جدول import دیده نمی‌شود، ولی خودِ
-`PySide6.QtQuick` در پایتون آن را وارد می‌کند.
-
-### ۲) ارتقای تمیز (بدون فایل جامانده)
-Inno فقط **روی‌نویسی** می‌کند؛ فایل‌هایی که نسخهٔ جدید دیگر ندارد را پاک
-نمی‌کند. اندازه‌گیری شد: ارتقا از یک بیلد قدیمی ۱۶۷۹ فایل یتیم (۷۳.۶ مگابایت)
-در پوشهٔ نصب جا می‌گذاشت. برای همین یک بخش `[InstallDelete]` اضافه شد که پوشهٔ
-`_internal` را پیش از نصب پاک می‌کند — چون همان بلوک `[Files]` آن را کامل از نو
-می‌سازد. تست شد: پوشهٔ نصب بعد از ارتقا **دقیقاً** با `dist\NicheScope` یکی است.
-
-### ۳) تست واقعی نصاب از خط فرمان
-```bash
-MSYS_NO_PATHCONV=1 ./Output/NicheScope-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-```
-> نکته: در Git Bash **باید** `MSYS_NO_PATHCONV=1` بگذاری. وگرنه بش، `/VERYSILENT`
-> را به یک مسیر ویندوزی تبدیل می‌کند، نصاب در حالت گرافیکی بالا می‌آید و
-> «Setup is not complete» می‌دهد (کد خروج ۲). در `cmd.exe` این مشکل نیست.
-
-بعد از نصب، پوشهٔ نصب را با `dist\NicheScope` مقایسه کن (فایل اضافه/کم نباید
-داشته باشد) و برنامهٔ نصب‌شده را آفلاین اجرا کن:
-```bash
-QT_QPA_PLATFORM=offscreen timeout 20 "$LOCALAPPDATA/Programs/Niche Scope/NicheScope.exe"
-```
-
-### ۴) سرعت باز شدن
-هر ۱۵ صفحه پیش از اولین رنگ‌آمیزی ساخته می‌شدند و ۳.۴ ثانیه از ۵ ثانیهٔ
-راه‌اندازی را می‌خوردند. حالا در `Main.qml` هر صفحه با یک `Loader` و فقط
-**اولین باری که نشان داده شود** ساخته می‌شود (صفحهٔ ۰ همچنان eager).
-ترتیب ایندکس‌ها دست‌نخورده است. بازرسی: `.workbuddy-ai/verify-lazy-pages.py`.
-
-| | قبل | بعد |
+| File | Size | Needed for |
 |---|---|---|
-| `engine.load()` | ۳.۶ ثانیه | ۰.۵ ثانیه |
-| تا اولین اجرا | ۵.۰ ثانیه | ۱.۸ ثانیه |
+| `assets/bin/ffprobe.exe` | ~145 MB | mp3/audio-only downloads, the cutter's local-file probe, quality probing |
+| `assets/bin/deno.exe` | ~93 MB | the JavaScript runtime yt-dlp uses to solve YouTube's download challenge |
+| `assets/bin/bgutil-pot.exe` | ~45 MB | the PO Token helper (bgutil-pot 0.8.1, GPL-3.0). **Required** since 1.0.0: without it YouTube serves a 360p-only format list or answers 403 on VPN/datacenter IPs |
 
----
+`bgutil-pot.exe` is downloaded from the upstream release and verified against the
+SHA-256 pinned in `app/core/pot.py`; its licence text and notice sit next to it
+in `assets/bin/`. It runs as its own process on `127.0.0.1`, never imported.
 
-## چک‌لیست قبل از فرستادن به مشتری
+## What the installer adds
 
-- [ ] `dist\NicheScope\NicheScope.exe` رو **روی یه ویندوز تازه** (یا یه یوزر جدید بدون پایتون) تست کن.
-- [ ] اگر ویندوز پیام آبی **SmartScreen** داد («Windows protected your PC») طبیعیه: بیلد امضای دیجیتال نداره. مشتری باید *More info → Run anyway* رو بزنه. برای حذف کامل این پیام، باید یه **گواهی Code Signing** بخری و exe و setup رو امضا کنی.
-- [ ] نصاب رو نصب کن، برنامه رو باز کن، یه ویدیو دانلود کن، یه تیکه ببر — بعد حذفش کن و ببین همه‌چی درست پاک می‌شه.
-- [ ] `Output\NicheScope-Setup.exe` رو بفرست (نه پوشه‌ی `dist`).
+- Copies `dist\YouTubeHunter\*` into `%LOCALAPPDATA%\Programs\YouTube Hunter`.
+- Copies `browser-extension\*` into `{app}\browser-extension` and adds a Start-menu
+  shortcut to it (the extension is loaded unpacked from there).
+- Registers `youtubehunter://` (`HKCU\Software\Classes\youtubehunter`) so the
+  browser extension can start the app minimised.
+- Deletes the previous version's `_internal` folder first, so an upgrade cannot
+  leave stale Qt DLLs behind.
+- Keeps `%APPDATA%\YoutubeScrapperCyber` (config, API keys, archive) untouched —
+  also on uninstall.
 
----
+## Traps worth knowing
 
-## نکات
+These fail silently rather than raising:
 
-- **آیکون برنامه:** اگه فایل `assets\app.ico` بذاری، خودکار به‌عنوان آیکون exe و نصاب استفاده می‌شه.
-- **فقط ویندوز ۶۴ بیتی:** به‌خاطر PySide6 و ffmpeg، بیلد ۳۲ بیتی پشتیبانی نمی‌شه. نصاب هم روی ویندوز ۱۰ (۱۸۰۹) یا جدیدتر نصب می‌شه.
-- **حجم بیلد:** پوشه‌ی `dist\YouTubeHunter` حدود **۵۵۰ مگابایت** است و نصاب
-  `Output\YouTubeHunter-Setup.exe` حدود **۱۷۰ مگابایت** (فشرده‌ی lzma2). بیشترِ
-  حجم مال `ffprobe` (۱۴۵ مگابایت)، `deno` (۹۷ مگابایت)، `bgutil-pot` (۴۵ مگابایت)
-  و `ffmpeg` (۸۸ مگابایت) است — این‌ها را حذف نکن، وگرنه دانلود و برش روی سیستم
-  مشتری از کار می‌افتد.
-- **دستیار PO Token (`assets\bin\bgutil-pot.exe`):** از ۱.۱.۱ (۳.۴۱.۵) **اجباری**
-  است: بدون آن دانلود/ادامه/برش لینک یوتیوب قفل می‌ماند (یوتیوب روی IPهای
-  VPN/دیتاسنتر فقط لیست ۳۶۰p می‌دهد یا ۴۰۳ می‌بندد). `build.bat` نبودنش را
-  گزارش می‌دهد. نسخه‌ی ۰.۸.۱ با SHA-256 پین‌شده در `app/core/pot.py`؛ مجوز
-  GPL-3.0 و به‌صورت برنامه‌ی جدا اجرا می‌شود (`assets/bin/bgutil-pot-NOTICE.txt`).
-- **لاگ خطا:** اگه روی سیستم کسی مشکلی پیش اومد، فایل `crash.log` توی مسیر `%APPDATA%\YoutubeScrapperCyber\` همه‌چی رو ثبت می‌کنه.
-- **لاگ نصب:** نصاب خودش یه لاگ می‌نویسه (`SetupLogging=yes`) — توی `%TEMP%`، برای وقتی نصب روی ماشین مشتری شکست می‌خوره.
-- **داده‌های کاربر موقع حذف برنامه پاک نمی‌شن:** کانفیگ، آرشیو SQLite و فایل‌های دانلودشده سر جاشون می‌مونن (`%APPDATA%\YoutubeScrapperCyber\` و پوشه‌ی ذخیره).
-- **متن نصاب انگلیسیه:** Inno Setup فایل زبان فارسی رسمی نداره؛ زبان خود برنامه از Settings عوض می‌شه و ربطی به متن نصاب نداره.
+- **The QtMultimedia backend plugin is not collected automatically.** Nothing
+  imports `PySide6.QtMultimedia` from Python, so PyInstaller misses the plugin
+  and every Cutter preview is black. `YoutubeScrapper.spec` appends the plugin
+  directory and the FFmpeg DLLs by hand.
+- **Move `dist\YouTubeHunter` aside before a rebuild.** PyInstaller's COLLECT
+  step removes the old folder first; if a file in it is locked, the build still
+  reports success and the installer packages the previous build.
+- **Qt's own translations** are trimmed to English only — the app draws its
+  labels itself and never installs a QTranslator.
+- **Version lives in three places** and they must agree: `app/constants.py`
+  (`APP_VERSION`), `version_info.txt`, `installer.iss` (`MyAppVersion`).
+- **The interface is English only.** There is no language switch and no
+  translation table; `app.i18n.tr()` returns the string unchanged.
 
----
-
-## ساخت دستی (اگه build.bat رو نخواستی)
+## Verifying a build without a display
 
 ```bash
-python -m pip install -r requirements.txt yt-dlp imageio-ffmpeg pyinstaller
-python -c "import imageio_ffmpeg; imageio_ffmpeg.get_ffmpeg_exe()"
-python -m PyInstaller --clean --noconfirm YoutubeScrapper.spec
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+# instantiates every page; any QML load error prints here. 124 = still running = OK
+QT_QPA_PLATFORM=offscreen timeout 30 python main_qml.py
+
+# lint one file (a few hundred pre-existing warnings; look for NEW lines)
+python -m PySide6.qmllint -I app/qml app/qml/pages/SettingsPage.qml
 ```
+
+There is no unit-test suite. `tools/check_hover_flicker.py` is the one lint that
+catches a real class of bug (colour-fade hover states that blink), so run it
+before shipping.

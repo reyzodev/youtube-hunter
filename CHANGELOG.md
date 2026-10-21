@@ -1,10 +1,9 @@
 # Changelog
 
-The full, detailed history is in Persian: [`docs/CHANGES-fa.md`](docs/CHANGES-fa.md) and the
-per-release notes in `docs/CHANGES-v*.md`. This file is the short English summary — newest first.
+Release notes, newest first. Detailed extension notes live in
+[`docs/`](docs/) (`CHANGES-v3.4x-extension.md`).
 
-Version numbering restarted at **1.0.0** for the public release. The 3.x numbers are the
-internal history of the same application; the mapping is listed per release.
+Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
@@ -41,7 +40,7 @@ YouTube** that does the last two from the browser.
 - Page switching no longer rebuilds every card; archive paging, favourite toggling and download ticks are O(page) instead of O(all videos).
 - Persian UI audited end to end (2347/2347 strings translated), RTL-correct in every new panel.
 
-## 3.51 and earlier
+## Earlier releases
 
-See [`docs/CHANGES-fa.md`](docs/CHANGES-fa.md) — the Persian changelog covers every internal
-release back to the first patch, with the reasoning behind each fix.
+1.0.0 is the first public release. The 3.x numbers were internal builds of the same
+application (3.51 = 1.0.0); their notes are summarised in the sections above.

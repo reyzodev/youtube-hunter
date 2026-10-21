@@ -62,7 +62,6 @@ Item {
     // Theme + language changes are animated by the window (circular wipe /
     // veil), so the page only asks for them — same path as the title bar.
     signal themeWipeRequested(real cx, real cy, string preference)
-    signal languageRequested(string lang)
 
     FolderDialog {
         id: folderDialog
@@ -2097,23 +2096,6 @@ Item {
                                                 }
                                                 C.AppTooltip { visible: sw.hovered; text: I18n.tr(modelData.name) }
                                             }
-                                        }
-                                    }
-                                }
-                                RowSep {}
-                                SettingRow {
-                                    icon: "translate"
-                                    label: I18n.tr("Language")
-                                    description: I18n.tr("Switches the whole interface, including right-to-left layout.")
-                                    Segmented {
-                                        current: I18n.lang
-                                        minItemWidth: 92
-                                        options: [
-                                            { label: "English", value: "en" },
-                                            { label: "فارسی",   value: "fa" }
-                                        ]
-                                        onPicked: (value, btn) => {
-                                            if (value !== I18n.lang) page.languageRequested(value)
                                         }
                                     }
                                 }

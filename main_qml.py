@@ -181,11 +181,10 @@ def main():
     app.aboutToQuit.connect(note_shutting_down)
 
     cfg = load_app_config()
-    i18n.LANG = cfg.get("language", "en") if cfg.get("language") in ("en", "fa") else "en"
-    # Native direction for dialogs/menus/popups (the QML shell mirrors itself
-    # separately via LayoutMirroring on `shell` in Main.qml) — same as main.py.
-    app.setLayoutDirection(Qt.RightToLeft if i18n.LANG == "fa"
-                           else Qt.LeftToRight)
+    # The interface is English only; a "language" value left in an older config
+    # is ignored.
+    i18n.LANG = "en"
+    app.setLayoutDirection(Qt.LeftToRight)
     # Installed before apply_theme, like main.py: the theme rebuild is the first
     # thing that makes Qt walk the font database, and the filter is what keeps
     # those 20-30 harmless DirectWrite lines from burying real warnings.
@@ -239,9 +238,8 @@ def main():
     text_layout = TextLayoutBridge()   # selectable AppText line-height sync
     icon_bridge = IconBridge()
     app_ctrl = AppController(theme_bridge, i18n_bridge, font_bridge)
-    # Keep the native layout direction in step with live language switches
-    # (AppController.setLanguage emits languageRetranslate after flipping
-    # i18n.LANG) so system dialogs and popup positioning follow Persian too.
+    # Left-to-right always (English-only interface). Kept as a hook so native
+    # dialogs stay in step if a direction change is ever reintroduced.
     app_ctrl.languageRetranslate.connect(
         lambda: app.setLayoutDirection(
             Qt.RightToLeft if i18n.LANG == "fa" else Qt.LeftToRight))

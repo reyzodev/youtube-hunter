@@ -285,7 +285,7 @@ Item {
         anchors.top: stage.bottom
         anchors.topMargin: 2 + (1 - root.intro) * 10
         opacity: root.intro * (1 - root.land)
-        // fixed order (English | فارسی) in both directions
+        // fixed order (English) in both directions
         LayoutMirroring.enabled: false
         LayoutMirroring.childrenInherit: true
 
@@ -327,7 +327,7 @@ Item {
             x: 4; y: 4
             height: parent.height - 8
             Repeater {
-                model: [ { code: "en", name: "English" }, { code: "fa", name: "فارسی" } ]
+                model: [ { code: "en", name: "English" } ]
                 Item {
                     width: pill._chipW
                     height: parent.height

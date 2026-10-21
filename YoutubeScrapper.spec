@@ -79,11 +79,6 @@ hiddenimports += [
     "app.qml_backend.win_taskbar",
     "app.qml_backend.desktop_notifier",
     "winsound",            # v3.40 away-notice chime (stdlib, Windows only)
-    # The Persian string table is imported by app.i18n at module level, so static
-    # analysis normally finds it — but it is the one file whose absence turns
-    # every label in the app English-only in a shipped build, and listing it
-    # explicitly costs nothing.
-    "app.locales.fa",
     "youtube_transcript_api",
     "openpyxl",
     "shiboken6",
@@ -261,15 +256,14 @@ def _is_dead_qt(entry):
 
 
 def _is_dead_translation(entry):
-    """Qt's own .qm files. The app carries its own Persian strings in
-    app/locales/fa.py and never installs a QTranslator, so only the two
-    languages it could plausibly need are kept — the other 140 are 8 MB of
+    """Qt's own .qm files. The app draws its labels itself and never installs a
+    QTranslator, so only English is kept — the other 140 languages are 8 MB of
     files that are never opened."""
     low = _norm(entry[1])
     if not low.endswith(".qm") or "/translations/" not in low:
         return False
     base = low.rsplit("/", 1)[-1]
-    return not (base.endswith("_fa.qm") or base.endswith("_en.qm"))
+    return not base.endswith("_en.qm")
 
 
 _before = sum(len(t) for t in (a.binaries, a.datas))

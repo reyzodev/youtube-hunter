@@ -501,41 +501,12 @@ class AppController(QObject):
 
     @Slot()
     def toggleLanguage(self):
-        self.setLanguage("en" if self._i18n.lang == "fa" else "fa")
+        """No-op: the interface is English only."""
 
     @Slot(str)
     def setLanguage(self, lang):
-        # v3.37 — faster switch. The old order ran the whole UI through THREE
-        # relayout waves: languageChanged (RTL flip, old strings), Fonts
-        # languageChanged (font swap, old strings), then the context re-assign
-        # (new strings + fonts again) — and the VM retranslate in between
-        # rebuilt list delegates that the re-assign then re-evaluated a second
-        # time. Now: flip quietly, re-assign the context ONCE (that alone
-        # re-runs every I18n.* / Fonts.* binding, rtl included), and only THEN
-        # let the VMs rebuild, so fresh delegates are built once, already in
-        # the new language. The config write is deferred off the switch frame.
-        if not self._i18n.set_language(lang, notify=False):
-            return
-        self._retranslate_context()
-        # Python-side VMs hold strings translated at construction time
-        # (@Property(constant=True) option lists, status text, …); this is their
-        # cue to re-read them.
-        self.languageRetranslate.emit()
-        # Notifying properties last (cheap now: every binding already holds the
-        # new value, so nothing visibly re-lays out) — keeps any non-QML
-        # listener of these signals working.
-        self._i18n.languageChanged.emit()
-        self._font.languageChanged.emit()
-        QTimer.singleShot(250, self._persist_language)
-
-    def _persist_language(self):
-        """Write the language choice. Never allowed to raise into Qt."""
-        try:
-            cfg = load_app_config()
-            cfg["language"] = self._i18n.lang
-            save_app_config(cfg)
-        except Exception:                    # noqa: BLE001
-            log_crash("setLanguage: could not persist the language")
+        """No-op kept for API compatibility (older QML called this). The app
+        ships in English; `lang` is ignored."""
 
     # ── quota ring ─────────────────────────────────────────────────────
     @Property(int, notify=quotaChanged)

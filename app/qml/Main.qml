@@ -101,20 +101,6 @@ Window {
                       function() { return !App.themeSwapPending() })
     }
 
-    // ── language switch ──
-    // Everything reflows at once here (RTL, fonts, every label), so it happens
-    // behind an opaque veil instead of on screen.
-    function switchLanguage(lang) {
-        if (lang === I18n.lang) return
-        // v3.37: the veil animates FROM the current language TO the new one
-        // (liquid pill + mirror-flip of the mark), and the label is already
-        // in the target language.
-        veil.fromLang = I18n.lang
-        veil.toLang = lang
-        veil.label = lang === "fa" ? "در حال تغییر زبان …" : "Switching language …"
-        veil.cover(function() { App.setLanguage(lang) })
-    }
-
     // rounded outer shell
     Rectangle {
         id: shell
@@ -148,7 +134,6 @@ Window {
                 topLeftRadius: shell.radius
                 topRightRadius: shell.radius
                 onThemeWipeRequested: (cx, cy, preference) => win.startThemeWipe(cx, cy, preference)
-                onLanguageRequested: (lang) => win.switchLanguage(lang)
                 onTourRequested: tour.start()
                 // v3.36: the "not connected" pill reopens the connection gate
                 gateOpen: geoDialog.visible
@@ -524,7 +509,6 @@ Window {
                 onTourRequested: tour.start()
                 // Same animated paths the title bar uses.
                 onThemeWipeRequested: (cx, cy, preference) => win.startThemeWipe(cx, cy, preference)
-                onLanguageRequested: (lang) => win.switchLanguage(lang)
             }
         }
     }

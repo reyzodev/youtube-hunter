@@ -304,11 +304,11 @@ def _csv_analysis_prompt(filename, rows):
         "the data doesn't support, and say so plainly if the data isn't enough to "
         "answer a specific sub-question.\n\n"
         f"{_CSV_ANALYSIS_QUESTIONS_FA}\n\n"
-        "Respond in Persian (Farsi), and respond ONLY with a single JSON object (no "
+        "Respond in English, and respond ONLY with a single JSON object (no "
         "markdown fences, no commentary before or after) shaped exactly like this:\n"
         f"{_CSV_ANALYSIS_JSON_SCHEMA}\n\n"
         "Keep each \"points\" entry to 1-3 sentences, 4-6 points per section. Write "
-        "every string value in Persian — only the JSON keys stay in English."
+        "every string value in English — only the JSON keys stay in English."
     )
 
 

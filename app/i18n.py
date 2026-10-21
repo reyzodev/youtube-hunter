@@ -1,17 +1,13 @@
-"""app.i18n - Youtube Scrapper."""
+"""app.i18n - YouTube Hunter.
 
-from app.locales.fa import FA_STRINGS
+The interface ships in English only. This module keeps the historical `tr()`
+lookup so every call site (and every QML `I18n.tr(...)`) keeps working: the
+English string IS the key, so `tr()` returns it unchanged.
+"""
 
-# ═════════════════════════════════════════════════════════════════════════
-#  INTERNATIONALIZATION (English / Persian)
-# ═════════════════════════════════════════════════════════════════════════
-LANG = "en"   # set at startup from config.json; "en" or "fa"
+LANG = "en"
 
 
 def tr(text):
-    """Translate an English UI string to the active language. English text
-    itself is used as the lookup key, so untranslated strings just pass
-    through unchanged."""
-    if LANG == "fa":
-        return FA_STRINGS.get(text, text)
+    """Return the UI string. English only — the key is the text."""
     return text

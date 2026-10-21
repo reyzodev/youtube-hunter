@@ -6,13 +6,13 @@
 
 **YouTube research, outlier detection, downloads and clip cutting — one Windows desktop app, plus a button inside YouTube itself.**
 
-**English** · [فارسی ↓](#فارسی) · [نصب و راه‌اندازی](docs/INSTALL.md) · [افزونه مرورگر](docs/EXTENSION.md)
+[Install](docs/INSTALL.md) · [Browser extension](docs/EXTENSION.md) · [Build from source](#build-from-source) · [Changelog](CHANGELOG.md)
 
 ![Version](https://img.shields.io/badge/version-1.0.0-22c55e?style=flat-square)
 ![Platform](https://img.shields.io/badge/Windows-10%201809%2B%20%7C%2011%20(x64)-0ea5e9?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square&logo=python&logoColor=white)
 ![Qt](https://img.shields.io/badge/Qt%20Quick-6.12-41cd52?style=flat-square&logo=qt&logoColor=white)
-![UI](https://img.shields.io/badge/UI-English%20%7C%20فارسی-8b5cf6?style=flat-square)
+![License](https://img.shields.io/badge/license-proprietary-6b7280?style=flat-square)
 
 </div>
 
@@ -23,7 +23,7 @@ YouTube Hunter is a desktop workspace for people who run YouTube channels. Point
 It is a native Windows application (Python + Qt Quick/QML). Everything runs on your machine: your API key, your downloads, your archive. A companion **Chrome/Edge extension** puts the same download and cut panel on the YouTube page itself, and the desktop app does the work in the background.
 
 <div align="center">
-<img src="screenshots/dark-scraper-fa.png" width="880" alt="Scraper page">
+<img src="screenshots/scraper.png" width="880" alt="Scraper page">
 </div>
 
 ## Download & install
@@ -34,7 +34,7 @@ It is a native Windows application (Python + Qt Quick/QML). Everything runs on y
 
 No Python, no pip, no Visual C++ redistributable and no internet connection is needed to install or start the app: the whole runtime ships inside the installer (~170 MB), including the JavaScript runtime and the PO Token helper that YouTube downloads need.
 
-> **SmartScreen:** the installer is not code-signed, so Windows may show *"Windows Protect your PC"* the first time. Choose **More info → Run anyway**. A code-signing certificate is the only way to remove that prompt.
+> **SmartScreen:** the installer is not code-signed, so Windows may show *"Windows protected your PC"* the first time. Choose **More info → Run anyway**. A code-signing certificate is the only way to remove that prompt.
 
 Full walkthrough, first-run setup and troubleshooting: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
@@ -76,7 +76,7 @@ Step-by-step install (30 seconds): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
 | | |
 |---|---|
 | **AI Ideas** | Turns an outlier into concrete video ideas with hooks and angles, using your own model provider. |
-| **Content Lab** | Builds a four-part blueprint (hook → structure → beats → CTA) and exports it as a styled PDF, in Persian or English. |
+| **Content Lab** | Builds a four-part blueprint (hook → structure → beats → CTA) and exports it as a styled PDF. |
 | **AI Chat** | A chat panel wired to the data you already scraped: analyse a saved brief, drop in up to 50 links at once, ask about a channel, a niche or a single video. |
 | **Monetization checker** | Estimates whether a niche or channel is worth the effort before you commit to it. |
 
@@ -92,24 +92,23 @@ Step-by-step install (30 seconds): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
 
 ### The app itself
 
-- **English and Persian (فارسی)** — full RTL interface, switchable at any time, with Vazir for Persian.
-- **Dark and light themes**, five accent colours, remembered per user.
+- **English interface**, dark and light themes, five accent colours, all remembered per user.
 - **Per-user install, no admin rights, no Python required** — the installer carries the whole runtime.
 - **Everything local** — config, archive and downloads stay on your machine; API keys are entered in Settings and never leave it.
 
 ## Screenshots
 
-| Niche Finder | Downloads |
+| Niche Finder | Video Cutter |
 |---|---|
-| ![Niche Finder](screenshots/dark-niche-fa.png) | ![Downloads](screenshots/dark-downloads-fa.png) |
+| ![Niche Finder](screenshots/niche-finder.png) | ![Video Cutter](screenshots/video-cutter.png) |
 
-| Video Cutter | Content Lab |
+| Content Lab | Settings |
 |---|---|
-| ![Cutter](screenshots/dark-cutter-fa.png) | ![Content Lab](screenshots/dark-contentlab-fa.png) |
+| ![Content Lab](screenshots/content-lab.png) | ![Settings](screenshots/settings.png) |
 
-| Settings | AI Chat |
+| Niche Scan | Scraper |
 |---|---|
-| ![Settings](screenshots/light-ocean-settings-en.png) | ![AI Chat](screenshots/dark-aichat-en.png) |
+| ![Niche Scan](screenshots/niche-scan.png) | ![Scraper](screenshots/scraper.png) |
 
 ## Supported Windows
 
@@ -164,11 +163,10 @@ app/
   qml_backend/            the ViewModels the QML talks to (incl. web_bridge for the extension)
   core/                   the actual logic: YouTube API, niche search, cutter, AI, downloads
   ui/                     icons, fonts, theme helpers
-  locales/fa.py           Persian strings (English text is the lookup key)
 browser-extension/        the Hunter button (Manifest V3: content.js, panel.css, background.js)
-fonts/                    bundled Persian + Latin fonts
+fonts/                    bundled fonts
 assets/                   icons, logo, installer icon (bin/ is not committed)
-docs/                     install, extension, build notes, the Persian changelog, design docs
+docs/                     install, extension, build notes, release notes
 screenshots/              current UI
 tools/                    developer lints (hover-flicker checker, icon art)
 YoutubeScrapper.spec      PyInstaller recipe (also trims ~75 MB of unused Qt)
@@ -187,15 +185,14 @@ installer.iss             Inno Setup script (bundles the app, the extension, the
 
 ## Docs
 
-- [`docs/INSTALL.md`](docs/INSTALL.md) — install, first run, extension setup, troubleshooting (EN + فارسی)
-- [`docs/EXTENSION.md`](docs/EXTENSION.md) — the Hunter button, end to end (EN + فارسی)
-- [`docs/BUILD.md`](docs/BUILD.md) — build and packaging notes (فارسی)
-- [`docs/CHANGES-fa.md`](docs/CHANGES-fa.md) — the full release-by-release changelog (فارسی)
-- [`CHANGELOG.md`](CHANGELOG.md) — English summary, newest first
+- [`docs/INSTALL.md`](docs/INSTALL.md) — install, first run, extension setup, troubleshooting
+- [`docs/EXTENSION.md`](docs/EXTENSION.md) — the Hunter button, end to end
+- [`docs/BUILD.md`](docs/BUILD.md) — build and packaging notes
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
 ## Version
 
-**1.0.0** — the first public release: research, outlier detection, AI briefs, downloads with audio-track selection, a frame-accurate cutter, live activity cards, and the Hunter button inside YouTube.
+**1.0.0** — research, outlier detection, AI briefs, downloads with audio-track selection, a frame-accurate cutter, live activity cards, and the Hunter button inside YouTube.
 
 ## License
 
@@ -203,83 +200,3 @@ Proprietary — © 2026 YouTube Hunter. All rights reserved.
 This repository is published for reference, distribution and support of the app. Redistribution of the compiled application, or of modified versions of it, requires written permission.
 
 Bundled third-party components keep their own licences: `bgutil-pot` is GPL-3.0 (see `assets/bin/bgutil-pot-NOTICE.txt`), and FFmpeg / deno / PySide6 / Qt are distributed under their respective licences inside the installer.
-
----
-
-<div dir="rtl">
-
-## فارسی
-
-**یوتیوب هانتر** یک برنامهٔ دسکتاپ ویندوز برای کسانی است که کانال یوتیوب می‌سازند: یک کانال یا یک کلیدواژه می‌دهی، داده‌ها را می‌گیرد، ویدیوهایی که نسبت به بقیهٔ همان کانال **بیش‌عملکرد** دارند را پیدا می‌کند، از برنده‌ها بریف محتوایی می‌سازد، هرچه لازم داری با کیفیت دلخواه دانلود می‌کند و کلیپ‌ها را می‌برد — بدون ده‌ها تب مرورگر و یک فایل اکسل.
-
-کنارش یک **افزونهٔ کروم/اِج** هم هست که همان پنل دانلود و برش را روی خودِ صفحهٔ یوتیوب می‌آورد و کار را برنامهٔ دسکتاپ در پس‌زمینه انجام می‌دهد.
-
-### نصب
-
-۱. از بخش **[آخرین نسخه](../../releases/latest)** فایل **`YouTubeHunter-Setup.exe`** را دانلود کن.
-۲. اجرا کن. نصب **برای همان کاربر** انجام می‌شود (`%LOCALAPPDATA%\Programs\YouTube Hunter`) — نه رمز ادمین می‌خواهد، نه UAC، و چیزی در `Program Files` نمی‌نویسد.
-۳. برنامه را از منوی Start یا شورتکات دسکتاپ باز کن.
-
-بدون پایتون، بدون pip، بدون Visual C++ و بدون اینترنت هم **نصب و اجرا** می‌شود؛ کل موتور برنامه (~۱۷۰ مگابایت) داخل نصب‌کننده است، از جمله موتور جاوااسکریپت و دستیار PO Token که دانلود یوتیوب لازم دارد.
-
-> **SmartScreen:** نصب‌کننده امضای دیجیتال ندارد، پس ویندوز ممکن است بار اول پیام *«Windows protected your PC»* بدهد: **More info → Run anyway**.
-
-راهنمای کامل (شامل راه‌اندازی اولیه و رفع اشکال): **[docs/INSTALL.md](docs/INSTALL.md)**.
-
-### اجرای اول
-
-برنامه روی صفحهٔ **Scraper** باز می‌شود. برای قابلیت‌های وابسته به یوتیوب به یک **کلید YouTube Data API v3** نیاز داری (رایگان از [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com)) — در **Settings → API** بچسبانش. قابلیت‌های هوش مصنوعی اختیاری‌اند: در **Settings → AI Providers** یک سرویس (Gemini، OpenAI یا هر سرویس سازگار با OpenAI) اضافه کن.
-
-همه‌چیز محلی است: `%APPDATA%\YoutubeScrapperCyber\` کانفیگ، کلیدها و آرشیو SQLite را نگه می‌دارد. حذف برنامه عمداً به داده‌هایت دست نمی‌زند.
-
-### دکمهٔ Hunter روی یوتیوب
-
-افزونهٔ کروم/اِج (Manifest V3) کنار Like/Share یک دکمهٔ **Hunter** اضافه می‌کند (در Shorts هم هست):
-
-- **دانلود** — کیفیت‌های واقعی با حجم واقعی، فرمت ویدیو (MP4 / MKV / WEBM)، فرمت صدا (MP3 / M4A / OPUS / WAV / FLAC) و **ترک صدا** (اصلی یا هر دوبله). ردیف انتخاب‌شده به کپسول زنده تبدیل می‌شود: درصد، سرعت، حجم، زمان باقی‌مانده، مکث/ادامه و در پایان Play / نمایش در پوشه.
-- **برش** — In/Out را روی خط‌کش زوم‌شده بگذار (یا تایم‌کد تایپ کن)، کیفیت یا فقط-صدا را انتخاب کن؛ فقط همان تکه دانلود و بریده می‌شود.
-- **دنبال کردن کار** — پنل را ببند یا تب را عوض کن، **کارت فعالیت زندهٔ** دسکتاپ تا پایان کار ادامه را نشان می‌دهد.
-- **اجرای خودکار برنامه** — اگر برنامه بسته باشد، با کلیک روی Hunter از طریق پروتکل `youtubehunter://` (که نصب‌کننده ثبت می‌کند) کوچک‌شده اجرا می‌شود.
-
-افزونه با یک سرور محلی JSON روی `127.0.0.1:47391` با برنامه حرف می‌زند؛ فقط درخواستی که هم Origin افزونه داشته باشد و هم هدر `X-YTH-Bridge` پذیرفته می‌شود، پس هیچ سایتی نمی‌تواند دانلود شروع کند. با `"browser_bridge": false` در کانفیگ می‌توانی پل را کامل خاموش کنی.
-
-راهنمای نصب افزونه (۳۰ ثانیه): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
-
-### قابلیت‌ها در یک نگاه
-
-- **پژوهش:** اسکرپر کانال و کلیدواژه، تشخیص ویدیوهای Outlier، Niche Finder، آرشیو جستجو در SQLite، بریف کانال (Snapshot Insights) و نمای Dossier.
-- **ساخت:** AI Ideas، Content Lab با خروجی PDF (فارسی/انگلیسی)، چت هوش مصنوعی روی داده‌های خودت (تحلیل بریف، تا ۵۰ لینک یک‌جا)، بررسی monetization.
-- **تولید:** دانلود با انتخاب کیفیت/فرمت/ترک صدا، مکث و ادامه، زیرنویس و تامنیل؛ برش‌زن دقیق با پیش‌نمایش زنده و خروجی ویدیو یا صدا؛ ترنسکریپت با دو موتور؛ کارت فعالیت زنده؛ گارد اتصال که هر دقیقه دسترسی واقعی یوتیوب را چک می‌کند.
-- **خود برنامه:** رابط کامل انگلیسی و فارسی (RTL)، تم تیره/روشن با پنج رنگ اکسنت، نصب بدون ادمین، همه‌چیز محلی.
-
-### ساخت از سورس
-
-پیش‌نیاز: **Python 3.11+ (۶۴ بیتی)** روی ویندوز، و [Inno Setup 6](https://jrsoftware.org/isdl.php) برای ساخت نصب‌کننده.
-
-```bat
-git clone https://github.com/reyzodev/youtube-hunter.git
-cd youtube-hunter
-build.bat
-```
-
-خروجی: `dist\YouTubeHunter\YouTubeHunter.exe` و `Output\YouTubeHunter-Setup.exe`.
-
-سه فایل باینری به‌خاطر حجم در ریپو نیستند و `build.bat` نبودنشان را گزارش می‌دهد: `assets/bin/ffprobe.exe` (~۱۴۵ مگ)، `assets/bin/deno.exe` (~۹۳ مگ) و `assets/bin/bgutil-pot.exe` (~۴۵ مگ، دستیار PO Token که از این نسخه **اجباری** است).
-
-اجرای بدون بیلد:
-
-```bat
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python main_qml.py
-```
-
-### ویندوزهای پشتیبانی‌شده
-
-ویندوز ۱۱ (۶۴ بیتی) ✅ · ویندوز ۱۰ نسخهٔ ۱۸۰۹ یا جدیدتر ✅ · ویندوز ۷/۸.۱ ❌ · ویندوز ۳۲ بیتی ❌ · مک و لینوکس ❌
-
-### مجوز
-
-اختصاصی — © ۲۰۲۶ YouTube Hunter. همهٔ حقوق محفوظ است. این ریپازیتوری برای مرجع، توزیع و پشتیبانی برنامه منتشر شده؛ بازتوزیع نسخهٔ کامپایل‌شده یا نسخه‌های تغییریافته بدون اجازهٔ کتبی مجاز نیست.
-
-</div>

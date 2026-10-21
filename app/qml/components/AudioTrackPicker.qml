@@ -14,7 +14,7 @@ import "../Utils.js" as U
 //   * Download quality picker (columns: 3, header on)
 //
 //   ┌──────────────────────────┐ ┌──────────────────────────┐
-//   │ [EN]  English    ORIGINAL│ │ [AR]  العربية          DUB│
+//   │ [EN]  English    ORIGINAL│ │ [AR]  Arabic           DUB│
 //   │       English · US  ▌▌▌▌ │ │       Arabic · 128 kbps   │
 //   └──────────────────────────┘ └──────────────────────────┘
 //

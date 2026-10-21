@@ -25,7 +25,6 @@ Rectangle {
     signal themeWipeRequested(real cx, real cy, string preference)
     // Same for the language pill: the window covers the app with a veil while
     // every label, the font and the layout direction change together.
-    signal languageRequested(string lang)
     // The help button in this bar restarts the onboarding tour.
     signal tourRequested()
     // v3.36: the "not connected" pill reopens the connection gate. Main.qml
@@ -328,49 +327,6 @@ Rectangle {
                     text: I18n.tr("Notifications")
                 }
 
-            }
-
-            // language pill: shows the language you're IN, switches on click
-            AbstractButton {
-                id: langBtn
-                width: 34; height: 24
-                anchors.verticalCenter: parent.verticalCenter
-                onClicked: root.languageRequested(I18n.lang === "fa" ? "en" : "fa")
-
-                // HoverHandler (not the button's built-in `hovered`): opening
-                // the tooltip Popup makes `hovered` briefly drop, and the
-                // background ColorAnimation replays that as a visible blink.
-                // A HoverHandler tracks the pointer directly and stays steady.
-                HoverHandler { id: langHover; cursorShape: Qt.PointingHandCursor }
-
-                background: Rectangle {
-                    radius: Tokens.radiusSm
-                    // Opaque hover fill — see ThemeSwitch.qml: animating to the
-                    // translucent Theme.hover_bg makes the ColorAnimation pass
-                    // through a half-alpha mid-grey, which reads as a blink.
-                    color: langHover.hovered
-                           ? U.hoverTint(Theme.surface_low, Theme.isDark)
-                           : Theme.surface_low
-                    border.width: 1
-                    border.color: langHover.hovered ? Theme.outline : Theme.border
-                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
-                }
-                contentItem: AppText {
-                    text: I18n.lang === "fa" ? "FA" : "EN"
-                    mono: true
-                    weight: Tokens.weightBold
-                    font.pixelSize: Tokens.fontCaption
-                    color: langHover.hovered ? Theme.text_strong : Theme.on_surface_var
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                AppTooltip {
-                    visible: langHover.hovered
-                    delay: 350
-                    text: I18n.lang === "fa" ? I18n.tr("Switch to English")
-                                             : I18n.tr("Switch to Persian")
-                }
             }
 
             // theme sun/moon switch. The switch doesn't swap the palette
