@@ -76,7 +76,7 @@ Step-by-step install (30 seconds): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
 | | |
 |---|---|
 | **AI Ideas** | Turns an outlier into concrete video ideas with hooks and angles, using your own model provider. |
-| **Content Lab** | Builds a four-part blueprint (hook → structure → beats → CTA) and exports it as a styled PDF. |
+| **Content Lab** | Builds a four-part blueprint (hook → structure → beats → CTA). |
 | **AI Chat** | A chat panel wired to the data you already scraped: analyse a saved brief, drop in up to 50 links at once, ask about a channel, a niche or a single video. |
 | **Monetization checker** | Estimates whether a niche or channel is worth the effort before you commit to it. |
 
