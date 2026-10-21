@@ -55,31 +55,28 @@ RESTRICTED_COUNTRIES = {
     "TM": "Turkmenistan",
 }
 
-# Persian country names for the codes users actually see (their own country
-# and the usual VPN exits). Anything else falls back to the English name.
-_FA_NAMES = {
-    "IR": "ایران", "CN": "چین", "KP": "کره شمالی", "TM": "ترکمنستان",
-    "DE": "آلمان", "NL": "هلند", "US": "آمریکا", "GB": "انگلستان",
-    "FR": "فرانسه", "TR": "ترکیه", "AE": "امارات", "FI": "فنلاند",
-    "SE": "سوئد", "CA": "کانادا", "RU": "روسیه", "AM": "ارمنستان",
-    "GE": "گرجستان", "AZ": "آذربایجان", "IQ": "عراق", "QA": "قطر",
-    "OM": "عمان", "IN": "هند", "JP": "ژاپن", "SG": "سنگاپور",
-    "HK": "هنگ‌کنگ", "CH": "سوئیس", "AT": "اتریش", "IT": "ایتالیا",
-    "ES": "اسپانیا", "PL": "لهستان", "RO": "رومانی", "LT": "لیتوانی",
-    "LV": "لتونی", "EE": "استونی", "UA": "اوکراین", "KZ": "قزاقستان",
-    "AU": "استرالیا", "BG": "بلغارستان", "CZ": "چک", "NO": "نروژ",
-    "DK": "دانمارک", "BE": "بلژیک", "LU": "لوکزامبورگ", "IE": "ایرلند",
-    "PT": "پرتغال", "GR": "یونان", "CY": "قبرس", "SA": "عربستان",
-    "BH": "بحرین", "KW": "کویت", "PK": "پاکستان", "AF": "افغانستان",
-    "KR": "کره جنوبی", "TW": "تایوان", "MY": "مالزی", "TH": "تایلند",
-    "VN": "ویتنام", "BR": "برزیل", "MX": "مکزیک", "AR": "آرژانتین",
-    "HU": "مجارستان", "RS": "صربستان", "MD": "مولداوی", "IL": "اسرائیل",
-}
-
+# Display names for the codes users actually see (their own country and the
+# usual VPN exits). Anything else falls back to the name the geo service
+# returned, then to the bare code.
 _EN_NAMES = {
     "IR": "Iran", "CN": "China", "KP": "North Korea", "TM": "Turkmenistan",
-    "US": "United States", "GB": "United Kingdom", "DE": "Germany",
-    "NL": "Netherlands", "FR": "France", "TR": "Türkiye", "AE": "UAE",
+    "DE": "Germany", "NL": "Netherlands", "US": "United States",
+    "GB": "United Kingdom", "FR": "France", "TR": "Türkiye", "AE": "UAE",
+    "FI": "Finland", "SE": "Sweden", "CA": "Canada", "RU": "Russia",
+    "AM": "Armenia", "GE": "Georgia", "AZ": "Azerbaijan", "IQ": "Iraq",
+    "QA": "Qatar", "OM": "Oman", "IN": "India", "JP": "Japan",
+    "SG": "Singapore", "HK": "Hong Kong SAR", "CH": "Switzerland",
+    "AT": "Austria", "IT": "Italy", "ES": "Spain", "PL": "Poland",
+    "RO": "Romania", "LT": "Lithuania", "LV": "Latvia", "EE": "Estonia",
+    "UA": "Ukraine", "KZ": "Kazakhstan", "AU": "Australia",
+    "BG": "Bulgaria", "CZ": "Czechia", "NO": "Norway", "DK": "Denmark",
+    "BE": "Belgium", "LU": "Luxembourg", "IE": "Ireland", "PT": "Portugal",
+    "GR": "Greece", "CY": "Cyprus", "SA": "Saudi Arabia", "BH": "Bahrain",
+    "KW": "Kuwait", "PK": "Pakistan", "AF": "Afghanistan",
+    "KR": "South Korea", "TW": "Taiwan, China", "MY": "Malaysia",
+    "TH": "Thailand", "VN": "Vietnam", "BR": "Brazil", "MX": "Mexico",
+    "AR": "Argentina", "HU": "Hungary", "RS": "Serbia", "MD": "Moldova",
+    "IL": "Israel",
 }
 
 _TIMEOUT = 4.0          # per endpoint
@@ -88,10 +85,9 @@ _IP_RE = re.compile(r"^[0-9a-fA-F:.]{3,45}$")
 
 
 def country_label(code, name="", lang="en"):
-    """A display name for an ISO code, in the UI language."""
+    """A display name for an ISO code. `lang` is kept for call-site
+    compatibility; the interface is English only."""
     code = (code or "").upper()
-    if lang == "fa" and code in _FA_NAMES:
-        return _FA_NAMES[code]
     return _EN_NAMES.get(code) or (name or "").strip() or code
 
 
