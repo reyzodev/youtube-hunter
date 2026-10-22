@@ -1890,11 +1890,6 @@ Item {
                 C.AppText {
                     Layout.fillWidth: true
                     text: card.row.title
-                    // v1.2: a Persian/Arabic title keeps its own reading
-                    // direction inside the English UI (see Utils.isRtlText).
-                    readonly property bool rtl: U.isRtlText(text)
-                    LayoutMirroring.enabled: false
-                    horizontalAlignment: rtl ? Text.AlignRight : Text.AlignLeft
                     weight: Tokens.weightBold
                     font.pixelSize: Tokens.fontBody
                     color: Theme.text_strong

@@ -1185,12 +1185,6 @@ Item {
                 spacing: 3
                 C.AppText {
                     text: st.g.title || "—"
-                    // v1.2: a section named in Persian keeps its own reading
-                    // direction (see Utils.isRtlText); the English UI around it
-                    // stays left-to-right.
-                    readonly property bool rtl: U.isRtlText(text)
-                    LayoutMirroring.enabled: false
-                    horizontalAlignment: rtl ? Text.AlignRight : Text.AlignLeft
                     weight: Tokens.weightExtraBold
                     font.pixelSize: Tokens.fontSubtitle + 3
                     color: st.hot ? Theme.primary : Theme.text_strong

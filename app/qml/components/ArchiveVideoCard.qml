@@ -588,19 +588,6 @@ C.GlassPanel {
             C.AppText {
                 id: titleText
                 text: row.title || ""
-                // v1.2 — a Persian/Arabic title keeps its OWN reading direction
-                // even though the interface is English. AppText defaults to
-                // Text.AlignLeft, which pins the block to the left edge, so a
-                // right-to-left sentence hung off the wrong side of its own
-                // card and its closing punctuation ended up in front of it.
-                // LayoutMirroring is switched off here so the enum stays
-                // absolute (AlignRight is the visual right) no matter what the
-                // UI language does later. Qt 6 has no Text.direction, so the
-                // bidi base stays "natural" (first strong character) — which is
-                // already right for these titles; only the block was misplaced.
-                readonly property bool rtl: U.isRtlText(text)
-                LayoutMirroring.enabled: false
-                horizontalAlignment: rtl ? Text.AlignRight : Text.AlignLeft
                 weight: Tokens.weightDemiBold
                 font.pixelSize: Tokens.fontLabel
                 color: titleHover.containsMouse ? Theme.primary : Theme.text_strong

@@ -555,12 +555,6 @@ Window {
 
                         C.AppText {
                             text: lw.job.title || ""
-                            // v1.2: the card follows the title's own direction,
-                            // so a Persian video name reads right-to-left on a
-                            // card that is otherwise an English notification.
-                            readonly property bool rtl: U.isRtlText(text)
-                            LayoutMirroring.enabled: false
-                            horizontalAlignment: rtl ? Text.AlignRight : Text.AlignLeft
                             color: Theme.text_strong
                             weight: Tokens.weightBold
                             font.pixelSize: Tokens.fontLabel - 1

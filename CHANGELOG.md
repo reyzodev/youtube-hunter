@@ -49,9 +49,6 @@ stranded on a page that no longer exists.
   projection, and when the Join button settles the verdict on its own it explains why the
   estimate underneath can still sit below the bar. Notes are also no longer counted as
   signals in the "2 of 6 found" line.
-- A Persian or Arabic video title is set right-to-left inside the English UI (video cards,
-  section tiles, download cards, desktop cards). AppText's default left alignment used to pin
-  the block to the wrong edge, so the sentence hung off the far side of its own card.
 
 **Support window — the Donate pill opens the page inside the app.** No more throwing the
 user out to a browser tab: a single card over the blurred app, with the donation page live
