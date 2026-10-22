@@ -155,6 +155,13 @@ def main():
     # QtMultimedia software-decode fallback (same rationale as main.py): must
     # be set before anything touches Qt/QtMultimedia.
     os.environ.setdefault("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", "")
+    # Support window: Chromium's own net-stack logging (e.g. "ssl_client_socket
+    # handshake failed ... net_error -100" when a tracker/CDN on the donation
+    # page is filtered) goes straight to stderr and is harmless. Keep only
+    # FATAL. Appended, so flags already set in the environment are kept.
+    _cf = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if "--log-level" not in _cf:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (_cf + " --log-level=3").strip()
 
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -179,6 +186,18 @@ def main():
     # stops printing them instead of dumping ~200 scary-looking lines that
     # mean nothing. Identical messages during a live session still show.
     app.aboutToQuit.connect(note_shutting_down)
+
+    # ── the in-app donation page (Support window) ──────────────────────
+    # DonateOverlay hosts a live WebEngineView, and QtWebEngine has to be
+    # initialised before the QML engine exists. It also runs its own Chromium
+    # process tree, so the whole thing is optional: if the module is missing
+    # (a trimmed build) the Donate pill simply opens the page in the browser.
+    try:
+        from PySide6.QtWebEngineQuick import QtWebEngineQuick
+        QtWebEngineQuick.initialize()
+    except Exception as _exc:                    # noqa: BLE001 — optional
+        log_crash("QtWebEngine unavailable, Donate falls back to the "
+                  "browser: " + str(_exc))
 
     cfg = load_app_config()
     # The interface is English only; a "language" value left in an older config

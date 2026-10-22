@@ -1063,6 +1063,24 @@ Window {
     // stack on a first launch.
     C.GeoGateDialog { id: geoDialog }
 
+    // ── support / donation ─────────────────────────────────────────────
+    // The rail's Donate pill opens this: the real donation page, live inside
+    // the app (QtWebEngine), framed by a quiet card. The address comes from
+    // App.donateUrl — DONATE_URL in app/constants.py, or `donate_url` in
+    // config.json.
+    C.DonateOverlay { id: donateOverlay }
+    Connections {
+        target: App
+        function onDonateRequested() {
+            // If the overlay could not be created at all — a build where
+            // QtWebEngine is missing — `donateOverlay` is null, and doing
+            // nothing here is exactly the dead button this feature replaced.
+            // Fall back to the browser instead.
+            if (donateOverlay) donateOverlay.present()
+            else App.openDonateExternal()
+        }
+    }
+
     // v3.40: "away notices". When a job finishes while the user is in another
     // app, a premium toast slides into the bottom-right corner of the screen.
     // The host owns no pixels here: every card is its own non-activating
@@ -1092,11 +1110,20 @@ Window {
         }
     }
     property bool _geoStartupPending: false
+    // The internet dropped while the Support card is open: the gate still
+    // opens (it is the app's answer to "no connection"), but BEHIND the card —
+    // DonateOverlay sits at a higher z — and the keyboard stays with the card,
+    // so Esc closes the card first and then the gate is simply there. The card
+    // shows its own calm "You're offline" state and reloads by itself.
+    function _presentGateBehindDonate() {
+        geoDialog.presentStartup()
+        if (donateOverlay && donateOverlay.opened) donateOverlay.forceActiveFocus()
+    }
     Connections {
         target: Geo
         function onStartupWarning() {
             if (tour.running || geoDialog.opened) win._geoStartupPending = true
-            else geoDialog.presentStartup()
+            else win._presentGateBehindDonate()
         }
         function onGateBlocked(purpose) {
             if (purpose === "scrape") geoDialog.presentScrape()
@@ -1107,7 +1134,7 @@ Window {
         // again, not only at launch.
         function onConnectionLost(reason) {
             if (tour.running || geoDialog.opened) win._geoStartupPending = true
-            else geoDialog.presentStartup()
+            else win._presentGateBehindDonate()
         }
         // …and it came back: the open gate steps aside on its own.
         function onConnectionRestored() {

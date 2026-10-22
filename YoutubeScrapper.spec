@@ -76,6 +76,9 @@ hiddenimports += collect_submodules("googleapiclient")
 hiddenimports += collect_submodules("google")
 hiddenimports += collect_submodules("app.qml_backend")
 hiddenimports += [
+    # The Support window hosts a WebEngineView (QML). The import sits in a
+    # try/except in main_qml.py, so list it explicitly.
+    "PySide6.QtWebEngineQuick",
     "app.qml_backend.win_taskbar",
     "app.qml_backend.desktop_notifier",
     "winsound",            # v3.40 away-notice chime (stdlib, Windows only)
@@ -102,7 +105,7 @@ a = Analysis(
     # Trim heavy stuff we never use to keep the build small and clean.
     excludes=[
         "tkinter", "matplotlib", "numpy", "pandas", "scipy",
-        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineWidgets",
         "PySide6.Qt3DCore", "PySide6.QtDataVisualization",
         "PySide6.QtCharts", "PySide6.QtQuick3D", "PySide6.QtBluetooth",
     ],
@@ -112,19 +115,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# ── trim: Chromium ──────────────────────────────────────────────────────
-# PySide6's Qt hook drags Qt6WebEngineCore.dll into the bundle — 195 MB, by far
-# the single biggest file in the build — because the QtWebEngine QML modules
-# declare it as a dependency. This app never touches WebEngine: no QML file
-# imports QtWebEngine, and the Python side lists PySide6.QtWebEngine* in
-# `excludes` above. But `excludes` only drops PYTHON modules; a DLL that the Qt
-# hook decided to collect has to be filtered out of the tables after Analysis.
-#
-# Removing it takes the onedir build from ~790 MB to ~590 MB.
-_WEBENGINE_TAGS = ("webengine", "qtwebview")
-def _is_webengine(name):
-    low = str(name).replace("\\", "/").lower()
-    return any(tag in low for tag in _WEBENGINE_TAGS)
+# ── Chromium is part of the build now ──────────────────────────────────
+# Since 1.0.0 the Support window (DonateOverlay.qml) hosts a live WebEngineView,
+# so QtWebEngineCore.dll (~195 MB) and its resources stay in the bundle. They
+# used to be filtered out right here because nothing imported them; keeping that
+# trim in place would produce a build whose Donate pill silently fell back to
+# the browser. Nothing to do below — just don't re-add the filter.
 
 # ── trim: the other 599 Google API descriptions ────────────────────────
 # _pyinstaller_hooks_contrib's hook-googleapiclient.model.py does
@@ -145,15 +141,11 @@ def _is_dead_discovery_doc(entry):
         return False
     return not src.endswith("/youtube.v3.json")
 
-_kept_binaries = [b for b in a.binaries if not _is_webengine(b[0])]
-_kept_datas = [d for d in a.datas
-               if not _is_webengine(d[0]) and not _is_dead_discovery_doc(d)]
-_dropped_webengine = len(a.binaries) - len(_kept_binaries), len(a.datas) - len(_kept_datas)
-_dropped_docs = sum(1 for d in a.datas if _is_dead_discovery_doc(d))
-print("trimmed WebEngine: dropped {} binaries and {} data files".format(*_dropped_webengine))
-print("trimmed discovery docs: {} data files dropped".format(_dropped_docs))
-a.binaries = _kept_binaries
+_kept_datas = [d for d in a.datas if not _is_dead_discovery_doc(d)]
+_dropped_docs = len(a.datas) - len(_kept_datas)
 a.datas = _kept_datas
+print("trimmed discovery docs: {} data files dropped".format(_dropped_docs))
+
 
 # ── Qt Multimedia backend plugins (v3.40.2) ─────────────────────────────
 # Video playback lives entirely in QML (pages/CutterPage.qml →
@@ -175,6 +167,25 @@ for _lib in ("avcodec", "avformat", "avutil", "swresample", "swscale"):
         _ffmpeg_dlls.append(_dll)
 print("added multimedia backends: {} plugin(s), {} ffmpeg dll(s)".format(
     len(_mm_plugins), len(_ffmpeg_dlls)))
+
+# ── QtWebEngine's own dependencies (1.0.1) ──────────────────────────────
+# The Support window loads its QML plugin at RUNTIME (nothing imports it from
+# Python), so PyInstaller never walked its siblings' imports. Measured chain:
+#   qtwebenginequickplugin.dll -> Qt6WebEngineQuick.dll
+#   Qt6WebEngineQuick.dll      -> Qt6WebChannelQuick.dll -> Qt6WebChannel.dll
+#   Qt6WebEngineCore.dll       -> Qt6Positioning.dll
+# Without them the plugin fails with "The specified module could not be found"
+# and the whole QML engine refuses to load Main.qml — the packaged app does not
+# start at all (it never happens when running from source, where every DLL is
+# on disk). Collect them by hand, the same way as the multimedia backends.
+_have_bins = {os.path.basename(str(b[0])).lower() for b in a.binaries}
+for _dep in ("Qt6WebChannel", "Qt6WebChannelQuick",
+             "Qt6Positioning", "Qt6PositioningQuick"):
+    _dll = _dep + ".dll"
+    _src = os.path.join(_PYSIDE_DIR, _dll)
+    if os.path.exists(_src) and _dll.lower() not in _have_bins:
+        a.binaries.append(("PySide6/" + _dll, _src, "BINARY"))
+        print("added WebEngine dependency:", _dll)
 
 # ── trim: Qt modules this app can never load ────────────────────────────
 # PySide6's Qt hook collects every Qt module it can see, not the ones the app
@@ -198,10 +209,14 @@ _DEAD_QT_DLL_PREFIXES = (
     "qt63d",                     # Qt 3D — Animation/Core/Extras/Input/Logic/Quick/Render
     "qt6charts", "qt6datavisualization", "qt6graphs",
     "qt6pdf",
-    "qt6location", "qt6positioning",
+    "qt6location",
+    # qt6positioning / qt6webchannel are NOT dead since 1.0.1: the Support
+    # window's WebEngine links Qt6Positioning.dll and Qt6WebChannel(Quick).dll.
+    # Trimming them made the QML plugin fail to load with "The specified
+    # module could not be found" and the app came up without Main.qml.
     "qt6remoteobjects", "qt6scxml", "qt6sensors", "qt6statemachine",
     "qt6texttospeech", "qt6virtualkeyboard",
-    "qt6webchannel", "qt6websockets", "qt6webview",
+    "qt6websockets", "qt6webview",
     "qt6test", "qt6concurrent",
     "qt6quick3d", "qt6quickparticles", "qt6quicktest", "qt6quicktimeline",
     "qt6quickshapesdesignhelpers", "qt6spatialaudio",

@@ -97,6 +97,9 @@ Item {
 
     onVisibleChanged: {
         if (visible) {
+            // first hover inside a popup: this is where the tip finally finds
+            // the window's overlay (see _adopt)
+            root._adopt()
             // Place it BEFORE the delay elapses, so the tip is already in the
             // right spot on the frame it fades in instead of jumping there.
             root._reposition()
@@ -199,15 +202,34 @@ Item {
     // every scrolling page). `z` then lifts the tip above the page and above any
     // popup in the overlay, so a tip on a player button draws over the player's
     // own card rather than behind it.
-    Component.onCompleted: {
-        root.anchor = root.parent
+    //
+    // This has to be re-done LAZILY, not only at completion. A tip declared
+    // inside a Popup (the Support card, every dialog with its own controls) is
+    // built while the popup is still closed — its contentItem is not in the
+    // window yet, so `Overlay.overlay` and `Window.window` are both null and
+    // there is nothing to reparent onto. The tip then stayed a CHILD of its
+    // button: drawn under the popup's own content (the web view, the panels),
+    // clipped by the card, and positioned in the button's coordinate space. That
+    // is the "tooltips don't show right" bug. `_adopt()` runs again on every
+    // show, so the first hover after the popup opens puts the tip where it
+    // belongs.
+    function _adopt() {
+        if (!root.anchor) return
         let host = null
         try { host = Overlay.overlay } catch (e) { host = null }
         if (!host) {
             const w = root.Window.window
             host = w ? w.contentItem : null
         }
-        if (host) root.parent = host
+        if (host && root.parent !== host) {
+            root.parent = host
+            root._reposition()
+        }
+    }
+
+    Component.onCompleted: {
+        root.anchor = root.parent
+        root._adopt()
         root._reposition()
         // A tip declared already-visible (the first hover can land before this
         // object finishes completing) never sees a visible CHANGED signal, so

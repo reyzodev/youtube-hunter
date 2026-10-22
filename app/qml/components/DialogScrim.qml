@@ -85,12 +85,20 @@ Item {
         NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic }
     }
 
+    // Set by a dialog whose backdrop does not need to follow the app behind it.
+    // `live: true` re-renders the captured window into a texture EVERY frame,
+    // which is the single most expensive thing on screen while a heavy dialog is
+    // open. At the Support card's 18 px blur + 0.58 dim, a frozen frame is
+    // indistinguishable from a live one, and the app behind it is not the thing
+    // the user is looking at — so that card asks for a still.
+    property bool frozen: false
+
     ShaderEffectSource {
         id: snapshot
         anchors.fill: parent
         sourceItem: root._src
         sourceRect: root.sourceRect
-        live: root.onScreen
+        live: root.onScreen && !root.frozen
         hideSource: false
         recursive: false
         visible: root._src !== null

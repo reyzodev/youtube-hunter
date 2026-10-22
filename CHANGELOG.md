@@ -7,6 +7,76 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## 1.0.1 — 2026-10-21
+
+**Support window: the Donate pill opens the page inside the app.** No more throwing the user out
+to a browser tab — a single card over the blurred app, with the donation page live inside it
+(QtWebEngine), so picking an amount, filling the form and paying all happen without leaving
+YouTube Hunter.
+
+- Header with the brand mark, the page's host, Back (once you have navigated), Reload, Open in
+  browser and Close. A loader covers the first load instead of a blank rectangle, and a failed
+  load offers Try again / Open in browser rather than dying silently.
+- The page frame is sized so the whole form fits on a maximised window; the header chip and the
+  footer lock line make it obvious whose page you are on.
+- Payment gateway pop-ups (`window.open`) are taken over by the same view instead of being
+  swallowed.
+- The address is one line: `DONATE_URL` in `app/constants.py`, overridable per install with
+  `donate_url` in `config.json`.
+- The build now keeps QtWebEngine (`QtWebEngineCore.dll`, ~195 MB) in the bundle, and the
+  Google API discovery-cache trim that used to live beside the WebEngine trim is back.
+
+**Premium pass.**
+
+- Arrival: the card rises and settles with a slight overshoot, then an accent halo blooms from
+  behind its top edge and keeps breathing while it is open; leaving is quicker and quieter.
+- The card is a lit object: soft drop shadow, accent-warm rim fading to a hairline, faint accent
+  wash from the top, specular top line.
+- Header: beating-heart glass tile (races on hover), bolder title, a live security chip (lock +
+  Secure / Not secure + the host the view is on right now), Back / Reload / Open grouped in one
+  pill (Reload spins while loading), separate Close.
+- A thin load beam under the header shows progress for gateway steps after the first load.
+- Keyboard: Ctrl+R / F5 reload, Alt+Left back, Esc close; keycap hints in the footer.
+
+**Loading + offline.**
+
+- New loader, "Heartline" (`components/DonateLoader.qml`): the brand mark assembles, then beats
+  lub-dub with echo rings; a ring around it fills with the page's real load progress (with an
+  honest trickle so it never looks frozen), a comet orbits on the render thread, two accent
+  glows drift behind, and the status line follows the stage of the load. It blooms out when the
+  page lands.
+- Internet drops while the card is open: the "Signal lost" gate now opens **behind** the card
+  (card `z: 50`, keyboard stays with the card) instead of covering the donation page.
+- Chromium's own error page is disabled inside the card, and the failure panel is opaque, so a
+  browser error never bleeds through. Offline gets its own state ("You're offline" + waiting chip)
+  that reloads the page by itself once the connection is back (Geo restore or a small HEAD probe).
+- The app behind the card now actually blurs (18 px, deeper dim). The card had `dim: false`,
+  which stopped Qt from ever creating its DialogScrim, so there was no blur or dim at all.
+- Log noise from the donation page is muted: its JS console messages (Next.js preload warnings)
+  are swallowed, and Chromium's own net logging runs at `--log-level=3`.
+- Aborted loads (`-3`, e.g. Reload replacing a load) no longer flash the failure panel.
+
+**Fixes.**
+
+- **Esc closes the card.** `closePolicy: CloseOnEscape` was the whole bug: on this Qt build the
+  popup item answers the key's shortcut-override and then never acts on the press, so the key was
+  swallowed in every focus state (reproduced with a bare `Popup`). The card now uses
+  `NoAutoClose` plus an explicit window-level `Shortcut`, which is dispatched before the focused
+  item — it works with the card focused and after clicking into the page.
+- **Tooltips inside the card show in the right place.** A tip declared inside a Popup is built
+  while the popup is closed, when there is no window overlay to reparent onto, so it stayed a
+  child of its button: drawn under the card's own content, clipped, and positioned in the wrong
+  coordinate space. `AppTooltip` now adopts the window overlay lazily on first show.
+- **Only `mailto:` and `tel:` are handed to the OS.** A page can no longer make the app launch an
+  arbitrary scheme handler (`file:`, `smb:`, a custom protocol) through a link or a pop-up;
+  everything that is not a web page and not one of those two is dropped.
+- **The backdrop is frozen while the card is open** (`DialogScrim.frozen`). `live: true`
+  re-rendered the whole window into a texture every frame, and at 18 px of blur the difference is
+  invisible; this was the heaviest thing on screen during a donation.
+- **The donation address is not published in this tree.** `DONATE_URL` ships empty and the Donate
+  pill hides itself while it is empty, so the app never shows a button that goes nowhere. Set the
+  constant, or `donate_url` in `config.json`, to turn it on.
+
 ## 1.0.0 — 2026-10-21  *(internal: 3.51)*
 
 First public release. One Windows app that does the whole loop — research a channel, find the

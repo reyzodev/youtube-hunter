@@ -7,7 +7,27 @@
 # Single source of truth: the sidebar footer shows it and the build stamps it
 # onto the .exe. installer.iss carries its own copy (Inno Setup cannot read a
 # Python constant) — keep the two in step when bumping.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  SUPPORT / DONATION PAGE
+# ═════════════════════════════════════════════════════════════════════════
+# The Donate pill in the sidebar opens this address inside the app (the
+# Support window hosts a live web view).
+#
+# EMPTY ON PURPOSE in this source tree: no donation address is published with
+# the project. While this is "", `App.donateUrl` is "" and the Donate pill is
+# hidden — the app never shows a button that goes nowhere.
+#
+# Two ways to turn it on:
+#   1. put your page here and rebuild, or
+#   2. leave this empty and put the address in the per-install config
+#        "donate_url": "https://your-page.example"
+#      in %APPDATA%\YoutubeScrapperCyber\config.json — a value there wins, and
+#      no rebuild is needed.
+# Only http(s) is accepted; anything else is ignored.
+DONATE_URL = ""
 
 
 # ═════════════════════════════════════════════════════════════════════════

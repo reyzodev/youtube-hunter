@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Property, QPointF, QTimer, Signal, Slot
 from PySide6.QtGui import QCursor
 
 from app.config import load_app_config, save_app_config
-from app.constants import APP_VERSION
+from app.constants import APP_VERSION, DONATE_URL
 from app.core.quota import (add_quota_listener, api_quota_capacity,
                             api_quota_remaining)
 from app.crash import log_crash
@@ -68,6 +68,7 @@ class AppController(QObject):
     # Emitted after the UI language changes, so every ViewModel holding
     # translated strings can rebuild them.
     languageRetranslate = Signal()
+    donateRequested = Signal()      # the Donate pill: open the Support window
 
     def __init__(self, theme_bridge, i18n_bridge, font_bridge, parent=None):
         super().__init__(parent)
@@ -169,19 +170,32 @@ class AppController(QObject):
     # never happen.
     @Property(str, constant=True)
     def donateUrl(self):
+        """The support page the Donate pill opens.
+
+        Precedence: `donate_url` in config.json (per-install override) →
+        DONATE_URL in app/constants.py (the shipped default). http(s) only:
+        config.json is a plain file on disk, so a tampered value must never be
+        able to hand the web view a file:// path or a custom protocol.
+        """
+        url = ""
         try:
             url = str(load_app_config().get("donate_url") or "").strip()
         except Exception:                # noqa: BLE001 — never break the rail
-            return ""
-        # http(s) only. config.json is a plain file on disk, so a tampered
-        # value must never be able to hand the shell a file:// path or a
-        # custom protocol handler.
+            url = ""
+        if not url:
+            url = DONATE_URL
         return url if url.lower().startswith(("http://", "https://")) else ""
 
     @Slot()
     def openDonate(self):
-        """Open the support link in the default browser — the only thing the
-        pill does (no in-app payment, no shell)."""
+        """The Donate pill: ask the shell to open the in-app Support window."""
+        if not self.donateUrl:
+            return
+        self.donateRequested.emit()
+
+    @Slot()
+    def openDonateExternal(self):
+        """Fallback / "open in browser" — the same page in the user's browser."""
         url = self.donateUrl
         if not url:
             return

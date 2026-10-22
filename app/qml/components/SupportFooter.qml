@@ -13,9 +13,10 @@ import "../Utils.js" as U
 // hover Donate and the cup steams, a sheen crosses the pill and the heart
 // races with it, so the two read as one gesture.
 //
-// v3.52 — the pill is wired to App.openDonate(), which opens the support link
-// from config.json's `donate_url` in the browser. Until that key is filled in
-// the click is a no-op, so the link is the one thing left to set.
+// v3.52 — the pill is wired to App.openDonate(), which asks the shell to open
+// the in-app Support window (components/DonateOverlay.qml) on the page named by
+// `donate_url` in config.json, or DONATE_URL in app/constants.py when that key
+// is empty. "Open in browser" in that window is the only path to the OS browser.
 Item {
     id: root
     property bool collapsed: false
@@ -25,13 +26,17 @@ Item {
     readonly property color hot: U.mix(Theme.primary, "#FF6FA5", 0.55)
     readonly property color deep: Theme.primary
     readonly property bool _lineHot: lineHover.hovered || donate.hot
+    // No support link, no pill. `App.donateUrl` is empty when neither
+    // DONATE_URL in app/constants.py nor `donate_url` in config.json is set,
+    // and a Donate button that does nothing is worse than no button.
+    readonly property bool hasLink: donateUrl !== ""
 
     implicitHeight: 34
     height: 34
     // v1.1.4: the line reserves the room it really needs, so the rail's
     // layout can never squeeze the pill narrower than its own content
-    implicitWidth: root.collapsed ? 34 + 8
-                                  : sig.implicitWidth + 12 + donate.width + 8
+    implicitWidth: root.collapsed ? (root.hasLink ? 34 + 8 : 0)
+                                  : sig.implicitWidth + (root.hasLink ? 12 + donate.width + 8 : 0)
 
     HoverHandler { id: lineHover }
 
@@ -66,6 +71,7 @@ Item {
     Rectangle {
         id: donate
         readonly property bool hot: donateArea.containsMouse
+        visible: root.hasLink
         anchors.verticalCenter: parent.verticalCenter
         anchors.right: root.collapsed ? undefined : parent.right
         // room for the 1.03 hover scale + the 4 px bloom, so nothing is
