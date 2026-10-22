@@ -7,7 +7,7 @@
 # Single source of truth: the sidebar footer shows it and the build stamps it
 # onto the .exe. installer.iss carries its own copy (Inno Setup cannot read a
 # Python constant) — keep the two in step when bumping.
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.0"
 
 
 # ═════════════════════════════════════════════════════════════════════════

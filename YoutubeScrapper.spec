@@ -168,7 +168,7 @@ for _lib in ("avcodec", "avformat", "avutil", "swresample", "swscale"):
 print("added multimedia backends: {} plugin(s), {} ffmpeg dll(s)".format(
     len(_mm_plugins), len(_ffmpeg_dlls)))
 
-# ── QtWebEngine's own dependencies (1.0.1) ──────────────────────────────
+# ── QtWebEngine's own dependencies ──────────────────────────────
 # The Support window loads its QML plugin at RUNTIME (nothing imports it from
 # Python), so PyInstaller never walked its siblings' imports. Measured chain:
 #   qtwebenginequickplugin.dll -> Qt6WebEngineQuick.dll
@@ -210,7 +210,7 @@ _DEAD_QT_DLL_PREFIXES = (
     "qt6charts", "qt6datavisualization", "qt6graphs",
     "qt6pdf",
     "qt6location",
-    # qt6positioning / qt6webchannel are NOT dead since 1.0.1: the Support
+    # qt6positioning / qt6webchannel are NOT dead: the Support
     # window's WebEngine links Qt6Positioning.dll and Qt6WebChannel(Quick).dll.
     # Trimming them made the QML plugin fail to load with "The specified
     # module could not be found" and the app came up without Main.qml.

@@ -96,7 +96,7 @@ if not exist "dist\YouTubeHunter\_internal\assets\bin\deno.exe" (echo MISSING: b
 if not exist "dist\YouTubeHunter\_internal\assets\bin\bgutil-pot.exe" (echo MISSING: bundled PO Token helper ^(bgutil-pot^) & pause & exit /b 1)
 if not exist "dist\YouTubeHunter\_internal\fonts" (echo MISSING: bundled fonts & pause & exit /b 1)
 if not exist "dist\YouTubeHunter\_internal\googleapiclient\discovery_cache\documents\youtube.v3.json" (echo MISSING: YouTube discovery document & pause & exit /b 1)
-REM Chromium MUST be in the build since 1.0.1: the Support (donate) window hosts a
+REM Chromium MUST be in the build (the Support window hosts a real WebEngineView): the Support (donate) window hosts a
 REM real WebEngineView. If it is missing the Donate pill silently falls back to the
 REM system browser, which is exactly the bug this check exists to catch.
 if not exist "dist\YouTubeHunter\_internal\PySide6\Qt6WebEngineCore.dll" (echo MISSING: Qt6WebEngineCore.dll ^(the Support window needs it^) & pause & exit /b 1)

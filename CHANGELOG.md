@@ -7,12 +7,16 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
-## 1.0.1 — 2026-10-21
+## 1.0.0 — 2026-10-21  *(internal: 3.51)*
 
-**Support window: the Donate pill opens the page inside the app.** No more throwing the user out
-to a browser tab — a single card over the blurred app, with the donation page live inside it
-(QtWebEngine), so picking an amount, filling the form and paying all happen without leaving
-YouTube Hunter.
+First public release. One Windows app that does the whole loop — research a channel, find the
+outliers, write the brief, download the video, cut the clip — plus a **Hunter button inside
+YouTube** that does the last two from the browser.
+
+**Support window — the Donate pill opens the page inside the app.** No more throwing the
+user out to a browser tab: a single card over the blurred app, with the donation page live
+inside it (QtWebEngine), so picking an amount, filling the form and paying all happen
+without leaving YouTube Hunter.
 
 - Header with the brand mark, the page's host, Back (once you have navigated), Reload, Open in
   browser and Close. A loader covers the first load instead of a blank rectangle, and a failed
@@ -77,11 +81,6 @@ YouTube Hunter.
   pill hides itself while it is empty, so the app never shows a button that goes nowhere. Set the
   constant, or `donate_url` in `config.json`, to turn it on.
 
-## 1.0.0 — 2026-10-21  *(internal: 3.51)*
-
-First public release. One Windows app that does the whole loop — research a channel, find the
-outliers, write the brief, download the video, cut the clip — plus a **Hunter button inside
-YouTube** that does the last two from the browser.
 
 **Research**
 - Channel and keyword scraper with quota-aware pacing, depth control, sorting and continuation.
