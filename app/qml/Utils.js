@@ -83,3 +83,29 @@ function ageHue(i, isDark) {
     var set = isDark ? _AGE_DARK : _AGE_LIGHT
     return set[Math.max(0, Math.min(set.length - 1, i))]
 }
+
+// ── text direction ────────────────────────────────────────────────────────
+// v1.2 — a Persian/Arabic video title inside an English UI.
+//
+// The interface language is English, so I18n.rtl is false and every label is
+// left-aligned. A title like "۳ بار نزدیک بود گوشیمو خفه کنن!" then renders
+// flush-left with its punctuation on the wrong side: the glyphs are shaped
+// right-to-left but the BLOCK is left, and the browser-bidi result reads as a
+// sentence with its full stop in front. This decides the block direction from
+// the text itself, so one card can be RTL while the app around it is not.
+//
+// First strong character wins, the way the Unicode bidi algorithm does it:
+// digits, spaces, punctuation, emoji and Latin-1 symbols are all neutral here,
+// so "1.7× ۳ بار نزدیک…" and "🔥 Persian title" still land on RTL, while
+// "Speed vs. ادیت" stays LTR because 'S' comes first.
+var _RTL_STRONG = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/
+var _LTR_STRONG = /[A-Za-z\u00C0-\u024F\u0370-\u058F\u0900-\u1FFF\u2C00-\uD7FF]/
+function isRtlText(text) {
+    var s = String(text === undefined || text === null ? "" : text)
+    for (var i = 0; i < s.length; i++) {
+        var ch = s.charAt(i)
+        if (_RTL_STRONG.test(ch)) return true
+        if (_LTR_STRONG.test(ch)) return false
+    }
+    return false
+}

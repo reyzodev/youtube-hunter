@@ -135,6 +135,7 @@ Window {
                 topRightRadius: shell.radius
                 onThemeWipeRequested: (cx, cy, preference) => win.startThemeWipe(cx, cy, preference)
                 onTourRequested: tour.start()
+                onUpdateRequested: updateDialog.present()
                 // v3.36: the "not connected" pill reopens the connection gate
                 gateOpen: geoDialog.visible
                 onConnectionRequested: geoDialog.presentStartup()
@@ -1107,6 +1108,14 @@ Window {
     // onboarding tour or the connection gate (it waits for them). Settings →
     // Browser extension → "Set up" opens it any time.
     C.ExtensionSetupDialog { id: extSetupDialog }
+
+    // v1.1: in-app update (GitHub Releases). Opened from the title-bar button
+    // or from the "update available" notification.
+    C.UpdateDialog { id: updateDialog }
+    Connections {
+        target: Updater
+        function onOpenRequested() { updateDialog.present() }
+    }
     Connections {
         target: ExtensionSetup
         function onOpenRequested() { extSetupDialog.present() }

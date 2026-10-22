@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Shapes
 import NicheScope
 import "../Utils.js" as U
 
@@ -27,6 +28,8 @@ Rectangle {
     // every label, the font and the layout direction change together.
     // The help button in this bar restarts the onboarding tour.
     signal tourRequested()
+    // v1.1: the update button asks the shell to open the update dialog.
+    signal updateRequested()
     // v3.36: the "not connected" pill reopens the connection gate. Main.qml
     // owns the gate and tells the bar when it is already on screen.
     signal connectionRequested()
@@ -266,6 +269,79 @@ Rectangle {
                 AppTooltip {
                     visible: helpHover.hovered
                     text: I18n.tr("Show the guided tour")
+                }
+            }
+
+            // ── update button (v1.1) ──
+            // Appears beside Help only when GitHub has a newer release. It
+            // breathes while an update waits, draws the download as a ring
+            // while it runs, and turns into "restart" once it is ready.
+            AbstractButton {
+                id: updBtn
+                visible: Updater.hasUpdate
+                width: 30; height: 30
+                anchors.verticalCenter: parent.verticalCenter
+                scale: pressed ? 0.92 : 1.0
+                Behavior on scale { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
+                onClicked: root.updateRequested()
+                HoverHandler { id: updHover; cursorShape: Qt.PointingHandCursor }
+
+                readonly property bool busy: Updater.state === "downloading"
+                readonly property bool ready: Updater.state === "ready" || Updater.state === "installing"
+                readonly property color tint: ready ? Theme.secondary_container : Theme.primary
+
+                background: Item {
+                    // breathing halo
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 30; height: 30; radius: 15
+                        color: U.withAlpha(updBtn.tint, 0.16)
+                        SequentialAnimation on scale {
+                            running: updBtn.visible && !updBtn.busy && Tokens.appActive
+                            loops: Animation.Infinite
+                            NumberAnimation { from: 0.82; to: 1.12; duration: 1100; easing.type: Easing.InOutSine }
+                            NumberAnimation { from: 1.12; to: 0.82; duration: 1100; easing.type: Easing.InOutSine }
+                        }
+                        opacity: updHover.hovered ? 1 : 0.85
+                    }
+                    // progress arc while downloading
+                    Shape {
+                        anchors.fill: parent
+                        visible: updBtn.busy
+                        preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            strokeColor: U.withAlpha(Theme.primary, 0.22); strokeWidth: 2.4
+                            fillColor: "transparent"; capStyle: ShapePath.RoundCap
+                            PathAngleArc { centerX: 15; centerY: 15; radiusX: 13; radiusY: 13; startAngle: 0; sweepAngle: 360 }
+                        }
+                        ShapePath {
+                            strokeColor: Theme.primary; strokeWidth: 2.4
+                            fillColor: "transparent"; capStyle: ShapePath.RoundCap
+                            PathAngleArc { centerX: 15; centerY: 15; radiusX: 13; radiusY: 13; startAngle: -90
+                                           sweepAngle: 360 * Math.max(0.02, Updater.progress) }
+                        }
+                    }
+                }
+                contentItem: IconGlyph {
+                    name: updBtn.ready ? "restart_alt" : updBtn.busy ? "downloading" : "download"
+                    size: 16
+                    fill: true
+                    glyphColor: updBtn.tint
+                }
+                // "new" dot
+                Rectangle {
+                    visible: Updater.state === "available"
+                    width: 8; height: 8; radius: 4
+                    color: Theme.primary
+                    border.width: 1.5; border.color: Theme.header_bg
+                    anchors.top: parent.top; anchors.right: parent.right
+                    anchors.topMargin: 2; anchors.rightMargin: 2
+                }
+                AppTooltip {
+                    visible: updHover.hovered
+                    text: updBtn.ready ? I18n.tr("Update ready: restart to install")
+                          : updBtn.busy ? I18n.tr("Downloading update… {p}%").replace("{p}", Math.round(Updater.progress * 100))
+                          : I18n.tr("Update available: v{v}").replace("{v}", Updater.latestVersion)
                 }
             }
 

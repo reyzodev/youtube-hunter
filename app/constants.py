@@ -11,23 +11,32 @@ APP_VERSION = "1.0.0"
 
 
 # ═════════════════════════════════════════════════════════════════════════
+#  IN-APP UPDATES (GitHub Releases)
+# ═════════════════════════════════════════════════════════════════════════
+# The app asks GitHub for the latest release of this repo. A release whose tag
+# (e.g. v1.2.0) is newer than APP_VERSION and that carries the installer .exe
+# shows the update button in the title bar. Set "auto_update": false in
+# config.json to turn the check off.
+UPDATE_REPO = "reyzodev/youtube-hunter"
+UPDATE_ASSET_HINT = "YouTubeHunter-Setup"
+UPDATE_CHECK_HOURS = 6
+
+
+# ═════════════════════════════════════════════════════════════════════════
 #  SUPPORT / DONATION PAGE
 # ═════════════════════════════════════════════════════════════════════════
 # The Donate pill in the sidebar opens this address inside the app (the
 # Support window hosts a live web view).
 #
-# EMPTY ON PURPOSE in this source tree: no donation address is published with
-# the project. While this is "", `App.donateUrl` is "" and the Donate pill is
-# hidden — the app never shows a button that goes nowhere.
+# Set since v1.2: the pill shows again and the Support window loads this page.
+# Blanking it hides the pill and keeps QtWebEngine from ever being initialised
+# (~260 MB of resident memory the app does not spend unless there is a page).
 #
-# Two ways to turn it on:
-#   1. put your page here and rebuild, or
-#   2. leave this empty and put the address in the per-install config
-#        "donate_url": "https://your-page.example"
-#      in %APPDATA%\YoutubeScrapperCyber\config.json — a value there wins, and
-#      no rebuild is needed.
+# A per-install override still wins:
+#   "donate_url": "https://your-page.example"
+# in %APPDATA%\YoutubeScrapperCyber\config.json — no rebuild needed.
 # Only http(s) is accepted; anything else is ignored.
-DONATE_URL = ""
+DONATE_URL = "https://donofa.com/youtube_hunter"
 
 
 # ═════════════════════════════════════════════════════════════════════════

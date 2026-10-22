@@ -67,6 +67,10 @@ _WATCH_TTL_S = 4.0
 _WATCH_SYNC_MS = 700     # v3.47: re-check watched jobs this often
 _LIVE_MAX = 3            # live cards on screen at once (oldest jobs first)
 _LIVE_FLUSH_MS = 200     # update coalescing window
+# v1.2: a job that finished while its YouTube panel was on screen is held
+# this long. Navigate away inside that window and the card slides in; stay on
+# the page and the in-page "Saved" state is the whole story, so it is dropped.
+_PENDING_MAX_S = 240.0
 
 # 11-char YouTube id → we can show its thumbnail on the card
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -460,6 +464,18 @@ class DesktopNotifier(QObject):
         visible = (job.get("shown") and not job.get("dismissed")
                    and (job.get("forced") or self._can_show()))
         if not visible:
+            # v1.2: the YouTube panel is still on screen for this very job, so
+            # the in-page card already says "Saved" / "Clip saved". A desktop
+            # card dropped on top of it is the same news twice — and it covers
+            # the panel's own buttons. Hold the finish instead: _sync_live
+            # releases it the moment the panel goes away (tab closed, panel
+            # closed, or the user navigated off the video).
+            if (not job.get("dismissed") and outcome != "stopped"
+                    and self._in_page(job)):
+                job["pending"] = {"message": str(message or ""),
+                                  "path": str(path or "")}
+                job["pending_at"] = time.monotonic()
+                return True
             if job.get("shown"):
                 self.liveEvent.emit({"op": "hide", "key": key,
                                      "token": job.get("token", 0)})
@@ -633,6 +649,48 @@ class DesktopNotifier(QObject):
             payload = self._payload(job)
             payload["op"] = "show"
             self.liveEvent.emit(payload)
+        # v1.2: finishes that were held back because the YouTube panel was on
+        # screen. They are not "live" any more, so the loop above skips them —
+        # this is the pass that lets them out once the panel is gone.
+        for job in list(self._jobs.values()):
+            pend = job.get("pending")
+            if not pend:
+                continue
+            if job.get("shown"):
+                job.pop("pending", None)       # already on screen, nothing held
+                continue
+            if time.monotonic() - float(job.get("pending_at") or 0) > _PENDING_MAX_S:
+                self._jobs.pop(job["key"], None)   # the moment has passed
+                continue
+            if job.get("dismissed") or self._in_page(job):
+                continue
+            if not away_ok:
+                continue                        # user is back in the app: wait
+            if shown >= _LIVE_MAX:
+                break
+            self._job_seq += 1
+            job["token"] = self._job_seq
+            job["shown"] = True
+            shown += 1
+            key = str(job.get("key") or "")
+            if key.startswith("dl:") and not (job.get("title") and job.get("subtitle")):
+                self._dl_fill_meta(job, key[3:])
+            payload = self._payload(job)
+            payload["op"] = "show"
+            self.liveEvent.emit(payload)
+            path = str(pend.get("path") or "")
+            is_file = bool(path) and os.path.isfile(path)
+            done = self._payload(job)
+            done.update({
+                "op": "finish", "outcome": job.get("state"),
+                "message": str(pend.get("message") or ""),
+                "path": path if is_file else "",
+                "folder": os.path.dirname(path) if is_file else "",
+            })
+            job.pop("pending", None)
+            self.liveEvent.emit(done)
+            if self._sound and job.get("state") != "stopped":
+                self._chime("error" if job.get("state") == "error" else "success")
 
     def _flush_live(self):
         keys, self._dirty = self._dirty, set()

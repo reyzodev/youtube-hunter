@@ -7,11 +7,51 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
-## 1.0.0 — 2026-10-21  *(internal: 3.51)*
+## 1.0.0 — 2026-10-22  *(internal: 3.52)*
 
 First public release. One Windows app that does the whole loop — research a channel, find the
 outliers, write the brief, download the video, cut the clip — plus a **Hunter button inside
 YouTube** that does the last two from the browser.
+
+**In-app updates — no trip to GitHub.** The app asks GitHub Releases for the newest
+published version 6 s after launch and every 6 hours. When there is one:
+
+- **Update button** next to the tour (?) button in the title bar: it pulses while an update
+  waits, turns into a progress ring while it downloads, and into a restart icon when ready.
+- **Update popup**: version from -> to, date, size, Markdown release notes, live percent,
+  speed and time left.
+- **Verified and automatic**: the installer is checked against GitHub's SHA-256 digest, then
+  the app closes, installs silently and reopens itself. The user never leaves the app.
+- `"auto_update": false` in `config.json` turns the checks off; `docs/UPDATES.md` explains how
+  to publish a release.
+
+**Search Archive pages twelve at a time.** A library of forty saved searches was one
+endless wall with no sense of place. The section grid now shows twelve cards a page under the
+app's own pager, with a "13-24 of 37" counter beside the search box; search and the Favorites
+tab page through their own filtered result, and a section you delete can no longer leave you
+stranded on a page that no longer exists.
+
+**Fixed in this build.**
+
+- The completion notice no longer lands on top of the YouTube panel. While the panel is on
+  screen for that download or clip, the desktop card waits: navigate away (or close the panel)
+  and it slides in on the page you moved to. Nothing is duplicated, nothing is covered.
+- The extension stopped logging console errors on every page. Its webfonts were built from
+  `chrome-extension://` URLs, which the browser refuses to load from a youtube.com document
+  ("Domains, protocols and ports must match"), so the panel had quietly been falling back to a
+  system font; the bytes are read through the extension and handed to `FontFace` directly now.
+  The stylesheet is only ever injected as text, never as a cross-scheme `<link>`.
+- The Donate pill is back and opens `https://donofa.com/youtube_hunter` inside the app.
+- The monetization check no longer under-reports Shorts. It only counted videos *published*
+  in the last 90 days, so a channel with 32M lifetime views that had gone quiet was told it
+  "hasn't got the 10M" — directly under the 32M printed in its own header. It now projects
+  views *earned* in the window from every recent upload, says in the row that the figure is a
+  projection, and when the Join button settles the verdict on its own it explains why the
+  estimate underneath can still sit below the bar. Notes are also no longer counted as
+  signals in the "2 of 6 found" line.
+- A Persian or Arabic video title is set right-to-left inside the English UI (video cards,
+  section tiles, download cards, desktop cards). AppText's default left alignment used to pin
+  the block to the wrong edge, so the sentence hung off the far side of its own card.
 
 **Support window — the Donate pill opens the page inside the app.** No more throwing the
 user out to a browser tab: a single card over the blurred app, with the donation page live

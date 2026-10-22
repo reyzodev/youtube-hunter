@@ -121,6 +121,7 @@ from app.qml_backend.vm.insights_vm import InsightsVM
 from app.qml_backend.vm.monetize_vm import MonetizeVM
 from app.qml_backend.vm.niche_vm import NicheVM
 from app.qml_backend.vm.notifications_vm import NotificationsVM
+from app.qml_backend.vm.update_vm import UpdateVM
 from app.qml_backend.vm.quality_probe import QualityProbeVM
 from app.qml_backend.vm.settings_vm import SettingsVM
 from app.qml_backend.vm.studio_vm import StudioVM
@@ -283,6 +284,8 @@ def main():
     desktop_notify.attach_downloads(downloads_vm)   # v3.43: ⏸ / ▶ on live cards
     monetize_vm = MonetizeVM()
     notifications_vm = NotificationsVM()
+    # v1.1: in-app updates from GitHub Releases (title-bar button + dialog)
+    updater_vm = UpdateVM(notifications=notifications_vm)
     archive_vm = ArchiveVM()
     ideas_vm = IdeasVM()
     content_lab_vm = ContentLabVM()
@@ -416,6 +419,7 @@ def main():
     ctx.setContextProperty("Deno", deno_vm)
     ctx.setContextProperty("Geo", geo_vm)
     ctx.setContextProperty("Notifications", notifications_vm)
+    ctx.setContextProperty("Updater", updater_vm)
     ctx.setContextProperty("FileDrag", file_drag)
     ctx.setContextProperty("DesktopNotify", desktop_notify)
     # v3.43: "Add the YouTube button" — guided browser-extension install
@@ -489,6 +493,9 @@ def main():
     web_bridge = WebBridge(downloads_vm, desktop_notify, cutter_vm=cutter_vm)
     web_bridge.extensionSeen.connect(ext_setup.markConnected)
     web_bridge.start()
+    # First update check a few seconds after the window is up, then every
+    # UPDATE_CHECK_HOURS. Silent unless a newer release exists.
+    updater_vm.start()
     app.aboutToQuit.connect(web_bridge.stop)
     if launch_hidden:
         engine.rootObjects()[0].showMinimized()
@@ -518,7 +525,7 @@ def main():
                      insights_vm, chat_vm, quality_probe, deno_vm, geo_vm,
                      cursor_guard, premium_cursor, window_shaper,
                      desktop_notify, native_frame, _perf, text_layout,
-                     web_bridge)
+                     web_bridge, updater_vm)
     # Where is this machine coming from? Looked up once, a moment after the
     # window is on screen, so it never delays startup. A restricted country
     # (Iran first of all) opens the GeoGateDialog — see app/core/geo.py.

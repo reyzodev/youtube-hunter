@@ -188,11 +188,12 @@ installer.iss             Inno Setup script (bundles the app, the extension, the
 - [`docs/INSTALL.md`](docs/INSTALL.md) — install, first run, extension setup, troubleshooting
 - [`docs/EXTENSION.md`](docs/EXTENSION.md) — the Hunter button, end to end
 - [`docs/BUILD.md`](docs/BUILD.md) — build and packaging notes
+- [`docs/UPDATES.md`](docs/UPDATES.md) — how the in-app updater works and how to publish a release
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
 ## Version
 
-**1.0.0** — research, outlier detection, AI briefs, downloads with audio-track selection, a frame-accurate cutter, live activity cards, and the Hunter button inside YouTube.
+**1.0.0** — research, outlier detection, AI briefs, downloads with audio-track selection, a frame-accurate cutter, live activity cards, the Hunter button inside YouTube, and in-app updates (a new version installs itself from the app).
 
 ## License
 

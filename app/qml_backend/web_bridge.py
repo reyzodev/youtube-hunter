@@ -631,7 +631,17 @@ class WebBridge(QObject):
                     consumed = n.live_finish(key, outcome,
                                              message=data.get("message") or "",
                                              path=data.get("path") or "")
-                if not consumed and outcome == "success":
+                # v1.2: the panel is still on screen for this clip and already
+                # shows "Clip saved" — never drop a second card on top of it.
+                # live_finish() holds the card back for the same reason; this
+                # covers the case where its job record was already gone.
+                in_page = False
+                if n is not None:
+                    try:
+                        in_page = n.watched("cut:" + job)
+                    except Exception:         # noqa: BLE001 — cosmetic only
+                        in_page = False
+                if not consumed and outcome == "success" and not in_page:
                     announce("success", tr("Clip ready"),
                              os.path.basename(data.get("path") or ""), page=12,
                              path=data.get("path") or "", icon="scissors",

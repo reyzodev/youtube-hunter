@@ -69,6 +69,49 @@ Item {
 
     // ═══════════════════════ page-level state ═══════════════════════
     readonly property bool _motion: App.ambientMotion !== undefined ? App.ambientMotion : true
+
+    // ── section-list pagination (v1.2) ──
+    // The master grid used to render every section at once: a library of 30+
+    // searches was one endless wall with no sense of where you were. Twelve per
+    // page keeps a full 4-column page on a laptop screen and puts the count
+    // somewhere visible. The slice is recomputed from Archive.groups, so search
+    // and the Favorites tab page through their own filtered result.
+    readonly property int _sectPerPage: 12
+    property int _sectPage: 0
+    readonly property int _sectTotal: (Archive.groups || []).length
+    readonly property int _sectPages: Math.max(1, Math.ceil(page._sectTotal / page._sectPerPage))
+    readonly property var _sectSlice: {
+        var g = Archive.groups || []
+        var start = page._sectPage * page._sectPerPage
+        return g.slice(start, start + page._sectPerPage)
+    }
+    // "13–24" — the run on screen, 1-based like the pager.
+    readonly property string _sectRange: {
+        if (page._sectTotal === 0) return ""
+        var a = page._sectPage * page._sectPerPage + 1
+        var b = Math.min(page._sectTotal, a + page._sectPerPage - 1)
+        return a === b ? String(a) : a + "\u2013" + b
+    }
+    readonly property string _sectLabel:
+        page._sectPages > 1
+        ? I18n.tr("{r} of {n}").replace("{r}", page._sectRange).replace("{n}", page._sectTotal)
+        : I18n.tr("{n} shown").replace("{n}", page._sectTotal)
+    function _sectGo(i) {
+        var t = Math.max(0, Math.min(page._sectPages - 1, i))
+        if (t === page._sectPage) return
+        page._sectPage = t
+        masterScroll.toTop()
+    }
+    // The list shrank under us (a section was deleted, the search narrowed):
+    // never leave the reader on a page that no longer exists.
+    Connections {
+        target: Archive
+        function onGroupsChanged() {
+            if (page._sectPage > page._sectPages - 1)
+                page._sectPage = page._sectPages - 1
+        }
+    }
+
     // ── reveal gate (v3.39.4) ──
     // v3.39.2 held the WHOLE page until every one of its ~24 thumbnails had
     // arrived, so one slow image (12s network timeout) kept the grid on
@@ -1142,6 +1185,12 @@ Item {
                 spacing: 3
                 C.AppText {
                     text: st.g.title || "—"
+                    // v1.2: a section named in Persian keeps its own reading
+                    // direction (see Utils.isRtlText); the English UI around it
+                    // stays left-to-right.
+                    readonly property bool rtl: U.isRtlText(text)
+                    LayoutMirroring.enabled: false
+                    horizontalAlignment: rtl ? Text.AlignRight : Text.AlignLeft
                     weight: Tokens.weightExtraBold
                     font.pixelSize: Tokens.fontSubtitle + 3
                     color: st.hot ? Theme.primary : Theme.text_strong
@@ -1539,10 +1588,13 @@ Item {
                         Layout.maximumWidth: 560
                         placeholder: I18n.tr("Search sections…")
                         kbd: "Ctrl F"
-                        onEdited: Archive.filterText = text
+                        onEdited: {
+                            Archive.filterText = text
+                            page._sectPage = 0        // a new filter starts at page 1
+                        }
                     }
                     C.AppText {
-                        text: I18n.tr("{n} shown").replace("{n}", (Archive.groups || []).length)
+                        text: page._sectLabel
                         mono: true
                         font.pixelSize: Tokens.fontCaption
                         color: Theme.outline
@@ -1556,7 +1608,10 @@ Item {
                             { label: I18n.tr("Favorites"), icon: "star" }
                         ]
                         current: Archive.tabIndex
-                        onPicked: (i) => Archive.tabIndex = i
+                        onPicked: (i) => {
+                            Archive.tabIndex = i
+                            page._sectPage = 0
+                        }
                         Layout.alignment: Qt.AlignVCenter
                     }
                 }
@@ -1708,7 +1763,7 @@ Item {
                     }
 
                     Repeater {
-                        model: Archive.groups
+                        model: page._sectSlice
                         SectionTile {
                             g: modelData
                             order: index
@@ -1717,6 +1772,19 @@ Item {
                             Layout.alignment: Qt.AlignTop
                         }
                     }
+                }
+
+                // ── pager for the section grid ──
+                // Only rendered when there is a second page: a one-page library
+                // keeps the plain grid it always had.
+                C.Pager {
+                    objectName: "archiveSectPager"
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: -Tokens.space2
+                    visible: page._sectPages > 1
+                    pageIndex: page._sectPage
+                    pageCount: page._sectPages
+                    onRequested: (i) => page._sectGo(i)
                 }
             }
         }

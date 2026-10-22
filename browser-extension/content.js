@@ -29,11 +29,21 @@
   window.__ythLoaded = true;
   console.debug("[YouTube Hunter] content script loaded");
 
-  const ASSET = (p) => chrome.runtime.getURL(p);
+  // v1.2: after the extension is reloaded, this (now orphaned) script's
+  // chrome.runtime is gone and getURL() throws "Extension context invalidated".
+  const ASSET = (p) => { try { return chrome.runtime.getURL(p); } catch (_) { return ""; } };
   // The panel's stylesheet, read once up front and inlined into the shadow
-  // root (a <link> there loads async, so the panel would flash unstyled).
+  // root. v1.2: it is ONLY ever injected as text — a
+  // <link href="chrome-extension://…"> inside the page's shadow root is a
+  // cross-scheme subresource and Chrome refuses it ("Unsafe attempt to load
+  // URL … Domains, protocols and ports must match"), so the old fallback was
+  // strictly worse than an empty <style> that gets filled when the text lands.
   let PANEL_CSS = "";
-  fetch(ASSET("panel.css")).then((r) => r.text()).then((x) => { PANEL_CSS = x; }).catch(() => {});
+  let panelStyleEl = null;
+  fetch(ASSET("panel.css"))
+    .then((r) => r.text())
+    .then((x) => { PANEL_CSS = x; if (panelStyleEl) panelStyleEl.textContent = x; })
+    .catch(() => {});
   const STORE_KEY = "yth.lastQuality";
 
   // ── i18n ──────────────────────────────────────────────────────────────
@@ -137,13 +147,57 @@
       zoomClip: "Zoom to clip",
       zoomAll: "Whole video",
       cutKeep: "Keeps cutting in YouTube Hunter if you close this.",
+      // v1.2 — orphaned script after an extension reload
+      reloadTitle: "Reload this tab",
+      reloadBody: "The extension was just updated. Reload this tab to reconnect.",
+      reloadBtn: "Reload tab",
+      // v1.2 — loaders
+      handshake: "Linking to YouTube Hunter",
+      handshakeSub: "This tab and your PC, shaking hands.",
+      scanTitle: "Hunting formats",
+      scan1: "Reaching the stream…",
+      scan2: "Reading every real format…",
+      scan3: "Measuring true file sizes…",
+      scan4: "Long video, still measuring…",
+      cutScanTitle: "Preparing the cut",
+      cutScan1: "Reading the timeline…",
+      cutScan2: "Mapping qualities to your clip…",
+      cutScan3: "Sizing every option…",
+      // v1.2 — launching the app
+      wakeTitle: "Waking YouTube Hunter",
+      wakeBody: "It opens minimised. You stay right here.",
+      wakeStep1: "Allow it in the browser prompt",
+      wakeStep2: "App starting up",
+      wakeStep3: "Connected",
+      wakeHint: "Your browser asks once. Tick Always allow, then Open, and you won't see it again.",
+      wakeHintShort: "Press Open in the browser prompt.",
+      wakeAlways: "Always allow",
+      wakeOpen: "Open",
+      wakeCancel: "Cancel",
+      wakeLinked: "Connected. Loading your video…",
+      // v1.2 — the in-page button while a job runs
+      btnStarting: "Starting",
+      btnPaused: "Paused",
+      btnSaved: "Saved",
+      btnFailed: "Failed",
+      btnCutting: "Cutting",
+      btnClipped: "Clipped",
     },
   };
   // English only: the panel does not switch language.
-  const lang = "en";
+  // (let, not const: adopt() switches it when the app sends a known language;
+  // with const that assignment threw a TypeError the moment STR grew a 2nd one)
+  let lang = "en";
   const t = (k) => (STR[lang] && STR[lang][k]) || STR.en[k] || k;
 
   // ── fonts (document-level, so the shadow roots can use them) ──────────
+  // v1.2: a FontFace built from a chrome-extension:// URL is resolved by the
+  // DOCUMENT, i.e. by https://www.youtube.com, so Chrome refuses the
+  // cross-scheme load ("Unsafe attempt to load URL … Domains, protocols and
+  // ports must match") — one console error per face, and every panel quietly
+  // fell back to a system font. Reading the bytes through the content
+  // script's own extension access and handing FontFace an ArrayBuffer keeps
+  // the URL out of the page entirely.
   (function loadFonts() {
     const faces = [
       ["YTH Hanken", "fonts/HankenGrotesk.ttf", { weight: "100 900" }],
@@ -155,9 +209,16 @@
     ];
     for (const [fam, file, desc] of faces) {
       try {
-        const f = new FontFace(fam, `url("${ASSET(file)}")`, desc);
-        document.fonts.add(f);
-        f.load().catch(() => {});
+        const url = ASSET(file);
+        if (!url) continue;
+        fetch(url)
+          .then((r) => r.arrayBuffer())
+          .then((buf) => {
+            const f = new FontFace(fam, buf, desc);
+            document.fonts.add(f);
+            return f.load();
+          })
+          .catch(() => { /* fonts are a nicety */ });
       } catch (_) { /* fonts are a nicety */ }
     }
   })();
@@ -322,61 +383,257 @@
   // ═════════════════════════════════════════════════════════════════════
   //  The in-page button
   // ═════════════════════════════════════════════════════════════════════
+  // v1.2 — the in-page button, redesigned.
+  // Idle: a YouTube-height chip with a hairline accent edge (gradient border
+  // on an opaque padding-box) and a light sweep on hover. Live: each half
+  // turns into its own job indicator. Download = a filling capsule, a progress
+  // ring around a falling arrow and a ticking percent; Cut = blades that keep
+  // closing over a dashed "cut here" line. Done pops green, failure shakes red.
   const BTN_CSS = `
-    :host { all: initial; display: inline-flex; align-items: center; }
+    :host {
+      all: initial; display: inline-flex; align-items: center; vertical-align: middle;
+      --e: cubic-bezier(.2, .8, .2, 1); --spring: cubic-bezier(.3, 1.6, .5, 1);
+      --edge-a: rgba(var(--acc-rgb), .8); --edge-b: rgba(255, 255, 255, .07);
+    }
+    :host(:not([dark])) { --edge-b: rgba(0, 0, 0, .07); }
     .pill {
-      display: inline-flex; align-items: stretch; height: 36px; border-radius: 18px;
-      background: var(--chip); overflow: hidden;
-      font: 500 14px/36px Roboto, "YTH Vazir", Arial, sans-serif; color: var(--fg);
-      -webkit-font-smoothing: antialiased;
+      position: relative; isolation: isolate;
+      display: inline-flex; align-items: stretch; height: 36px; box-sizing: border-box;
+      border-radius: 18px; border: 1px solid transparent; overflow: hidden;
+      background:
+        linear-gradient(var(--chip), var(--chip)) padding-box,
+        linear-gradient(125deg, var(--edge-a), rgba(var(--acc-rgb), .1) 34%, var(--edge-b) 58%, rgba(var(--acc-rgb), .5)) border-box;
+      font: 600 14px/34px "YTH Hanken", Roboto, "YTH Vazir", Arial, sans-serif; color: var(--fg);
+      letter-spacing: -.005em; -webkit-font-smoothing: antialiased;
+      transition: box-shadow .35s var(--e), transform .2s var(--e);
     }
+    .pill:hover { box-shadow: 0 8px 24px -12px rgba(var(--acc-rgb), .85); }
+    /* one light sweep across the chip on hover */
+    .pill::after {
+      content: ""; position: absolute; inset: 0; z-index: 4; pointer-events: none;
+      background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, .16) 50%, transparent 70%);
+      transform: translateX(-120%);
+    }
+    :host(:not([dark])) .pill::after { background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, .75) 50%, transparent 70%); }
+    .pill:hover::after { animation: sweep .85s var(--e); }
+    @keyframes sweep { to { transform: translateX(120%); } }
+
     button {
-      all: unset; box-sizing: border-box; cursor: pointer;
-      display: inline-flex; align-items: center; gap: 7px;
-      height: 36px; padding: 0 13px 0 11px;
+      all: unset; box-sizing: border-box; position: relative; isolation: isolate; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px;
+      height: 34px; padding: 0 14px 0 8px;
       color: inherit; white-space: nowrap;
-      transition: background .15s ease;
+      transition: background .2s ease, padding .35s var(--e);
     }
-    .cut { padding: 0 12px 0 10px; position: relative; }
+    .cut { padding: 0 11px 0 10px; gap: 6px; }
     .cut::before {
-      content: ""; position: absolute; inset-inline-start: 0; top: 8px; bottom: 8px;
-      width: 1px; background: var(--sep);
+      content: ""; position: absolute; inset-inline-start: 0; top: 7px; bottom: 7px; width: 1px;
+      background: linear-gradient(180deg, transparent, var(--sep) 25%, var(--sep) 75%, transparent);
     }
-    button:hover { background: var(--chip-hover); }
-    button:active .mark, button:active .sc { transform: scale(.9); }
-    button:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; border-radius: 18px; }
+    button:hover { background: rgba(255, 255, 255, .06); }
+    :host(:not([dark])) button:hover { background: rgba(0, 0, 0, .045); }
+    button:focus-visible { outline: 2px solid rgba(var(--acc-rgb), .85); outline-offset: -4px; border-radius: 16px; }
+    :host([round]) button:focus-visible { outline: none; }
+    :host([round]) button:focus-visible .disc { outline: 1.5px solid rgba(var(--acc-rgb), .7); outline-offset: 8px; }
+    :host([round]) .lbls { justify-items: center; }
     button[aria-expanded="true"] { background: rgba(var(--acc-rgb), .16); color: var(--acc-text); }
-    .mark { display: block; flex: none; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.25)); transition: transform .15s ease; }
-    .sc { display: block; flex: none; transition: transform .15s ease; }
-    button.dl:hover .mark { animation: nudge .5s cubic-bezier(.3,1.6,.5,1); }
-    button.cut:hover .sc { animation: snip .45s cubic-bezier(.3,1.6,.5,1); }
+
+    /* icon box: the idle glyph, the ring and the state glyphs share one cell */
+    .ico, .disc { position: relative; display: grid; place-items: center; flex: none; }
+    .ico { width: 24px; height: 24px; }
+    .ico > *, .disc > * { grid-area: 1 / 1; }
+    .mark, .sc { display: block; transition: transform .3s var(--spring), opacity .2s ease, filter .3s ease; }
+    .mark { filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .3)); }
+    button.dl:hover .mark { animation: nudge .55s var(--spring); filter: drop-shadow(0 0 6px rgba(var(--acc-rgb), .7)); }
+    button.cut:hover .sc { animation: snipOnce .45s var(--spring); }
     button.cut[aria-expanded="true"] .sc { color: var(--acc); }
-    @keyframes nudge { 40% { transform: translateY(2px); } }
-    @keyframes snip { 35% { transform: rotate(-14deg) scale(.92); } 70% { transform: rotate(4deg); } }
-    :host([round]) .pill { flex-direction: column; height: auto; background: none; border-radius: 0; gap: 14px; overflow: visible; }
+    button:active .mark, button:active .sc { transform: scale(.88); }
+    @keyframes nudge { 40% { transform: translateY(2.5px); } }
+    @keyframes snipOnce { 35% { transform: rotate(-16deg) scale(.9); } 70% { transform: rotate(5deg); } }
+
+    .ring {
+      position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px);
+      transform: rotate(-90deg); opacity: 0; transition: opacity .25s ease; overflow: visible;
+    }
+    .rt { fill: none; stroke: rgba(var(--acc-rgb), .2); stroke-width: 3; }
+    .rp {
+      fill: none; stroke: var(--acc); stroke-width: 3; stroke-linecap: round;
+      stroke-dasharray: 100; stroke-dashoffset: 100;
+      transition: stroke-dashoffset .7s linear, stroke .3s ease;
+      filter: drop-shadow(0 0 2.5px rgba(var(--acc-rgb), .8));
+    }
+    .lg { width: 15px; height: 15px; opacity: 0; transform: scale(.5); transition: opacity .2s ease, transform .3s var(--spring); color: var(--fg); }
+    .lg.snip { width: 17px; height: 17px; }
+
+    /* the two labels share one grid cell, so swapping never jumps the row */
+    .lbls { display: inline-grid; align-items: center; }
+    .lbls > * { grid-area: 1 / 1; transition: opacity .2s ease, transform .3s var(--e); }
+    .st {
+      opacity: 0; transform: translateY(70%);
+      font: 700 13px/1 "YTH Mono", ui-monospace, Consolas, monospace; letter-spacing: -.03em;
+      font-variant-numeric: tabular-nums; min-width: 0;
+    }
+    .st.word { font: 700 13px/1 "YTH Hanken", Roboto, Arial, sans-serif; letter-spacing: 0; }
+
+    /* the capsule fill behind a live half */
+    .fl { position: absolute; inset: 0; z-index: -1; overflow: hidden; opacity: 0; transition: opacity .3s ease; border-radius: inherit; }
+    .fl i {
+      position: absolute; inset-block: 0; inset-inline-start: 0; width: calc(var(--p, 0) * 100%);
+      background: linear-gradient(90deg, rgba(var(--acc-rgb), .08), rgba(var(--acc-rgb), .34));
+      transition: width .7s linear, background .3s ease;
+    }
+    .fl i::after {          /* the lit edge where the bytes land */
+      content: ""; position: absolute; inset-block: 10px; inset-inline-end: 0; width: 1.5px; border-radius: 1px;
+      background: var(--acc); box-shadow: 0 0 8px 1px rgba(var(--acc-rgb), .8); opacity: .9;
+    }
+    .fl::after {            /* a slow sheen riding the fill */
+      content: ""; position: absolute; inset-block: 0; width: 40%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .13), transparent);
+      transform: translateX(-120%); animation: ride 2.2s ease-in-out infinite;
+    }
+    @keyframes ride { to { transform: translateX(340%); } }
+
+    /* ── live: download ─────────────────────────────────────────────── */
+    :host([data-dl]) .dl { padding-inline-end: 13px; }
+    :host([data-dl]) .dl .mark { opacity: 0; transform: scale(.4) rotate(-20deg); }
+    :host([data-dl]) .dl .ring { opacity: 1; }
+    :host([data-dl]) .dl .lbl { opacity: 0; transform: translateY(-70%); }
+    :host([data-dl]) .dl .st { opacity: 1; transform: none; }
+    :host([data-dl]) .dl .fl { opacity: 1; }
+    :host([data-dl="starting"]) .dl .arrow, :host([data-dl="running"]) .dl .arrow { opacity: 1; transform: none; }
+    .arrow .ar { transform-box: view-box; animation: fall 1.25s cubic-bezier(.5, 0, .4, 1) infinite; }
+    @keyframes fall {
+      0% { transform: translateY(-6px); opacity: 0; } 22% { opacity: 1; }
+      68% { transform: translateY(1px); opacity: 1; } 100% { transform: translateY(5px); opacity: 0; }
+    }
+    :host([data-dl="starting"]) .r-dl { animation: orbit 1s linear infinite; }
+    :host([data-dl="starting"]) .r-dl .rp { stroke-dashoffset: 72 !important; transition: none; }
+    @keyframes orbit { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+    :host([data-dl="starting"]) .dl .fl i {
+      width: 100%;
+      background: repeating-linear-gradient(-45deg, rgba(var(--acc-rgb), .2) 0 7px, rgba(var(--acc-rgb), .05) 7px 14px);
+      background-size: 19.8px 19.8px; animation: hatch .8s linear infinite;
+    }
+    :host([data-dl="starting"]) .dl .fl i::after { opacity: 0; }
+    @keyframes hatch { to { background-position: 19.8px 0; } }
+    :host([data-dl="running"]) .pill, :host([data-cut="running"]) .pill { animation: halo 2.4s ease-in-out infinite; }
+    @keyframes halo { 50% { box-shadow: 0 0 18px -4px rgba(var(--acc-rgb), .75); } }
+
+    :host([data-dl="paused"]) .dl .pz { opacity: 1; transform: none; color: var(--muted); }
+    :host([data-dl="paused"]) .r-dl .rp { stroke: var(--muted); filter: none; }
+    :host([data-dl="paused"]) .dl .fl i { background: linear-gradient(90deg, rgba(128, 128, 128, .06), rgba(128, 128, 128, .22)); }
+    :host([data-dl="paused"]) .dl .fl i::after { background: var(--muted); box-shadow: none; }
+    :host([data-dl="paused"]) .dl .fl::after { animation: none; opacity: 0; }
+    :host([data-dl="paused"]) .dl .st { color: var(--muted); }
+
+    :host([data-dl="done"]) .r-dl .rp, :host([data-cut="done"]) .r-cut .rp { stroke: var(--ok); stroke-dashoffset: 0 !important; filter: drop-shadow(0 0 3px var(--ok)); }
+    :host([data-dl="done"]) .r-dl .rt, :host([data-cut="done"]) .r-cut .rt { stroke: color-mix(in srgb, var(--ok) 25%, transparent); }
+    :host([data-dl="done"]) .dl .tk, :host([data-cut="done"]) .cut .tk { opacity: 1; transform: none; color: var(--ok); }
+    .tk path { stroke-dasharray: 1; stroke-dashoffset: 1; }
+    :host([data-dl="done"]) .dl .tk path, :host([data-cut="done"]) .cut .tk path { animation: draw .45s .12s var(--e) forwards; }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    :host([data-dl="done"]) .dl .fl i, :host([data-cut="done"]) .cut .fl i { width: 100%; background: color-mix(in srgb, var(--ok) 22%, transparent); }
+    :host([data-dl="done"]) .dl .fl i::after, :host([data-cut="done"]) .cut .fl i::after { opacity: 0; }
+    :host([data-dl="done"]) .dl .st, :host([data-cut="done"]) .cut .st { color: var(--ok); }
+    :host([data-dl="done"]) .pill, :host([data-cut="done"]) .pill { animation: pop .55s var(--spring); }
+    @keyframes pop { 30% { transform: scale(1.06); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 30%, transparent); } }
+
+    :host([data-dl="fail"]) .r-dl .rp, :host([data-cut="fail"]) .r-cut .rp { stroke: var(--bad); filter: none; }
+    :host([data-dl="fail"]) .dl .fx, :host([data-cut="fail"]) .cut .fx { opacity: 1; transform: none; color: var(--bad); }
+    :host([data-dl="fail"]) .dl .st, :host([data-cut="fail"]) .cut .st { color: var(--bad); }
+    :host([data-dl="fail"]) .dl .fl, :host([data-cut="fail"]) .cut .fl { opacity: 0; }
+    :host([data-dl="fail"]) .pill, :host([data-cut="fail"]) .pill { animation: shake .45s ease; }
+    @keyframes shake { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+
+    /* ── live: cut ──────────────────────────────────────────────────── */
+    :host([data-cut]) .cut { padding-inline: 10px 12px; gap: 8px; }
+    :host([data-cut]) .cut .sc { opacity: 0; transform: scale(.4) rotate(30deg); }
+    :host([data-cut]) .cut .ring { opacity: 1; }
+    :host([data-cut]) .cut .st { opacity: 1; transform: none; }
+    :host([data-cut]) .cut .lbl2 { opacity: 0; transform: translateY(-70%); }
+    :host([data-cut]) .cut .fl { opacity: 1; }
+    :host([data-cut="starting"]) .cut .snip, :host([data-cut="running"]) .cut .snip { opacity: 1; transform: none; }
+    .snip g { transform-box: view-box; transform-origin: 12.65px 12px; }
+    .snip .bl1 { animation: blade1 .62s ease-in-out infinite alternate; }
+    .snip .bl2 { animation: blade2 .62s ease-in-out infinite alternate; }
+    @keyframes blade1 { from { transform: rotate(-11deg); } to { transform: rotate(2deg); } }
+    @keyframes blade2 { from { transform: rotate(11deg); } to { transform: rotate(-2deg); } }
+    :host([data-cut="starting"]) .r-cut { animation: orbit 1s linear infinite; }
+    :host([data-cut="starting"]) .r-cut .rp { stroke-dashoffset: 72 !important; transition: none; }
+    /* the dashed "cut here" line the blades travel along */
+    .cut .fl::before {
+      content: ""; position: absolute; inset-inline: 9px; bottom: 4px; height: 1.5px; opacity: .85;
+      background: repeating-linear-gradient(90deg, var(--acc) 0 4px, transparent 4px 8px);
+      background-size: 8px 100%; animation: dash .55s linear infinite;
+    }
+    :host([data-cut="done"]) .cut .fl::before, :host([data-cut="fail"]) .cut .fl::before { animation: none; opacity: 0; }
+    @keyframes dash { to { background-position: -8px 0; } }
+
+    :host(:not([data-cut]):not([round])) .cut .lbls { display: none; }
+
+    /* ── Shorts: the round rail button ──────────────────────────────── */
+    :host([round]) .pill {
+      flex-direction: column; height: auto; background: none; border: 0; border-radius: 0;
+      gap: 14px; overflow: visible; box-shadow: none !important; animation: none !important;
+    }
+    :host([round]) .pill::after { display: none; }
     :host([round]) button {
-      flex-direction: column; gap: 4px; height: auto; padding: 0;
-      font-size: 12px; line-height: 16px; background: none;
+      flex-direction: column; gap: 5px; height: auto; padding: 0 !important;
+      font: 500 12px/16px Roboto, "YTH Vazir", Arial, sans-serif; background: none !important;
     }
     :host([round]) .cut::before { display: none; }
+    :host([round]) .fl { display: none; }
     :host([round]) .disc {
-      width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
-      background: var(--chip); transition: background .15s ease;
+      width: 48px; height: 48px; border-radius: 50%;
+      background:
+        linear-gradient(var(--chip), var(--chip)) padding-box,
+        linear-gradient(140deg, var(--edge-a), var(--edge-b) 55%, rgba(var(--acc-rgb), .45)) border-box;
+      border: 1px solid transparent; box-sizing: border-box;
+      transition: background .2s ease, transform .3s var(--spring), box-shadow .3s ease;
     }
-    :host([round]) button:hover .disc { background: var(--chip-hover); }
-    :host([round]) button[aria-expanded="true"] .disc { background: rgba(var(--acc-rgb), .22); }
-    @media (prefers-reduced-motion: reduce) { .mark, .sc { animation: none !important; } }
+    :host([round]) button:hover .disc { box-shadow: 0 6px 20px -8px rgba(var(--acc-rgb), .9); }
+    :host([round]) button[aria-expanded="true"] .disc { box-shadow: 0 0 0 3px rgba(var(--acc-rgb), .35); }
+    :host([round]) .ring { inset: -5px; width: calc(100% + 10px); height: calc(100% + 10px); }
+    :host([round]) .rt, :host([round]) .rp { stroke-width: 2.4; }
+    :host([round]) .lg { width: 20px; height: 20px; }
+    :host([round]) .lg.snip { width: 22px; height: 22px; }
+    :host([round]) .st { transform: translateY(40%); font-size: 12px; }
+    :host([round][data-dl="done"]) .dl .disc, :host([round][data-cut="done"]) .cut .disc { animation: pop .55s var(--spring); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mark, .sc, .pill::after, .fl::after, .arrow .ar, .snip g, .ring, .pill, .disc, .cut .fl::before, .fl i { animation: none !important; }
+    }
   `;
 
   function themeButton(host) {
     const dark = isDark();
+    host.toggleAttribute("dark", dark);
     host.style.setProperty("--fg", dark ? "#f1f1f1" : "#0f0f0f");
-    host.style.setProperty("--chip", dark ? "rgba(255,255,255,.1)" : "rgba(0,0,0,.05)");
-    host.style.setProperty("--chip-hover", dark ? "rgba(255,255,255,.2)" : "rgba(0,0,0,.1)");
-    host.style.setProperty("--sep", dark ? "rgba(255,255,255,.18)" : "rgba(0,0,0,.14)");
+    // solid versions of YouTube's chip colours: the gradient hairline border
+    // needs an opaque padding-box to sit on
+    host.style.setProperty("--chip", dark ? "#272727" : "#f2f2f2");
+    host.style.setProperty("--sep", dark ? "rgba(255,255,255,.16)" : "rgba(0,0,0,.12)");
+    host.style.setProperty("--muted", dark ? "#aaaaaa" : "#606060");
     host.style.setProperty("--acc-text", dark ? "#fff" : "#0f0f0f");
+    host.style.setProperty("--ok", dark ? "#2cc28b" : "#109467");
+    host.style.setProperty("--bad", dark ? "#ff5468" : "#e0243f");
     applyVars(host);
   }
+
+  // the live ring around the button's icon (pathLength 100 → dashoffset = 100 - pct)
+  const ringSVG = (cls) => `<svg class="ring ${cls}" viewBox="0 0 40 40" aria-hidden="true">
+      <circle class="rt" cx="20" cy="20" r="17" pathLength="100"/>
+      <circle class="rp" cx="20" cy="20" r="17" pathLength="100"/>
+    </svg>`;
+  const ICON_DLARROW = '<svg class="lg arrow" viewBox="0 0 16 16" aria-hidden="true"><path class="ar" d="M8 2.4v7.2m0 0L4.9 6.5M8 9.6l3.1-3.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.6 13.2h8.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>';
+  const ICON_PAUSE_S = '<svg class="lg pz" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.2" y="3.6" width="2.6" height="8.8" rx="1" fill="currentColor"/><rect x="9.2" y="3.6" width="2.6" height="8.8" rx="1" fill="currentColor"/></svg>';
+  const ICON_TICK_S = '<svg class="lg tk" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/></svg>';
+  const ICON_FAIL_S = '<svg class="lg fx" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6M8 11.4v.1" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>';
+  // the cut glyph while cutting: two blades that keep closing
+  const ICON_SNIP = `<svg class="lg snip" viewBox="0 0 24 24" aria-hidden="true">
+      <g class="bl1"><circle cx="6" cy="17.5" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.2 15.9L19.5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></g>
+      <g class="bl2"><circle cx="6" cy="6.5" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.2 8.1L19.5 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></g>
+    </svg>`;
 
   // One host, two halves: [ crown Hunter | scissors Cut ]. A single host keeps
   // the insertion logic below unchanged (one element to find / re-insert).
@@ -388,17 +645,23 @@
       host.style.margin = "0 0 16px";
     }
     const root = host.attachShadow({ mode: "open" });
+    // v1.2: each half carries its own live layer (fill, ring, state glyphs,
+    // state label), so a running download / cut shows on the page itself
     root.innerHTML = `<style>${BTN_CSS}</style>
       <span class="pill">
         <button class="dl" type="button" data-mode="download" aria-haspopup="dialog" aria-expanded="false" title="${esc(t("buttonTip"))}">
-          ${round ? `<span class="disc">${markSVG(26)}</span>` : markSVG(20)}
-          <span class="lbl">${esc(t("button"))}</span>
+          <span class="fl" aria-hidden="true"><i></i></span>
+          <span class="${round ? "disc" : "ico"}">${markSVG(round ? 26 : 20)}${ringSVG("r-dl")}${ICON_DLARROW}${ICON_PAUSE_S}${ICON_TICK_S}${ICON_FAIL_S}</span>
+          <span class="lbls"><span class="lbl">${esc(t("button"))}</span><span class="st" aria-live="polite"></span></span>
         </button>
         <button class="cut" type="button" data-mode="cut" aria-haspopup="dialog" aria-expanded="false" title="${esc(t("cutTip"))}" aria-label="${esc(t("cutTip"))}">
-          ${round ? `<span class="disc">${scissorsSVG(22)}</span><span class="lbl2">${esc(t("cutLabel"))}</span>` : scissorsSVG(18)}
+          <span class="fl" aria-hidden="true"><i></i></span>
+          <span class="${round ? "disc" : "ico"}">${scissorsSVG(round ? 22 : 18)}${ringSVG("r-cut")}${ICON_SNIP}${ICON_TICK_S}${ICON_FAIL_S}</span>
+          <span class="lbls">${round ? `<span class="lbl lbl2">${esc(t("cutLabel"))}</span>` : ""}<span class="st" aria-live="polite"></span></span>
         </button>
       </span>`;
     themeButton(host);
+    Live.paint(host);
     root.querySelectorAll("button").forEach((b) => b.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -420,6 +683,134 @@
       themeButton(h);
     });
   }
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  v1.2 — Live: the button shows the job
+  // ═════════════════════════════════════════════════════════════════════
+  // One record per kind ("dl" | "cut"), tied to the video it belongs to. The
+  // panel feeds it while it is open; once the panel is closed (or shows a
+  // different video) a light tracker keeps it current with plain status
+  // reads, WITHOUT watch=1, so the desktop live card still takes over.
+  const Live = (() => {
+    const st = { dl: null, cut: null };      // {vid, phase, pct, job}
+    const ACTIVE = ["starting", "running", "paused"];
+    const revert = {};
+    let timer = 0, busy = false;
+
+    function label(kind, s) {
+      if (!s) return ["", false];
+      if (s.phase === "running") return [Math.round(s.pct) + "%", false];
+      if (s.phase === "starting") return [kind === "cut" ? t("btnCutting") : t("btnStarting"), true];
+      if (s.phase === "paused") return [t("btnPaused"), true];
+      if (s.phase === "done") return [kind === "cut" ? t("btnClipped") : t("btnSaved"), true];
+      if (s.phase === "fail") return [t("btnFailed"), true];
+      return ["", false];
+    }
+
+    function paint(host) {
+      const r = host && host.shadowRoot;
+      if (!r) return;
+      const vid = currentVideo();
+      for (const kind of ["dl", "cut"]) {
+        const s = st[kind];
+        const on = !!(s && vid && s.vid === vid.id);
+        const half = r.querySelector(kind === "dl" ? "button.dl" : "button.cut");
+        if (!half) continue;
+        if (!on) { host.removeAttribute("data-" + kind); }
+        else if (host.getAttribute("data-" + kind) !== s.phase) host.setAttribute("data-" + kind, s.phase);
+        const [txt, word] = on ? label(kind, s) : ["", false];
+        const el = half.querySelector(".st");
+        if (el && el.textContent !== txt) el.textContent = txt;
+        if (el) el.classList.toggle("word", word);
+        const p = on ? Math.max(0, Math.min(100, s.pct || 0)) : 0;
+        half.style.setProperty("--p", String(p / 100));
+        const rp = half.querySelector(".rp");
+        if (rp) rp.style.strokeDashoffset = String(100 - p);
+      }
+    }
+    const paintAll = () => document.querySelectorAll("yth-hunter-button").forEach(paint);
+
+    // set(kind, null) clears; phases: starting | running | paused | done | fail
+    function set(kind, vid, phase, pct, job) {
+      clearTimeout(revert[kind]);
+      if (!vid || !phase) { st[kind] = null; paintAll(); return; }
+      const prev = st[kind];
+      pct = Math.max(0, Math.min(100, Number(pct) || 0));
+      if (prev && prev.vid === vid && prev.phase === phase && Math.round(prev.pct) === Math.round(pct)
+          && (job || null) === (prev.job || null)) {
+        if (phase === "done" || phase === "fail") arm(kind, phase);
+        return;
+      }
+      st[kind] = { vid, phase, pct, job: job || (prev && prev.vid === vid ? prev.job : null), miss: 0 };
+      if (phase === "done" || phase === "fail") arm(kind, phase);
+      paintAll();
+      if (ACTIVE.includes(phase)) kick();
+    }
+    // the "Saved" / "Failed" moment stays a few seconds, then the button rests
+    function arm(kind, phase) {
+      clearTimeout(revert[kind]);
+      revert[kind] = setTimeout(() => {
+        if (st[kind] && st[kind].phase === phase) { st[kind] = null; paintAll(); }
+      }, phase === "done" ? 5200 : 6000);
+    }
+
+    function kick(delay) {
+      if (timer || busy) return;
+      timer = setTimeout(tick, delay == null ? 1200 : delay);
+    }
+    async function tick() {
+      timer = 0;
+      busy = true;
+      let again = false, slow = true;
+      try {
+        for (const kind of ["dl", "cut"]) {
+          const s = st[kind];
+          if (!s || !ACTIVE.includes(s.phase)) continue;
+          again = true;
+          if (s.phase !== "paused") slow = false;
+          if (Panel.covers(kind, s.vid)) continue;              // the open panel is polling it
+          if (document.visibilityState !== "visible") continue;
+          const r = kind === "dl"
+            ? await call("/v1/status?v=" + encodeURIComponent(s.vid), { timeout: 3000 })
+            : s.job ? await call("/v1/cut/status?job=" + encodeURIComponent(s.job), { timeout: 3000 }) : null;
+          if (st[kind] !== s) continue;                          // replaced meanwhile
+          if (!r || !r.reachable) { if (++s.miss > 6) set(kind, null); continue; }
+          s.miss = 0;
+          const d = r.data || {};
+          if (d.state === "running" || d.state === "starting") {
+            const ind = kind === "dl" ? (d.post || (!(d.done > 0) && !(d.pct > 0))) : !(d.pct > 0);
+            set(kind, s.vid, ind ? "starting" : "running", d.pct || s.pct);
+          } else if (d.state === "done") set(kind, s.vid, "done", 100);
+          else if (d.state === "error") set(kind, s.vid, "fail", s.pct);
+          else if (d.state === "stopped") {
+            if (kind === "dl") set(kind, s.vid, "paused", d.pct || s.pct); else set(kind, null);
+          } else if (d.state === "none" || r.status === 404) set(kind, null);
+        }
+      } finally { busy = false; }
+      if (again) kick(slow ? 4000 : 1500);
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") kick(300);
+    });
+
+    // a download may already be going for this video (started in the app, or
+    // in this tab before a reload): look once when a watch page shows up
+    let probedFor = "";
+    async function probe() {
+      const vid = currentVideo();
+      if (!vid || vid.id === probedFor) return;
+      probedFor = vid.id;
+      if (st.dl && st.dl.vid === vid.id) return;
+      const r = await call("/v1/status?v=" + encodeURIComponent(vid.id), { timeout: 1500 });
+      if (!r.reachable || !r.data || st.dl) return;
+      const d = r.data;
+      if (d.state === "running" || d.state === "starting") {
+        set("dl", vid.id, (d.post || (!(d.done > 0) && !(d.pct > 0))) ? "starting" : "running", d.pct);
+      }
+    }
+
+    return { set, paint, paintAll, kick, probe, get: (k) => st[k] };
+  })();
 
   // Where the button goes. YouTube re-renders these rows freely, so this runs
   // from a (debounced) MutationObserver and simply re-inserts when missing.
@@ -496,6 +887,7 @@
   }
 
   let ensureTimer = 0;
+  let bridgeUp = false;          // v1.2: the app answered the first ping
   const scheduleEnsure = () => {
     if (ensureTimer) return;
     ensureTimer = setTimeout(() => { ensureTimer = 0; ensureButton(); }, 250);
@@ -507,6 +899,8 @@
   window.addEventListener("yt-navigate-finish", () => {
     ensureButton();
     Panel.onNavigate();
+    Live.paintAll();
+    if (bridgeUp) Live.probe();
   });
   // follow YouTube's own dark/light switch
   new MutationObserver(() => { relabelButtons(); Panel.retheme(); })
@@ -559,8 +953,8 @@
       host = document.createElement("yth-hunter-panel");
       host.style.cssText = "all: initial; position: fixed; z-index: 2147483000; top: 0; left: 0;";
       root = host.attachShadow({ mode: "open" });
-      root.innerHTML = (PANEL_CSS ? `<style>${PANEL_CSS}</style>`
-                                  : `<link rel="stylesheet" href="${ASSET("panel.css")}">`) + `
+      root.innerHTML = `<style></style>` + `
+        <div class="veil" aria-hidden="true"></div>
         <section class="panel" role="dialog" aria-modal="false" aria-label="YouTube Hunter" hidden>
           <header class="head">
             <span class="brand">${markSVG(22, false)}<span class="name">YouTube Hunter</span></span>
@@ -577,11 +971,16 @@
           <footer class="foot"></footer>
         </section>`;
       document.documentElement.appendChild(host);
+      // v1.2: the panel is built on the first click, long after the stylesheet
+      // fetch started; fill it now and let the fetch's callback top it up if
+      // it ever loses that race.
+      panelStyleEl = root.querySelector("style");
+      if (PANEL_CSS) panelStyleEl.textContent = PANEL_CSS;
       root.querySelector(".x").addEventListener("click", () => close());
       // v3.48: the body scrolls under a fixed footer; fade the edge that has
       // more content behind it, so "there's more below" is visible
-      root.querySelector(".body").addEventListener("scroll", shade, { passive: true });
-      window.addEventListener("resize", shade, { passive: true });
+      root.querySelector(".body").addEventListener("scroll", edgeFade, { passive: true });
+      window.addEventListener("resize", edgeFade, { passive: true });
       document.addEventListener("keydown", onGlobalKey, true);
       root.addEventListener("click", onClick);
       root.addEventListener("keydown", onDdKey);
@@ -615,7 +1014,7 @@
     const THEME_VARS = ["bg", "raise", "well", "line", "line-soft", "text", "strong",
                         "muted", "dim", "track", "ok", "bad", "warn", "on-acc"];
 
-    function shade() {
+    function edgeFade() {
       if (!root) return;
       const b = root.querySelector(".body"), sec = root.querySelector(".panel");
       if (!b || !sec) return;
@@ -667,7 +1066,7 @@
       }
       const same = state.video && state.video.id === vid.id;
       if (!same) Cut.reset();
-      if (!same || ["error", "offline", "idle", "waking"].includes(state.phase)) {
+      if (!same || ["error", "offline", "idle", "waking", "linked"].includes(state.phase)) {
         const keep = same ? state.saved : [];
         state = freshState(vid);
         state.saved = keep;
@@ -724,6 +1123,8 @@
       clearInterval(wakeTimer); wakeTimer = 0;
       Cut.onHide();
       if (wasOpen) release();
+      root.querySelector(".veil").classList.remove("on");
+      Live.kick(400);              // v1.2: the button keeps following the job
       if (anchorBtn && anchorBtn.shadowRoot) {
         const b = anchorBtn.shadowRoot.querySelector(`button[data-mode="${mode}"]`);
         b && b.focus({ preventScroll: true });
@@ -773,11 +1174,15 @@
       const ping = await call("/v1/ping", { timeout: 1500 });
       if (token !== runToken) return;
       if (!ping.reachable || !ping.data || !ping.data.ok) {
-        if (autoWake && ping.error !== "extension") { wake(); return; }
+        // v1.2: "extension" = this script lost its extension (it was reloaded
+        // or updated). Waking the app can't help; only a tab reload can.
+        state.extDead = ping.error === "extension";
+        if (autoWake && !state.extDead) { wake(); return; }
         state.phase = "offline";
         render();
         return;
       }
+      state.extDead = false;
       adopt(ping.data);
       // a download for this video may already be going (panel reopened)
       const st = await call("/v1/status?v=" + encodeURIComponent(state.video.id));
@@ -919,6 +1324,19 @@
       }
     }
 
+    // v1.2: the launch is a designed moment, not a bare spinner. The browser's
+    // own "Open YouTube Hunter?" prompt can't be restyled by any page or
+    // extension, so the panel stages it: a waking orb, three honest steps,
+    // and (the first few times) a small animated replica of that prompt
+    // showing exactly what to tick and press, so it's only ever seen once.
+    let wakeCount = 0, wakeT0 = 0, wakeBlur = false, wakeBack = false;
+    try {
+      chrome.storage.local.get("yth.wakes").then((x) => { wakeCount = (x && x["yth.wakes"]) || 0; }).catch(() => {});
+    } catch (_) { /* a nicety */ }
+    // the prompt takes focus from the page; focus coming back = it was answered
+    window.addEventListener("blur", () => { if (state.phase === "waking") wakeBlur = true; });
+    window.addEventListener("focus", () => { if (state.phase === "waking" && wakeBlur) wakeBack = true; });
+
     function wake() {
       // The installer registers youtubehunter:// → YouTube Hunter.exe. The
       // browser asks once ("Open YouTube Hunter?"); the app starts minimised.
@@ -928,6 +1346,9 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
+      wakeCount++;
+      try { chrome.storage.local.set({ "yth.wakes": wakeCount }); } catch (_) {}
+      wakeT0 = performance.now(); wakeBlur = false; wakeBack = false;
       state.phase = "waking";
       state.message = "";
       render();
@@ -935,11 +1356,14 @@
       clearInterval(wakeTimer);
       wakeTimer = setInterval(async () => {
         const p = await call("/v1/ping", { timeout: 900 });
+        if (state.phase !== "waking") { clearInterval(wakeTimer); wakeTimer = 0; return; }
         if (p.reachable && p.data && p.data.ok) {
           clearInterval(wakeTimer); wakeTimer = 0;
-          state.phase = "connecting";
+          // the orb locks on for a beat, then the formats load under it
+          state.phase = "linked";
           render();
-          connect();
+          const tok = runToken;
+          setTimeout(() => { if (state.phase === "linked" && tok === runToken && isOpen()) connect(); }, 850);
         } else if (Date.now() - started > 30000) {
           clearInterval(wakeTimer); wakeTimer = 0;
           state.phase = "offline";
@@ -971,8 +1395,9 @@
                 vf: state.vf || undefined, af: state.af || undefined, lang: state.lang || "" },
         timeout: 20000,
       });
-      if (!res.reachable) { state.phase = "offline"; render(); return; }
+      if (!res.reachable) { Live.set("dl", null); state.phase = "offline"; render(); return; }
       if (!res.data || !res.data.ok) {
+        Live.set("dl", state.video.id, "fail", 0);
         state.phase = "error";
         state.message = (res.data && res.data.error) || t("failed");
         render();
@@ -1007,6 +1432,7 @@
       if (dlc && isLive() && mode === "download") {
         root.querySelector(".panel").setAttribute("data-phase", state.phase);
         paintProgress();
+        syncLive();
       } else render();
     }
 
@@ -1038,7 +1464,7 @@
           let ph = s.state === "none" ? state.phase : liveSubPhase(s);
           // ⏸ was just pressed and the app hasn't flagged it yet: hold "Pausing…"
           if (ctlWant === "pause" && sinceCtl < 2500 && ph === "running") ph = "pausing";
-          if (ctlWant === "resume" && ph === "running" && (s.done > 0 || s.pct > (state.live.pct || 0))) ctlWant = "";
+          if (ctlWant === "resume" && ph === "running" && (s.done > 0 || s.pct > ((state.live && state.live.pct) || 0))) ctlWant = "";
           if (!LIVE.includes(ph)) ph = "running";
           state.phase = ph;
           paintOrRender();
@@ -1059,10 +1485,13 @@
           const k = (s.id && state.rows.some((r) => rid(r) === s.id)) ? s.id : (state.dlKey || state.key);
           if (k && !state.saved.includes(k)) state.saved.push(k);
           state.key = k || state.key;
+          Live.set("dl", vid, "done", 100);
           render(); if (mode === "download") burst(); return;
         } else if (s.state === "error") {
+          Live.set("dl", vid, "fail", (state.live && state.live.pct) || 0);
           state.phase = "error"; state.message = s.error || t("failed"); render(); return;
         } else if (s.state === "stopped") {
+          Live.set("dl", null);
           state.phase = "error"; state.message = t("stopped"); render(); return;
         }
         pollTimer = setTimeout(tick, next);
@@ -1155,6 +1584,7 @@
       }
       else if (act === "pause" || act === "resume") control(act);
       else if (act === "wake") wake();
+      else if (act === "reload") location.reload();
       else if (act === "retry") {
         state.phase = "connecting"; state.message = ""; render(); connect();
       } else if (act === "reveal") {
@@ -1203,7 +1633,7 @@
     }
 
     // ── rendering ───────────────────────────────────────────────────────
-    const ready = () => !["connecting", "offline", "waking"].includes(state.phase)
+    const ready = () => !["connecting", "offline", "waking", "linked"].includes(state.phase)
       && !(state.phase === "error" && !state.video);
 
     function render() {
@@ -1212,6 +1642,9 @@
       const sec = root.querySelector(".panel");
       sec.setAttribute("data-phase", state.phase);
       sec.toggleAttribute("data-live", isLive());
+      // v1.2: while the browser asks to open the app, the page dims softly so
+      // the prompt and this card are the only two things in focus
+      root.querySelector(".veil").classList.toggle("on", state.phase === "waking" && isOpen());
       sec.setAttribute("data-mode", mode);
       root.querySelector(".tabs").setAttribute("data-mode", mode);
       root.querySelectorAll(".tabs button").forEach((b) => {
@@ -1231,11 +1664,15 @@
         const meta = state.meta || {};
         vEl.hidden = false;
         vEl.innerHTML = `
-          <span class="thumb${v.short ? " short" : ""}"><img alt="" src="https://i.ytimg.com/vi/${esc(v.id)}/mqdefault.jpg" onerror="this.remove()">${(() => { const d = Cut.dur(); return d > 0 && d !== Infinity ? `<span class="tdur">${esc(clock(d))}</span>` : ""; })()}</span>
+          <span class="thumb${v.short ? " short" : ""}"><img alt="" src="https://i.ytimg.com/vi/${esc(v.id)}/mqdefault.jpg">${(() => { const d = Cut.dur(); return d > 0 && d !== Infinity ? `<span class="tdur">${esc(clock(d))}</span>` : ""; })()}</span>
           <span class="vt">
             <b>${esc(meta.title || "")}</b>
             <small>${v.short ? `<em>${esc(t("shorts"))}</em>` : ""}${esc(meta.channel || "")}</small>
           </span>`;
+        // v1.2: no inline onerror="" — YouTube's CSP blocks inline handlers
+        // and logged a violation on every render
+        const im = vEl.querySelector("img");
+        if (im) im.addEventListener("error", () => im.remove(), { once: true });
       } else vEl.hidden = true;
 
       const body = root.querySelector(".body"), foot = root.querySelector(".foot");
@@ -1244,13 +1681,17 @@
         foot.innerHTML = Cut.footHTML();
         Cut.bind(body);
         Cut.paint();
-        shade();
+        edgeFade();
+        syncLive();
+        loaderTick();
         return;
       }
       if (mode === "cut" && state.phase === "reading") {
         body.innerHTML = Cut.skeletonHTML();
         foot.innerHTML = "";
-        shade();
+        edgeFade();
+        syncLive();
+        loaderTick();
         return;
       }
       body.innerHTML = bodyHTML();
@@ -1258,24 +1699,150 @@
       const ladder = root.querySelector(".ladder");
       if (ladder) ladder.addEventListener("keydown", onLadderKey);
       paintProgress();
-      shade();
+      edgeFade();
+      syncLive();
+      loaderTick();
+    }
+
+    // ── v1.2: the button mirrors the download ───────────────────────────
+    function syncLive() {
+      if (!state.video) return;
+      const vid = state.video.id;
+      const s = state.live || {};
+      const pct = Math.max(0, Math.min(100, Number(s.pct) || 0));
+      const ph = state.phase;
+      if (ph === "sending" || ph === "resuming"
+          || (ph === "running" && (s.post || (!(s.done > 0) && pct <= 0)))) Live.set("dl", vid, "starting", pct);
+      else if (ph === "running" || ph === "pausing") Live.set("dl", vid, "running", pct);
+      else if (ph === "paused") Live.set("dl", vid, "paused", pct);
+    }
+
+    // ── v1.2: loaders ───────────────────────────────────────────────────
+    // One clock for the phase that is loading: the scan's status line steps
+    // forward with the real stages of the probe, the stopwatch counts, and the
+    // launch card moves through its steps. Stops itself when nothing loads.
+    let loadKind = "", loadT0 = 0, loadTimer = 0;
+    const SCAN_STEPS = {
+      dl: [[0, "scan1"], [1.1, "scan2"], [2.8, "scan3"], [9, "scan4"]],
+      cut: [[0, "cutScan1"], [1.1, "cutScan2"], [2.8, "cutScan3"], [9, "scan4"]],
+    };
+    function loaderTick() {
+      const el = root && root.querySelector(".scan, .wake, .hsw");
+      if (!el) { clearInterval(loadTimer); loadTimer = 0; loadKind = ""; return; }
+      const kind = el.classList.contains("wake") ? "wake" : el.classList.contains("hsw") ? "hs"
+                 : el.classList.contains("cutscan") ? "cut" : "dl";
+      // the scan keeps its clock across a Download ⇄ Cut tab switch
+      const same = kind === loadKind || (["dl", "cut"].includes(kind) && ["dl", "cut"].includes(loadKind));
+      if (!same) loadT0 = kind === "wake" ? wakeT0 || performance.now() : performance.now();
+      loadKind = kind;
+      if (!loadTimer) loadTimer = setInterval(loaderTick, 100);
+      const sec = (performance.now() - loadT0) / 1000;
+      if (kind === "dl" || kind === "cut") {
+        const clockEl = el.querySelector(".sclock");
+        if (clockEl) clockEl.textContent = sec.toFixed(1) + "s";
+        const steps = SCAN_STEPS[kind];
+        let k = 0;
+        for (let i = 0; i < steps.length; i++) if (sec >= steps[i][0]) k = i;
+        const cyc = el.querySelector(".scyc");
+        if (cyc && cyc.getAttribute("data-k") !== String(k)) {
+          cyc.setAttribute("data-k", String(k));
+          cyc.textContent = t(steps[k][1]);
+          cyc.classList.remove("sw"); void cyc.offsetWidth; cyc.classList.add("sw");
+          el.querySelectorAll(".spips i").forEach((p, i) => p.classList.toggle("on", i <= Math.min(k, 2)));
+        }
+      } else if (kind === "wake") {
+        const step = state.phase === "linked" ? 3 : (wakeBack || sec > 6 ? 2 : 1);
+        if (el.getAttribute("data-step") !== String(step)) el.setAttribute("data-step", String(step));
+      }
+    }
+
+    const ICON_RELOAD = '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M14.2 9a5.2 5.2 0 1 1-1.6-3.8M14.6 2.8v3.4h-3.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const ICON_TAB = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2.5 7.5h15" stroke="currentColor" stroke-width="1.6"/><circle cx="5.3" cy="5.5" r=".8" fill="currentColor"/><circle cx="7.6" cy="5.5" r=".8" fill="currentColor"/><path d="M8.6 10.2v3.6l3-1.8z" fill="currentColor"/></svg>';
+
+    // connecting: this tab ··•·· the app, a pulse travelling between them
+    function handshakeHTML() {
+      return `<div class="hsw" role="status">
+          <div class="hs" aria-hidden="true">
+            <span class="hsn">${ICON_TAB}</span>
+            <span class="hsl"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b></b></span>
+            <span class="hsn me">${markSVG(22, false)}</span>
+          </div>
+          <p class="hst"><b>${esc(t("handshake"))}</b><small>${esc(t("handshakeSub"))}</small></p>
+        </div>`;
+    }
+
+    // reading: a scanner sweeps a ghost ladder while the probe runs
+    function scanHead(kind) {
+      const cut = kind === "cut";
+      return `<div class="scanhd">
+          <span class="sorb" aria-hidden="true"><i class="so"></i>${cut ? scissorsSVG(17) : markSVG(20, true)}</span>
+          <span class="stx"><b>${esc(t(cut ? "cutScanTitle" : "scanTitle"))}</b><small class="scyc" data-k="0">${esc(t(cut ? "cutScan1" : "scan1"))}</small></span>
+          <span class="sclock" aria-hidden="true">0.0s</span>
+        </div>
+        <div class="spips" aria-hidden="true"><i class="on"></i><i></i><i></i></div>`;
+    }
+    function scanHTML(kind) {
+      if (kind === "cut") return Cut.skeletonHTML();
+      const rows = [[30, 46, 92], [30, 40, 71], [32, 52, 54], [26, 36, 38], [26, 44, 22]];
+      return `<div class="scan" role="status" aria-busy="true" aria-label="${esc(t("reading"))}">
+          ${scanHead("dl")}
+          <div class="sl" aria-hidden="true">
+            ${rows.map(([q, sub, w], i) => `<div class="sr" style="--i:${i};--q:${q}px;--s:${sub}px;--w:${w}%">
+                <span class="sd"></span><span class="sq"></span><span class="ss"></span><span class="sz"></span>
+                <span class="sb"><i></i></span>
+              </div>`).join("")}
+            <span class="beam"></span>
+          </div>
+        </div>`;
+    }
+
+    // waking: the orb, three steps, and (first times) a replica of the prompt
+    function wakeHTML(linked) {
+      const full = wakeCount <= 3;
+      return `<div class="wake${linked ? " linked" : ""}" data-step="${linked ? 3 : 1}" role="status" aria-live="polite">
+          <div class="wstage" aria-hidden="true">
+            <span class="wr r1"></span><span class="wr r2"></span><span class="wr r3"></span>
+            <span class="wsat"><i></i></span>
+            <span class="wcore">${markSVG(32, false)}</span>
+            <span class="wtick"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+          <b class="wt">${esc(linked ? t("wakeStep3") : t("wakeTitle"))}</b>
+          <p class="wb">${esc(linked ? t("wakeLinked") : t("wakeBody"))}</p>
+          <ol class="wsteps">
+            <li data-n="1"><i><u></u></i><span>${esc(t("wakeStep1"))}</span></li>
+            <li data-n="2"><i><u></u></i><span>${esc(t("wakeStep2"))}</span></li>
+            <li data-n="3"><i><u></u></i><span>${esc(t("wakeStep3"))}</span></li>
+          </ol>
+          ${linked ? "" : full ? `<div class="whint">
+              <span class="mock" aria-hidden="true">
+                <span class="mk-t"></span><span class="mk-u"></span>
+                <span class="mk-row"><span class="mk-box"><svg width="10" height="10" viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="mk-l">${esc(t("wakeAlways"))}</span></span>
+                <span class="mk-btns"><span class="mk-open">${esc(t("wakeOpen"))}</span><span class="mk-no">${esc(t("wakeCancel"))}</span></span>
+                <span class="mk-cur"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M3 1.8l9.6 6.3-4.3.7 2.4 4.6-1.7.9-2.4-4.7-3.1 3z" fill="#fff" stroke="#111" stroke-width="1" stroke-linejoin="round"/></svg></span>
+              </span>
+              <p>${esc(t("wakeHint"))}</p>
+            </div>` : `<p class="whint1">${esc(t("wakeHintShort"))}</p>`}
+          ${linked ? "" : `<span class="wtime" aria-hidden="true"><i></i></span>`}
+        </div>`;
     }
 
     function bodyHTML() {
       switch (state.phase) {
         case "connecting":
-          return `<p class="quiet"><span class="spin"></span>${esc(t("connecting"))}</p>`;
+          return handshakeHTML();
         case "offline":
-          return `<div class="off">
-              <b>${esc(t("offTitle"))}</b>
-              <p>${esc(state.message || t("offBody"))}</p>
+          if (state.extDead) {
+            return `<div class="off ext"><span class="oi">${ICON_RELOAD}</span>
+                <span><b>${esc(t("reloadTitle"))}</b><p>${esc(t("reloadBody"))}</p></span></div>`;
+          }
+          return `<div class="off"><span class="oi sleep">${markSVG(26, false)}</span>
+              <span><b>${esc(t("offTitle"))}</b><p>${esc(state.message || t("offBody"))}</p></span>
             </div>`;
         case "waking":
-          return `<p class="quiet"><span class="spin"></span>${esc(t("offWaking"))}</p>`;
+        case "linked":
+          return wakeHTML(state.phase === "linked");
         case "reading":
-          return `<div class="ladder ghost" aria-busy="true">
-              ${[88, 64, 40, 22].map((w, i) => `<div class="rung skel" style="--d:${i * 90}ms"><span class="bar"><i style="width:${w}%"></i></span></div>`).join("")}
-            </div><p class="note">${esc(t("reading"))}</p>`;
+          return scanHTML("dl");
         case "error":
           return (state.rows.length && state.video ? ladderHTML() : "")
             + `<div class="off err"><b>${esc(t("failed"))}</b><p>${esc(state.message)}</p></div>`;
@@ -1453,6 +2020,9 @@
       const row = curRow();
       switch (state.phase) {
         case "offline":
+          if (state.extDead) {
+            return `<button class="primary" type="button" data-act="reload">${ICON_RELOAD}<span>${esc(t("reloadBtn"))}</span></button>`;
+          }
           return `<button class="primary" type="button" data-act="wake">${markSVG(18)}<span>${esc(t("offStart"))}</span></button>
                   <button class="ghost" type="button" data-act="retry">${esc(t("retry"))}</button>`;
         case "pick": {
@@ -1843,12 +2413,25 @@
       }
 
       // ── markup ─────────────────────────────────────────────────────────
+      // v1.2: the cut's loader — a ruler drawing itself in, a ghost clip
+      // breathing between two handles and a playhead sweeping across it
       function skeletonHTML() {
-        return `<div class="cut ghost" aria-busy="true">
-            <div class="tcbar"><span class="skl w40"></span><span class="skl w20"></span><span class="skl w40"></span></div>
-            <div class="scrub skel"><i></i></div>
-            <div class="qgrid">${[0, 1, 2].map((i) => `<span class="skl qchip" style="--d:${i * 90}ms"></span>`).join("")}</div>
-          </div><p class="note">${esc(t("reading"))}</p>`;
+        const ticks = Array.from({ length: 33 }, (_, i) =>
+          `<i class="${i % 5 === 0 ? "maj" : ""}" style="--i:${i};left:${(i / 32 * 100).toFixed(2)}%"></i>`).join("");
+        return `<div class="scan cutscan" role="status" aria-busy="true" aria-label="${esc(t("reading"))}">
+            ${scanHead("cut")}
+            <div class="ctcs" aria-hidden="true">
+              <span class="ctc"><small>${esc(t("markIn"))}</small><b>0:00.0</b></span>
+              <span class="clen"></span>
+              <span class="ctc out"><small>${esc(t("markOut"))}</small><b>0:30.0</b></span>
+            </div>
+            <div class="crul" aria-hidden="true">
+              <span class="cticks">${ticks}</span>
+              <span class="cband"><i class="ch l"></i><i class="ch r"></i></span>
+              <span class="csweep"></span>
+            </div>
+            <div class="cqs" aria-hidden="true"><span style="--i:0"></span><span style="--i:1"></span><span style="--i:2"></span></div>
+          </div>`;
       }
 
       function bodyHTML() {
@@ -2401,11 +2984,13 @@
           c.phase = "error";
           c.message = res.status === 404 ? t("cutNeedsUpdate")
                     : (res.data && res.data.error) || t("cutFailed");
+          Live.set("cut", state.video.id, "fail", 0);
           render();
           return;
         }
         c.job = res.data.job;
         c.phase = "running";
+        Live.set("cut", state.video.id, "starting", 0, c.job);
         render();
         pollCut();
       }
@@ -2434,20 +3019,25 @@
           } else if (s.state === "starting" || s.state === "running") {
             misses = 0; bad = 0;
             c.live = s;
+            Live.set("cut", vid, Number(s.pct) > 0 ? "running" : "starting", s.pct, job);
             if (mode === "cut") paintCutProgress();
           } else if (s.state === "done") {
+            Live.set("cut", vid, "done", 100, job);
             c.phase = "done"; c.result = s; render();
             if (mode === "cut") burst();
             return;
           } else if (s.state === "stopped") {
+            Live.set("cut", null);
             c.phase = "error"; c.message = t("cutStopped"); render(); return;
           } else if (s.state === "error") {
+            Live.set("cut", vid, "fail", (c.live && c.live.pct) || 0, job);
             c.phase = "error"; c.message = s.error || t("cutFailed"); render(); return;
           } else {
             misses = 0;
             // 404 = the app no longer knows this job (it was restarted);
             // anything else is a transient bad reply. Either way, retry first.
             if (++bad > (r.status === 404 ? 5 : 15)) {
+              Live.set("cut", null);
               c.phase = "error";
               c.message = r.status === 404 ? t("cutLost")
                         : (s.error || t("cutFailed")) + (r.status ? " (" + r.status + ")" : "");
@@ -2470,7 +3060,13 @@
     const anchoredTo = (h) => !!h && h === anchorBtn && isOpen();
     function reanchor(h) { anchorBtn = h; setExpanded(true); }
 
-    return { toggle, open, close, onNavigate, retheme, anchoredTo, reanchor };
+    // v1.2: is the open panel already polling this job? (then Live stays quiet)
+    function covers(kind, vid) {
+      if (!isOpen() || !state.video || state.video.id !== vid) return false;
+      return kind === "dl" ? isLive() : !!Cut.job();
+    }
+
+    return { toggle, open, close, onNavigate, retheme, anchoredTo, reanchor, covers, isOpen };
   })();
 
   // first paint
@@ -2478,5 +3074,8 @@
   // v3.43: installation hand-off. The desktop setup dialog closes as soon
   // as a content script proves the unpacked extension is alive. This is a
   // harmless local ping when the app is not running and does not touch YouTube.
-  call("/v1/ping", { timeout: 1200 });
+  call("/v1/ping", { timeout: 1200 }).then((p) => {
+    bridgeUp = !!(p && p.reachable && p.data && p.data.ok);
+    if (bridgeUp) Live.probe();
+  });
 })();

@@ -35,14 +35,14 @@
 AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion} (64-bit)
 AppPublisher={#MyAppPublisher}
-AppComments=YouTube research, downloads and clip cutting for content creators.
+AppComments=YouTube research, downloads and clip cutting for content creators. 64-bit build: Windows 10 (1809 or newer) / Windows 11 on x64.
 VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription={#MyAppName} Setup
+VersionInfoDescription={#MyAppName} {#MyAppVersion} Setup - Windows 10/11 (64-bit)
 ; Per-user install by default so no admin rights are needed (fewer failures on
 ; locked-down machines); the user can still choose an all-users install.
 PrivilegesRequiredOverridesAllowed=dialog commandline
@@ -135,6 +135,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; v1.1 in-app update: the app starts Setup with /VERYSILENT /relaunch=1 and
+; quits. Once the files are replaced, reopen it so the update feels like a
+; restart rather than a reinstall.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: ShouldRelaunch
 
 [UninstallDelete]
 ; The app's own data (config, SQLite archives, downloaded files) lives in
@@ -147,6 +151,12 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 // already refuses to install, and if the app is running Setup closes it. The
 // only thing left worth saying out loud is where the app data will live, so a
 // customer knows an uninstall keeps it.
+// v1.1: true when the app itself launched this Setup as an update.
+function ShouldRelaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;

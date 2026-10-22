@@ -296,7 +296,20 @@ class MonetizeVM(QObject):
 
     def _estimate_ypp(self, recent):
         """Rough public watch hours/year and Shorts views in 90 days — neither
-        is exposed by any API, so both are projected from recent uploads."""
+        is exposed by any API, so both are projected from recent uploads.
+
+        v1.2 — the 90-day figure used to add up the views of videos *published*
+        inside the last 90 days. That is the wrong question: YouTube counts
+        views *earned* in the window, not views of videos released in it. A
+        channel with 32M lifetime views that has posted little lately came out
+        at a few hundred thousand and the panel told the user it "hasn't got the
+        10M" — a number that contradicted the 32M printed right above it. Now a
+        video's lifetime views are spread over its own age and only the slice
+        that falls inside the window is counted, so an older Short that is still
+        being watched keeps contributing. Still an estimate (it says "~" for a
+        reason), but no longer a systematic undercount of exactly the channels
+        the check is usually pointed at.
+        """
         watch_sec_day = 0.0
         shorts_90d = 0.0
         for v in recent:
@@ -305,9 +318,12 @@ class MonetizeVM(QObject):
                 v.get("contentDetails", {}).get("duration", ""))
             age_days = max(hours_since(
                 v.get("snippet", {}).get("publishedAt", "")) / 24, 1.0)
+            # Share of this video's lifetime views earned inside the window.
+            # Uniform accrual is a first-order model: a two-day-old video
+            # counts in full, a two-year-old one counts its last 90 days.
+            share = 1.0 if age_days <= 90 else min(1.0, 90.0 / age_days)
             if dur and dur < SHORT_MAX_SECONDS:
-                if age_days <= 90:
-                    shorts_90d += views
+                shorts_90d += views * share
             else:
                 watch_sec_day += (views * dur * 0.45) / age_days
         return watch_sec_day * 365 / 3600.0, shorts_90d
@@ -342,7 +358,8 @@ class MonetizeVM(QObject):
                 "super_thanks": super_thanks, "midrolls": midrolls,
                 "ads_seen": ads_seen, "n_checked": max(1, len(check_list))}
 
-    def _verdict(self, subs, recent, mode, format_used, is_shorts, sig):
+    def _verdict(self, subs, recent, mode, format_used, is_shorts, sig,
+                 total_views=None):
         """Decide monetized / not, always answering, with a certainty score and
         an evidence checklist. Ported from the legacy algorithm.
 
@@ -410,11 +427,20 @@ class MonetizeVM(QObject):
             tr("{n} subscribers — still short of the 1,000 needed for ads.").format(
                 n=subs_txt), kind="odds")
         if is_shorts:
+            # v1.2: say where the number comes from and what it is not. The old
+            # line stated a hard "short of the 10M" next to a channel showing
+            # 32M views in the hero, which reads as the app contradicting
+            # itself. YouTube publishes no 90-day view count, so this is a
+            # projection — and a back catalogue still being watched can put the
+            # real figure well above it.
+            short_txt = humanize_count(shorts_90d)
             add(shorts_90d >= 10_000_000, "shorts_views",
                 tr("~{n} Shorts views in the last 90 days — past the 10M that opens "
-                   "the Shorts route in.").format(n=humanize_count(shorts_90d)),
-                tr("~{n} Shorts views in the last 90 days — short of the 10M that "
-                   "opens the Shorts route in.").format(n=humanize_count(shorts_90d)),
+                   "the Shorts route in.").format(n=short_txt),
+                tr("~{n} Shorts views in the last 90 days — under the 10M the Shorts "
+                   "route needs. Projected from the {m} recent uploads, so a back "
+                   "catalogue that is still being watched can put the real figure "
+                   "higher.").format(n=short_txt, m=max(1, len(recent))),
                 kind="odds")
         else:
             add(watch_hours >= 4000, "watch_hours",
@@ -422,6 +448,8 @@ class MonetizeVM(QObject):
                    "bar.").format(n=humanize_count(watch_hours)),
                 tr("~{n} public watch hours a year (estimated) — under the 4,000 "
                    "bar.").format(n=humanize_count(watch_hours)), kind="odds")
+
+        threshold_ok = (shorts_90d >= 10_000_000 if is_shorts else watch_hours >= 4000)
 
         if not page["html_ok"] or not checked_any:
             add(False, "fetch_failed",
@@ -436,6 +464,20 @@ class MonetizeVM(QObject):
             certainty = max(weights.get(c["key"], 90) for c in proof_hits)
             if len(proof_hits) > 1:
                 certainty = min(99, certainty + 2)
+            if not threshold_ok:
+                # v1.2: this is the case that confused people. A Join button is
+                # proof on its own, but the odds row above can still read "under
+                # the 10M" on a channel with tens of millions of views — so say
+                # out loud why both are true instead of leaving the two numbers
+                # sitting next to each other looking like a contradiction.
+                add(False, "odds_gap",
+                    tr("The evidence above decides it on its own — a feature only "
+                       "Partner Program channels can switch on is live here. The "
+                       "estimate under it is projected from recent uploads and can "
+                       "sit below the bar on a channel with {v} lifetime views, "
+                       "because older videos still earn views today.").format(
+                           v=humanize_count(total_views or 0)),
+                    kind="note")
             return {"status": "MONETIZED", "certainty": certainty, "checks": checks,
                     "format_used": format_used,
                     "headline": tr("This channel is monetized."),
@@ -444,7 +486,6 @@ class MonetizeVM(QObject):
                                  "the channel.").format(n=len(proof_hits))}
 
         # no proof — price the odds
-        threshold_ok = (shorts_90d >= 10_000_000 if is_shorts else watch_hours >= 4000)
         score = 0
         if subs_ok:
             score += 42
@@ -704,7 +745,8 @@ class MonetizeVM(QObject):
                     "yearly": _span(yearly)}
 
         monetization = self._verdict(subs, recent, mode, ctx["format_used"],
-                                     ctx["is_shorts"], ctx["signals"])
+                                     ctx["is_shorts"], ctx["signals"],
+                                     total_views=total_views)
 
         thumbs = snip.get("thumbnails", {})
         thumb_url = (thumbs.get("high") or thumbs.get("medium")

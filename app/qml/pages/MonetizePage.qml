@@ -858,6 +858,15 @@ Item {
                         for (var i = 0; i < cs.length; i++) if (cs[i].ok) n++
                         return n
                     }
+                    // v1.2: notes are commentary, not signals — counting them in
+                    // the denominator made "2 of 6" become "2 of 7" the moment a
+                    // note was added, which reads as "the check got worse".
+                    readonly property int signalCount: {
+                        var n = 0
+                        var cs = res.r.checks || []
+                        for (var i = 0; i < cs.length; i++) if (cs[i].kind !== "note") n++
+                        return n
+                    }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -874,7 +883,7 @@ Item {
                             }
                             C.AppText {
                                 text: I18n.tr("{a} of {b} signals found").replace("{a}", evCol.foundCount)
-                                                                       .replace("{b}", (res.r.checks || []).length)
+                                                                       .replace("{b}", evCol.signalCount)
                                 font.pixelSize: Tokens.fontCaption
                                 color: Theme.on_surface_var
                             }
