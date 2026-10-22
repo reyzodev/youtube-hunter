@@ -27,6 +27,10 @@ without leaving YouTube Hunter.
   swallowed.
 - The address is one line: `DONATE_URL` in `app/constants.py`, overridable per install with
   `donate_url` in `config.json`.
+- With no address set the app never loads Chromium: the Support window (and QtWebEngine with
+  it) is only built when there is a page to open, and the Donate pill hides itself. Verified
+  in the packaged build: zero WebEngine modules in the process, and no page is ever loaded
+  until the card is opened.
 - The build now keeps QtWebEngine (`QtWebEngineCore.dll`, ~195 MB) in the bundle, and the
   Google API discovery-cache trim that used to live beside the WebEngine trim is back.
 

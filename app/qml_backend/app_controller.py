@@ -48,6 +48,29 @@ PAGE_CUTTER        = 12
 PAGE_AI_CHAT       = 13
 
 
+def resolved_donate_url() -> str:
+    """The Support page, or "" when the feature is switched off.
+
+    Precedence: `donate_url` in config.json (per-install override) →
+    DONATE_URL in app/constants.py (the shipped default, deliberately empty).
+    http(s) only: config.json is a plain file on disk, so a tampered value must
+    never be able to hand the web view a file:// path or a custom protocol.
+
+    Why this is a module function and not just the QML property: main_qml.py
+    asks the same question BEFORE the window exists. QtWebEngine costs ~260 MB
+    of resident memory the moment it is initialised — measured — so the app
+    only pays for it when there is actually a page to show.
+    """
+    url = ""
+    try:
+        url = str(load_app_config().get("donate_url") or "").strip()
+    except Exception:                    # noqa: BLE001 — never break the rail
+        url = ""
+    if not url:
+        url = DONATE_URL
+    return url if url.lower().startswith(("http://", "https://")) else ""
+
+
 class AppController(QObject):
     """Application shell state for the QML UI."""
 
@@ -177,14 +200,7 @@ class AppController(QObject):
         config.json is a plain file on disk, so a tampered value must never be
         able to hand the web view a file:// path or a custom protocol.
         """
-        url = ""
-        try:
-            url = str(load_app_config().get("donate_url") or "").strip()
-        except Exception:                # noqa: BLE001 — never break the rail
-            url = ""
-        if not url:
-            url = DONATE_URL
-        return url if url.lower().startswith(("http://", "https://")) else ""
+        return resolved_donate_url()
 
     @Slot()
     def openDonate(self):

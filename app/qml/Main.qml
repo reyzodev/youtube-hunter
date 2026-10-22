@@ -1068,15 +1068,29 @@ Window {
     // the app (QtWebEngine), framed by a quiet card. The address comes from
     // App.donateUrl — DONATE_URL in app/constants.py, or `donate_url` in
     // config.json.
-    C.DonateOverlay { id: donateOverlay }
+    // Only built when there is a page to open. `App.donateUrl` is empty in the
+    // published build, and main_qml.py only initialises QtWebEngine when it is
+    // not — so a build with no donation address never loads Chromium at all
+    // (~260 MB of resident memory saved; the Donate pill is hidden anyway).
+    // With an address this is the same eager card as before: ready before the
+    // first click, so opening it is instant.
+    Loader {
+        id: donateLoader
+        active: App.donateUrl !== ""
+        // `source`, not `sourceComponent`: a sourceComponent is COMPILED as soon
+        // as it is declared, which pulls in DonateOverlay.qml and its
+        // `import QtWebEngine` even while the loader is inactive — the whole
+        // point of this being a loader was lost (measured: the Chromium DLLs
+        // were still in the process). `source` is only read when active.
+        source: "components/DonateOverlay.qml"
+    }
     Connections {
         target: App
         function onDonateRequested() {
-            // If the overlay could not be created at all — a build where
-            // QtWebEngine is missing — `donateOverlay` is null, and doing
-            // nothing here is exactly the dead button this feature replaced.
-            // Fall back to the browser instead.
-            if (donateOverlay) donateOverlay.present()
+            // `active` is already true whenever the pill can be clicked; the
+            // guard covers a build where the card failed to build (no
+            // QtWebEngine) — then the browser is the honest fallback.
+            if (donateLoader.item) donateLoader.item.present()
             else App.openDonateExternal()
         }
     }
@@ -1117,7 +1131,7 @@ Window {
     // shows its own calm "You're offline" state and reloads by itself.
     function _presentGateBehindDonate() {
         geoDialog.presentStartup()
-        if (donateOverlay && donateOverlay.opened) donateOverlay.forceActiveFocus()
+        if (donateLoader.item && donateLoader.item.opened) donateLoader.item.forceActiveFocus()
     }
     Connections {
         target: Geo

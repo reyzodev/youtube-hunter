@@ -189,12 +189,19 @@ def main():
 
     # ── the in-app donation page (Support window) ──────────────────────
     # DonateOverlay hosts a live WebEngineView, and QtWebEngine has to be
-    # initialised before the QML engine exists. It also runs its own Chromium
-    # process tree, so the whole thing is optional: if the module is missing
-    # (a trimmed build) the Donate pill simply opens the page in the browser.
+    # initialised before the QML engine loads that file. It is also expensive:
+    # measured on a cold start, initialising Chromium costs ~260 MB of resident
+    # memory before a single page is loaded (118 MB → 377 MB). So it only
+    # happens when there is a page to show — `donate_url` in config.json or
+    # DONATE_URL in app/constants.py. With no address the Support window does
+    # not exist at all: no Chromium, no view, no cost, and the Donate pill hides
+    # itself. If the module is missing (a trimmed build) the pill falls back to
+    # the system browser instead.
     try:
-        from PySide6.QtWebEngineQuick import QtWebEngineQuick
-        QtWebEngineQuick.initialize()
+        from app.qml_backend.app_controller import resolved_donate_url
+        if resolved_donate_url():
+            from PySide6.QtWebEngineQuick import QtWebEngineQuick
+            QtWebEngineQuick.initialize()
     except Exception as _exc:                    # noqa: BLE001 — optional
         log_crash("QtWebEngine unavailable, Donate falls back to the "
                   "browser: " + str(_exc))
