@@ -16,7 +16,7 @@ Windows 7/8.1, 32-bit Windows, macOS and Linux are not supported (the bundled Qt
 
 ## 2. Install
 
-1. Download **`YouTubeHunter-Setup.exe`** from the [latest release](https://github.com/reyzodev/youtube-hunter/releases/latest).
+1. Download **`YouTubeHunter-Setup-1.0.0-x64.exe`** from the [latest release](https://github.com/reyzodev/youtube-hunter/releases/latest). The version in the name goes up with each release; the `-x64` marks the 64-bit build.
 2. Double-click it. The wizard is a single page: it shows where the app will go and offers a desktop shortcut.
 3. Press **Install**, then **Finish**.
 
@@ -42,7 +42,7 @@ Some antivirus products flag unsigned installers that contain `deno.exe`/`ffprob
 ### Silent install (for IT / scripted deployment)
 
 ```bat
-YouTubeHunter-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+YouTubeHunter-Setup-1.0.0-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 Add `/ALLUSERS` to install for every user on the machine (this one needs an administrator). The installer writes a log to `%TEMP%` (`SetupLogging=yes`), which is the first thing to read if an install fails.

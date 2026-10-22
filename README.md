@@ -28,7 +28,7 @@ It is a native Windows application (Python + Qt Quick/QML). Everything runs on y
 
 ## Download & install
 
-1. Open the **[latest release](../../releases/latest)** and download **`YouTubeHunter-Setup.exe`**.
+1. Open the **[latest release](../../releases/latest)** and download **`YouTubeHunter-Setup-1.0.0-x64.exe`**.
 2. Run it. It installs **per user** in `%LOCALAPPDATA%\Programs\YouTube Hunter` — no administrator prompt, no UAC, nothing written to `Program Files`.
 3. Launch **YouTube Hunter** from the Start menu or the desktop shortcut.
 
