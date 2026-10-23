@@ -70,6 +70,40 @@ Item {
     readonly property bool _featureFirst: libSort === 0 && ContentLab.entrySearch === ""
                                           && _sortedEntries.length >= 3
 
+    // ── section-grid pagination (v1.0.1) ──
+    // Same idea as the Search Archive's pager: past one screen of sections the
+    // landing became an endless wall. A page is three full rows of whatever the
+    // window fits (4 columns → 12), never less than 6. On page 1 the wide
+    // "latest" card takes two cells, so that page holds one card fewer and
+    // every row still ends flush.
+    property int _libPage: 0
+    readonly property int _libPerPage: Math.max(6, entryGrid.columns * 3)
+    readonly property int _libTotal: _sortedEntries.length
+    readonly property int _libFirstCount: _libPerPage - (_featureFirst && entryGrid.columns >= 3 ? 1 : 0)
+    readonly property int _libPages: _libTotal <= _libFirstCount ? 1
+                                     : 1 + Math.ceil((_libTotal - _libFirstCount) / _libPerPage)
+    readonly property int _libStart: _libPage === 0 ? 0 : _libFirstCount + (_libPage - 1) * _libPerPage
+    readonly property var _libSlice: _sortedEntries.slice(
+        _libStart, _libStart + (_libPage === 0 ? _libFirstCount : _libPerPage))
+    // "13–24 of 37"
+    readonly property string _libRange: {
+        if (_libPages <= 1 || _libTotal === 0) return ""
+        var a = _libStart + 1
+        var b = Math.min(_libTotal, _libStart + _libSlice.length)
+        return I18n.tr("{r} of {n}").replace("{r}", a === b ? String(a) : a + "\u2013" + b)
+                                    .replace("{n}", _libTotal)
+    }
+    function _libGo(i) {
+        var t = Math.max(0, Math.min(_libPages - 1, i))
+        if (t === _libPage) return
+        _libPage = t
+        labScroll.toTop()
+    }
+    // A new order starts at page 1; a list that shrank (delete, narrower
+    // search, wider window) never leaves the reader on a page that is gone.
+    onLibSortChanged: _libPage = 0
+    on_LibPagesChanged: if (_libPage > _libPages - 1) _libPage = _libPages - 1
+
     // Rail order inside an open section: 0 newest (VM order) · 1 top score.
     property int railSort: 0
     readonly property var _railIdeas: {
@@ -177,7 +211,7 @@ Item {
         id: searchTimer
         interval: 220
         property string pending: ""
-        onTriggered: ContentLab.entrySearch = pending
+        onTriggered: { ContentLab.entrySearch = pending; page._libPage = 0 }
     }
 
     C.SmoothScrollView {
@@ -751,9 +785,10 @@ Item {
                                 }
 
                                 Repeater {
-                                    model: page._sortedEntries
+                                    model: page._libSlice
                                     C.LibrarySectionCard {
-                                        readonly property bool lead: index === 0 && page._featureFirst && entryGrid.columns >= 3
+                                        readonly property bool lead: index === 0 && page._libPage === 0
+                                                                     && page._featureFirst && entryGrid.columns >= 3
                                         featured: lead
                                         entry: modelData
                                         Layout.columnSpan: lead ? 2 : 1
@@ -764,6 +799,30 @@ Item {
                                         onOpenRequested: (id) => ContentLab.openEntry(id)
                                         onDeleteRequested: (id, title, count) => confirmDeleteEntry.ask(id, title, count)
                                     }
+                                }
+                            }
+
+                            // ── pager for the section grid ──
+                            // Only there when a second page exists: a small
+                            // library keeps the plain grid it always had.
+                            ColumnLayout {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.topMargin: Tokens.space2
+                                visible: ContentLab.hasEntries && page._libPages > 1
+                                spacing: Tokens.space2
+                                C.Pager {
+                                    objectName: "contentLabSectPager"
+                                    Layout.alignment: Qt.AlignHCenter
+                                    pageIndex: page._libPage
+                                    pageCount: page._libPages
+                                    onRequested: (i) => page._libGo(i)
+                                }
+                                C.AppText {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: page._libRange
+                                    mono: true
+                                    font.pixelSize: Tokens.fontCaption
+                                    color: Theme.on_surface_var
                                 }
                             }
                         }

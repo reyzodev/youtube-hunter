@@ -7,6 +7,69 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — "Part of this app has been blocked"
+
+Windows 11 Smart App Control refuses to run `bgutil-pot.exe`, the bundled PO Token helper,
+because it is not digitally signed: *"we can't confirm who published bgutil-pot.exe that the app
+tried to load"*. The file was present, so the app still reported the helper as ready and the
+only symptom was a download failing later for an unrelated-looking reason.
+
+- `pot.py` now keeps the reason a start attempt failed (WinError 225/226/4551 and the
+  policy/access-denied codes read as a security block, anything else as a broken helper) and
+  clears it when the helper comes up.
+- Settings → PO Token helper says **"Blocked by Windows"** with the full explanation instead of
+  "Ready", and a one-time notice says it out loud a few seconds after startup.
+- The text names the only two real answers: turn Smart App Control off, or sign the build. Code
+  signing is the only fix that does not ask the user to change a Windows setting.
+
+---
+
+## Unreleased — Monetize Checker: Shorts fixes
+
+- **The 10M Shorts bar is judged the way YouTube judges it.** The bar is checked once, at
+  application; an accepted channel stays in the Partner Program when views dip. The check now
+  passes when EITHER the last-90-days estimate OR the channel's lifetime average per 90 days
+  clears 10M (the busiest 90-day stretch can never be below the average one). Same for the
+  4,000 watch-hour route, and either route counts whatever format the channel posts most.
+- **Back catalogue counted.** The 90-day estimate only saw the fetched uploads, so a channel
+  with 295.7M lifetime views read "~2.4M, not monetized". Views outside the fetched uploads
+  are now spread over the channel's age and their 90-day slice is added.
+- **50 recent uploads instead of 15**, at the same quota cost (still 1 playlistItems + 1
+  videos.list call).
+- **No more fake "Ads: NOT FOUND" on Shorts channels.** A Short has no ad slot of its own
+  (Shorts ads run between Shorts in the feed and are pooled), so probing Shorts for ads could
+  never find anything. Shorts are still read for Super Thanks; the ad probe goes to up to 3 of
+  the channel's long-form uploads, and when there are none the row is shown as an info note
+  that does not count against the channel.
+
+---
+
+## Unreleased — Viral Radar (Niche Finder)
+
+**Niche Finder now opens on what is viral right now.** No keyword needed: the page reads
+YouTube's trending charts on first open and ranks them **Views ÷ Subs** by default, so
+huge videos from small channels float to the top. Type a keyword and the normal search
+replaces it; the **Viral now** button brings it back.
+
+- **Market** (Global = 8 big markets merged, or one country), **Category**, **Window**
+  (24h / 48h / 7d / 30d), **Source** and **Rank by**, all on the radar header.
+- **Sources:** *Trending chart* (videos.list `chart=mostPopular`, ~1 unit per 50 videos)
+  or *Breakouts* (keyword-less `search.list` ordered by views in the window, 100 units/page,
+  surfaces small channels that never make the chart).
+- Every Tuner cut (subs / views / multiplier / format / language) applies live, zero quota.
+- Cards show their chart position (**#3 US**).
+- **Never auto-archived.** *Save to Archive* merges the radar into a growing
+  `Viral · <market> · <category>` section (labelled **VIRAL**); starring one card files it
+  there too (the section is created on demand).
+- Radar runs are cached for an hour. *Refresh* skips the cache. *Open with Viral now*
+  toggles the auto-load (saved in config under `viral_radar`).
+
+Files: `app/core/niche/viral.py` (new), `app/qml/components/ViralRadarBar.qml` (new),
+`app/qml_backend/vm/niche_vm.py`, `app/qml/pages/NichePage.qml`,
+`app/qml/components/ArchiveVideoCard.qml`, `app/qml_backend/vm/archive_vm.py`.
+
+---
+
 ## 1.0.0 — 2026-10-22  *(internal: 3.52)*
 
 First public release. One Windows app that does the whole loop — research a channel, find the

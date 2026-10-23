@@ -25,6 +25,9 @@ _NICHE_SORTS = {
                                    -(r.get("view_count") or 0)),
     "published_at":     lambda r: -(r.get("age_hours") or 10 ** 9),
     "engagement":       lambda r: (r.get("engagement") or 0),
+    # Gold Score (app.core.niche.gold), views as the tie-break. Rows from an
+    # archive saved before v1.1 have no score yet and sink to the bottom.
+    "gold":             lambda r: (r.get("gold_score") or 0, r.get("view_count") or 0),
 }
 
 # Sort keys whose comparable value is already oriented so plain ascending

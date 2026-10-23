@@ -2619,13 +2619,23 @@ Item {
                             // helper is a warning state that locks downloads.
                             ModuleCard {
                                 kicker: I18n.tr("PO TOKEN HELPER")
-                                orbIcon: Deno.potInstalled ? "verified" : "download"
-                                ok: Deno.potInstalled
+                                // v1.0.1: the file can be present and Windows
+                                // still refuse to run it (Smart App Control and
+                                // an unsigned exe). Then "Ready" was a lie and
+                                // the only symptom was a download failing for
+                                // an unrelated-looking reason — say what
+                                // happened, and what to do about it.
+                                readonly property string _potErr: Deno.potErrorText
+                                readonly property bool _blocked: _potErr !== ""
+                                orbIcon: Deno.potInstalled ? (_blocked ? "error" : "verified") : "download"
+                                ok: Deno.potInstalled && !_blocked
                                 busy: Deno.potBusy
                                 title: Deno.potBusy ? I18n.tr("Installing …")
+                                     : _blocked ? I18n.tr("Blocked by Windows")
                                      : !Deno.potInstalled ? I18n.tr("Not installed")
                                      : Deno.potRunning ? I18n.tr("Active") : I18n.tr("Ready")
-                                detail: Deno.potInstalled
+                                detail: _blocked ? _potErr
+                                        : Deno.potInstalled
                                         ? I18n.tr("Proves to YouTube that requests come from a real browser, so downloads don't hit 403 or get stuck at 360p.")
                                         : I18n.tr("Required to download from YouTube. About 44 MB, one-time.")
                                 meta: Deno.potInstalled

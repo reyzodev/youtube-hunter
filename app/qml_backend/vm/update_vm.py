@@ -148,26 +148,47 @@ class UpdateVM(QObject):
     def check(self, silent=True):
         if self._state in ("checking", "downloading", "installing", "ready"):
             return
+        # A background re-check (every UPDATE_CHECK_HOURS) must not wipe an
+        # update that was already found if GitHub is unreachable this time.
+        self._before_check = self._state
         self._set_state("checking")
 
         def worker():
             try:
                 self._checked.emit(updater.latest_release(), "", silent)
-            except Exception as exc:  # noqa: BLE001
+            except updater.UpdateError as exc:
                 self._checked.emit(None, str(exc), silent)
+            except Exception:  # noqa: BLE001
+                log_crash("Update check failed:\n" + traceback.format_exc())
+                self._checked.emit(None, "Couldn't reach GitHub to check for updates.",
+                                   silent)
 
         threading.Thread(target=worker, daemon=True, name="update-check").start()
 
     @Slot("QVariant", str, bool)
     def _on_checked(self, rel, err, silent):
         if err or not rel:
-            # A silent background check that fails stays invisible.
-            self._set_state("idle" if silent else "error",
-                            tr("Couldn't reach GitHub to check for updates."))
+            # A silent background check that fails stays invisible, and keeps
+            # an update that an earlier check already found.
+            if silent:
+                prev = getattr(self, "_before_check", "idle")
+                self._set_state("available" if self._rel else
+                                ("uptodate" if prev == "uptodate" else "idle"))
+            else:
+                self._set_state("error", tr(err or "Couldn't reach GitHub to check for updates."))
             return
-        if not (updater.is_newer(rel["version"]) and rel.get("asset_url")):
+        if not updater.is_newer(rel["version"]):
             self._rel = {}
             self._set_state("uptodate")
+            return
+        if not rel.get("asset_url"):
+            # Newer tag, but no usable installer attached (missing, still
+            # uploading, or a zip renamed to .exe). Say so and offer the
+            # release page instead of pretending the app is up to date.
+            self._rel = rel
+            self._set_state("error", tr("v{v} is out, but its installer isn't on "
+                                        "GitHub yet. Open the release page to "
+                                        "get it.").format(v=rel["version"]))
             return
         self._rel = rel
         self._set_state("available")
@@ -198,6 +219,12 @@ class UpdateVM(QObject):
     @Slot()
     def startDownload(self):
         if not self._rel or self._state in ("downloading", "installing"):
+            return
+        if not self._rel.get("asset_url"):
+            # "Try again" on a release whose installer was missing: ask
+            # GitHub again rather than downloading nothing.
+            self._rel = {}
+            self.check(False)
             return
         self._cancel = False
         self._done, self._total, self._bps = 0.0, float(self._rel.get("asset_size", 0)), 0.0

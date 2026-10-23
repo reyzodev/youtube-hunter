@@ -445,9 +445,26 @@ class DenoVM(QObject):
     def potPct(self):
         return self._pot_pct
 
+    @Property(str, notify=changed)
+    def potErrorText(self):
+        """Why the helper refused to start, in words a user can act on.
+
+        v1.0.1: on Windows 11 the bundled bgutil-pot.exe is unsigned, and
+        Smart App Control will not run it. The file is there, so the old
+        `ready` check said everything was fine and the download failed later
+        with something unrelated. pot.py keeps the reason; read it live
+        rather than from the cached status dict, which is only refreshed on
+        an explicit refreshPot().
+        """
+        try:
+            return pot.last_error()
+        except Exception:          # noqa: BLE001
+            return ""
+
     @Slot()
     def refreshPot(self):
         self._pot_status = pot.status()
+        self.changed.emit()
         self.changed.emit()
 
     @Slot(bool)

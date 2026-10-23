@@ -313,6 +313,8 @@ class ArchiveVM(QObject):
             return "CHANNEL"
         if mode == "favorite":
             return "FAVORITES"
+        if mode == "viral":
+            return "VIRAL"
         return "KEYWORD"
 
     @Property(str, notify=detailChanged)
@@ -600,8 +602,11 @@ class ArchiveVM(QObject):
                 "title": g.get("title") or "—",
                 "modeLabel": ("CHANNEL" if mode == "channel"
                               else "FAVORITES" if mode == "favorite"
+                              else "VIRAL" if mode == "viral"
                               else "KEYWORD"),
-                "modeIcon": ("user" if mode == "channel" else "search"),
+                "modeIcon": ("user" if mode == "channel"
+                             else "trending_up" if mode == "viral"
+                             else "search"),
                 "sourceLabel": ("SCRAPE" if g.get("source") == "scrape"
                                 else "API"),
                 "itemCount": g.get("item_count") or 0,
@@ -1499,6 +1504,8 @@ class ArchiveVM(QObject):
             "multiplier": format_multiplier(mult) if mult is not None else "—",
             "multiplierValue": float(mult) if mult is not None else 0.0,
             "isGem": bool(is_gem_row(r)),
+            "goldScore": int(r.get("gold_score") or 0),
+            "goldTier": r.get("gold_tier") or "",
             "duration": fmt_duration(r.get("duration_s", 0)),
             # Whether this row is a Short — the card passes it to downloadThumb
             # so a Short's cover exports 1080×1920 and long-form 1920×1080.
@@ -1508,6 +1515,8 @@ class ArchiveVM(QObject):
             "perHour": humanize_count(r.get("velocity", 0) or 0),
             "engagement": (f"{eng * 100:.1f}%" if eng else "—"),
             "langLabel": _lang_label(r),
+            "viralTag": (f"#{r.get('viral_rank')} {r.get('viral_region') or ''}".strip()
+                         if r.get("viral_rank") else ""),
             "isFavorite": bool(r.get("_is_favorite")),
             "firstSeen": days_ago_str(r.get("_first_seen") or ""),
             "lastSeen": days_ago_str(r.get("_last_seen") or ""),

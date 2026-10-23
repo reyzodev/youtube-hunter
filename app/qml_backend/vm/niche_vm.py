@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from PySide6.QtCore import QObject, Property, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from app.config import load_app_config
+from app.config import load_app_config, save_app_config
 from app.core.db.archive import (
     archive_get_group, archive_get_rows, archive_save_search,
     archive_update_rows)
@@ -35,7 +35,8 @@ from app.core.db.downloads import (downloads_apply_channel_meta,
                                     file_size_of)
 from app.core.db.favorites import (
     favorite_ensure_channel_group, favorite_mark_item, favorite_resolve_group_id)
-from app.core.db.niche_cache import niche_cache_get, niche_cache_key, niche_cache_put
+from app.core.db.niche_cache import (niche_cache_fetched_at, niche_cache_get,
+                                     niche_cache_key, niche_cache_put)
 from app.core.download import (
     DOWNLOAD_CANCELLED, DOWNLOAD_QUALITY_PRESETS, clear_cancel, download_video,
     is_cancelled, quality_by_key, quality_display_label,
@@ -55,9 +56,14 @@ from app.core.niche.search import (
     compute_niche_metrics,
     enrich_channels, enrich_videos, estimate_search_calls, merge_niche_row,
     niche_scrape_search, niche_search_api)
+from app.core.niche.viral import (
+    VIRAL_CATEGORIES, VIRAL_REGIONS, VIRAL_SOURCES, VIRAL_WINDOWS,
+    estimate_viral_units, fetch_viral, viral_label)
 from app.core.niche.sorting import (
     aggregate_by_channel, parse_human_float, sort_niche_rows)
-from app.core.quota import search_quota_bump, search_quota_remaining
+from app.core.niche.gold import apply_gold_scores
+from app.core.quota import (key_quota_remaining, search_quota_bump,
+                            search_quota_remaining)
 from app.core.utils import (
     days_ago_str, video_download_dir, humanize_count, local_path_from_url,
     open_external_url)
@@ -196,6 +202,7 @@ class NicheVM(QObject):
     downloadsChanged = Signal()
     savedChanged = Signal()
     labelsChanged = Signal()           # UI language changed
+    viralChanged = Signal()            # Viral Radar form / on-screen state
     # "Analyze these results" — hand the whole filtered set to Niche Scan.
     # (rows, query, mode) rather than a page index so the shell can route it:
     # the VM has no business knowing what number Insights sits at, and the rows
@@ -252,6 +259,26 @@ class NicheVM(QObject):
         self._deep = False
         self._quick = ""
         self._channels_view = False
+
+        # Viral Radar — what is blowing up right now, no keyword needed. Its
+        # pool goes through the very same cuts / sorts / cards as a search;
+        # these only pick WHERE the pool comes from. Remembered in config.
+        vcfg = cfg.get("viral_radar") or {}
+        self._viral_active = False     # the pool on screen is a viral pool
+        self._viral_tried = False      # auto-load already ran this session
+        self._viral_source = self._clamp(vcfg.get("source", 0), VIRAL_SOURCES)
+        self._viral_region = self._clamp(vcfg.get("region", 0), VIRAL_REGIONS)
+        self._viral_category = self._clamp(vcfg.get("category", 0), VIRAL_CATEGORIES)
+        self._viral_window = self._clamp(vcfg.get("window", 2), VIRAL_WINDOWS)
+        # v1.1: the radar spends the user's own Google quota, so it never
+        # runs by itself any more — it opens on a "pick, see the cost, press
+        # Find" panel. The old "autoload" key defaulted to ON and was written
+        # back on every pref change, so it can't tell an opt-in from the old
+        # default; only the new "auto_open" key (set by the switch) counts.
+        self._viral_autoload = bool(vcfg.get("auto_open", False))
+        self._viral_setup = False      # the pick-and-confirm panel is open
+        self._viral_loaded_sig = None  # params of the radar on screen
+        self._viral_lens = 0           # All / Gold / Hidden gems / Shorts / Long
 
         # run state
         self._running = False
@@ -587,6 +614,313 @@ class NicheVM(QObject):
     depthIndex = _prop_int("depth", changed, on_change=lambda self: self._update_quota())
     deepScan = _prop_bool("deep", changed, on_change=lambda self: self._update_quota())
 
+    # ── Viral Radar (v1.1) ──────────────────────────────────────────────
+    # The page opens on what is viral right now instead of an empty radar; a
+    # keyword search replaces it, and "Viral now" brings it back. The pool is
+    # an ordinary Niche Finder pool, so "Best Finds · Views ÷ Subs" is the
+    # high-views / low-subs ranking, every cut applies live, and saving it to
+    # the Search Archive is the same merge a search does — but only when the
+    # user asks for it (a radar refresh is never auto-archived).
+    @staticmethod
+    def _clamp(value, options):
+        try:
+            i = int(value)
+        except (TypeError, ValueError):
+            i = 0
+        return max(0, min(len(options) - 1, i))
+
+    def _save_viral_prefs(self):
+        try:
+            cfg = load_app_config()
+            cfg["viral_radar"] = {
+                "source": self._viral_source, "region": self._viral_region,
+                "category": self._viral_category, "window": self._viral_window,
+                "auto_open": self._viral_autoload,
+            }
+            save_app_config(cfg)
+        except Exception:
+            log_crash("Viral Radar prefs save failed:\n" + traceback.format_exc())
+        self.viralChanged.emit()
+
+    viralSourceIndex = _prop_int("viral_source", changed,
+                                 on_change=lambda self: self._save_viral_prefs())
+    viralRegionIndex = _prop_int("viral_region", changed,
+                                 on_change=lambda self: self._save_viral_prefs())
+    viralCategoryIndex = _prop_int("viral_category", changed,
+                                   on_change=lambda self: self._save_viral_prefs())
+    viralWindowIndex = _prop_int("viral_window", changed,
+                                 on_change=lambda self: self._save_viral_prefs())
+    viralAutoload = _prop_bool("viral_autoload", changed,
+                               on_change=lambda self: self._save_viral_prefs())
+
+    @Property("QStringList", notify=labelsChanged)
+    def viralSourceOptions(self):
+        return [tr(n) for n, _ in VIRAL_SOURCES]
+
+    @Property("QStringList", notify=labelsChanged)
+    def viralRegionOptions(self):
+        return [tr(n) for n, _ in VIRAL_REGIONS]
+
+    @Property("QStringList", notify=labelsChanged)
+    def viralCategoryOptions(self):
+        return [tr(n) for n, _ in VIRAL_CATEGORIES]
+
+    @Property("QStringList", notify=labelsChanged)
+    def viralWindowOptions(self):
+        return [tr(n) for n, _ in VIRAL_WINDOWS]
+
+    @Property(bool, notify=viralChanged)
+    def viralActive(self):
+        """True while the pool on screen (or the run in flight) is a radar."""
+        return self._viral_active
+
+    @Property(str, notify=changed)
+    def viralTitle(self):
+        """The section name a radar is archived under, e.g.
+        "Viral · United States · Gaming"."""
+        return viral_label(VIRAL_REGIONS[self._viral_region][1],
+                           VIRAL_CATEGORIES[self._viral_category][1])
+
+    def _viral_units(self):
+        return estimate_viral_units(VIRAL_SOURCES[self._viral_source][1],
+                                    VIRAL_REGIONS[self._viral_region][1])
+
+    def _viral_cached_at(self):
+        """When the radar for the CURRENT picks was cached (< 1 h), or "".
+        A timestamp-only lookup (no rows loaded), memoised for a few seconds
+        because several labels ask for it on every change."""
+        key = niche_cache_key(self._viral_params())
+        now = time.monotonic()
+        memo = getattr(self, "_viral_cache_memo", None)
+        if memo and memo[0] == key and now - memo[1] < 5:
+            return memo[2]
+        at = niche_cache_fetched_at(key, max_age_hours=1)
+        self._viral_cache_memo = (key, now, at)
+        return at
+
+    @Property(str, notify=changed)
+    def viralCost(self):
+        at = self._viral_cached_at()
+        if at:
+            return tr("free · cached {ago}").format(ago=days_ago_str(at))
+        return tr("~{n} units").format(n=f"{self._viral_units():,}")
+
+    @Property(int, notify=changed)
+    def viralCostUnits(self):
+        """0 when the current picks are served from the 1-hour cache."""
+        return 0 if self._viral_cached_at() else self._viral_units()
+
+    @Property(bool, notify=changed)
+    def viralCostHeavy(self):
+        """A run that eats a real slice of the day (Breakouts · Global is
+        ~1,600 of a key's 10,000) — the panel colours its button for it."""
+        return self.viralCostUnits >= 500
+
+    @Property(str, notify=changed)
+    def viralBudgetText(self):
+        """"9,840 left on this key today" — so the user decides with the
+        number in front of them."""
+        key = (self._api_key or "").strip()
+        if not key:
+            return ""
+        try:
+            left = key_quota_remaining(key)
+        except Exception:
+            return ""
+        units = self.viralCostUnits
+        if units and left:
+            pct = max(1, round(units * 100.0 / max(left, 1)))
+            return tr("{left} left on this key today · this run ≈ {pct}%").format(
+                left=f"{left:,}", pct=min(pct, 100))
+        return tr("{left} left on this key today").format(left=f"{left:,}")
+
+    @Property(int, constant=True)
+    def goldSortIndex(self):
+        """Index of "Gold Score" in sortOptions (the Gold lens switches to it)."""
+        return next((i for i, row in enumerate(NICHE_SORTS_UI) if row[1] == "gold"), 0)
+
+    @Property(bool, notify=viralChanged)
+    def viralSetupOpen(self):
+        """The radar panel is showing its picks but nothing has been fetched."""
+        return self._viral_setup and not self._viral_active
+
+    @Property(bool, notify=changed)
+    def viralDirty(self):
+        """Picks changed since the radar on screen was loaded. Nothing is
+        fetched until the user presses Apply."""
+        return (self._viral_active and self._viral_loaded_sig is not None
+                and self._viral_sig() != self._viral_loaded_sig)
+
+    def _viral_sig(self):
+        return (self._viral_source, self._viral_region,
+                self._viral_category, self._viral_window)
+
+    @Slot()
+    def openViralSetup(self):
+        """"Viral now": open the picks + cost panel. Spends nothing."""
+        self.refreshApiKeys()
+        self._viral_setup = True
+        self.viralChanged.emit()
+        self.changed.emit()
+
+    @Slot()
+    def closeViralSetup(self):
+        self._viral_setup = False
+        self.viralChanged.emit()
+
+    # Lens: a one-tap cut of the radar pool. Local, zero quota.
+    _VIRAL_LENSES = (("All", ""), ("Gold", "gold"), ("Hidden gems", "gems"),
+                     ("Shorts", "shorts"), ("Long-form", "long"))
+
+    @Property("QStringList", notify=labelsChanged)
+    def viralLensOptions(self):
+        return [tr(n) for n, _ in self._VIRAL_LENSES]
+
+    def _get_viral_lens(self):
+        return self._viral_lens
+
+    def _set_viral_lens(self, v):
+        v = max(0, min(len(self._VIRAL_LENSES) - 1, int(v)))
+        if v != self._viral_lens:
+            self._viral_lens = v
+            self.viralChanged.emit()
+            self.applyFilters()
+
+    viralLensIndex = Property(int, _get_viral_lens, _set_viral_lens, notify=viralChanged)
+
+    @Property("QVariantList", notify=viralChanged)
+    def viralLensCounts(self):
+        """How many pool rows each lens would show, for the chip badges."""
+        pool = (self._pool or []) if self._viral_active else []
+        return [len(pool)] + [sum(1 for r in pool if self._lens_ok(r, k))
+                              for _, k in self._VIRAL_LENSES[1:]]
+
+    @staticmethod
+    def _lens_ok(r, lens):
+        if lens == "gold":
+            return r.get("gold_tier") == "gold"
+        if lens == "gems":
+            return bool(is_gem_row(r)) or (
+                r.get("gold_tier") in ("gold", "hot")
+                and (r.get("subscriber_count") or 10 ** 9) < 100_000)
+        if lens == "shorts":
+            return bool(r.get("is_short"))
+        if lens == "long":
+            return not r.get("is_short")
+        return True
+
+    @Property(bool, notify=changed)
+    def viralNeedsKey(self):
+        return not (self._api_key or "").strip()
+
+    def _viral_params(self):
+        return {
+            "mode": "viral",
+            "source": "api",
+            "viral_source": VIRAL_SOURCES[self._viral_source][1],
+            "region_code": VIRAL_REGIONS[self._viral_region][1],
+            "category_id": VIRAL_CATEGORIES[self._viral_category][1],
+            "hours": VIRAL_WINDOWS[self._viral_window][1],
+            "query": self.viralTitle,
+            "queries": [],
+        }
+
+    @Slot()
+    def autoLoadViral(self):
+        """Called once when the page is first built: fill the empty page with
+        the radar. Never replaces results that are already there (an archived
+        section opened from Search Archive, a search already run)."""
+        if self._viral_tried:
+            return
+        self._viral_tried = True
+        self.refreshApiKeys()
+        if self._running or self._pool or not (self._api_key or "").strip():
+            return
+        if not self._viral_autoload:
+            # Opt-in only: show the picks and the cost, fetch nothing.
+            self.openViralSetup()
+            return
+        self.loadViral()
+
+    @Slot()
+    def loadViral(self):
+        self._start_viral(force=False)
+
+    @Slot()
+    def refreshViral(self):
+        """Re-read the charts now, skipping the one-hour radar cache."""
+        self._start_viral(force=True)
+
+    def _start_viral(self, force=False):
+        if self._running:
+            return
+        self.refreshApiKeys()
+        if not (self._api_key or "").strip():
+            self._set_status(tr("Viral Radar reads YouTube's charts through the "
+                                "Data API — add your API key in Settings first."),
+                             "error")
+            self.toast.emit(tr("Add a YouTube API key to load viral videos."),
+                            "error")
+            return
+        params = self._viral_params()
+        self._viral_active = True
+        self._viral_setup = False
+        self._viral_loaded_sig = self._viral_sig()
+        self._viral_cache_memo = None
+        self._viral_force = bool(force)
+        self._requested_days = None
+        self._from_cache = ""
+        self._last_query = params["query"]
+        self._last_params = params
+        self._archive_note = ""
+        self._archive_seq += 1
+        self._pool_live_token += 1
+        self._scrape_note = ""
+        self._stop = False
+        self._running = True
+        self._search_filters = self._current_filters()
+        self._widen_passes = 0
+        self._pct = 0
+        self._phase = ""
+        self._found = 0
+        self._enriched = 0
+        self.viralChanged.emit()
+        self.changed.emit()               # viralDirty → false
+        self.runningChanged.emit()
+        self.progressChanged.emit()
+        self._set_status(tr("Reading what is viral right now …"), "muted")
+        threading.Thread(target=self._worker, args=(params,), daemon=True,
+                         name="niche-viral").start()
+
+    def _fetch_viral(self, params):
+        """One radar run. Cached for an hour: the charts move, but not by the
+        minute, and reopening the app should not re-spend the units."""
+        key = niche_cache_key(params)
+        if not getattr(self, "_viral_force", False):
+            cached, fetched_at = niche_cache_get(key, max_age_hours=1)
+            if cached:
+                self._from_cache = fetched_at or ""
+                return self._ensure_gold(cached)
+        yt = build_youtube_service((self._api_key or "").strip())
+        rows = fetch_viral(
+            yt, source=params["viral_source"], region_code=params["region_code"],
+            category_id=params["category_id"], hours=params["hours"],
+            stop_check=self._stop_check, progress=self._progress,
+            quota_cb=search_quota_bump)
+        if rows:
+            niche_cache_put(key, params, rows)
+        return rows
+
+    @staticmethod
+    def _ensure_gold(rows):
+        """Rows cached / archived before v1.1 have no Gold Score yet."""
+        if rows and any("gold_score" not in r for r in rows):
+            try:
+                apply_gold_scores(rows)
+            except Exception:
+                log_crash("gold score failed\n" + traceback.format_exc())
+        return rows
+
     # ── read-only run/result state ──────────────────────────────────────
     @Property(bool, notify=runningChanged)
     def isRunning(self):
@@ -902,12 +1236,19 @@ class NicheVM(QObject):
         Keeping it silently applied there was the reason a channel scan could
         come back empty for no visible reason.
         """
-        if self._mode == 1:
+        if self._mode == 1 and not self._viral_active:
             subs_min = subs_max = None
         else:
             subs_min = parse_human_number(self._subs_min)
             subs_max = parse_human_number(self._subs_max)
         aud_lang, aud_region = self._aud_codes()
+        days = NICHE_TIMEFRAMES[self._timeframe][1]
+        if self._viral_active:
+            # The radar picked its own market and window at fetch time; the
+            # search form's Country / Published cuts would only fight it. The
+            # Language cut stays — "viral, but only in Persian" is a real ask.
+            aud_region = ""
+            days = None
         return {
             # Language / country as real filters (app.core.niche.audience).
             "lang": aud_lang,
@@ -919,7 +1260,7 @@ class NicheVM(QObject):
             "views_max": parse_human_number(self._views_max),
             "mult_min": parse_human_float(self._mult_min),
             "format": _FMT_MAP[self._format],
-            "days": NICHE_TIMEFRAMES[self._timeframe][1],
+            "days": days,
             "text": self._quick,
             # The "hide hidden-sub channels" toggle was removed from the UI: a
             # channel that hides its subscriber count is still a legitimate
@@ -1130,7 +1471,7 @@ class NicheVM(QObject):
                             "error")
             return
         query = self._last_query or (self._query or "").strip()
-        mode = "channel" if self._mode == 1 else "keyword"
+        mode = "channel" if (self._mode == 1 and not self._viral_active) else "keyword"
         self.analyzeRequested.emit(list(rows), query, mode)
 
     @Slot(int)
@@ -1149,12 +1490,16 @@ class NicheVM(QObject):
         if not rows:
             self.toast.emit(tr("That section has no saved rows."), "error")
             return
-        self._pool = rows
+        self._pool = self._ensure_gold(rows)
         self._pool_days = None
         self._from_cache = ""
         self._cache_label = tr("archived")
         self._last_query = group.get("title") or group.get("key") or ""
         self._last_params = {}
+        self._viral_tried = True          # never auto-replace an opened section
+        if self._viral_active or self._viral_setup:
+            self._viral_active = self._viral_setup = False
+            self.viralChanged.emit()
         self._archive_note = ""
         self._archive_seq += 1
         self.applyFilters()
@@ -1365,6 +1710,16 @@ class NicheVM(QObject):
             return
         gid = (favorite_resolve_group_id(self._last_query)
                if self._last_query else None)
+        if gid is None and self._viral_active and self._last_query:
+            # A radar is not auto-archived, so its section may not exist yet:
+            # starring a viral card creates it with just that video in it.
+            try:
+                with NicheVM._ARCHIVE_LOCK:
+                    gid, _n, _u = archive_save_search(
+                        self._last_query, dict(self._last_params or {}), [raw])
+            except Exception:
+                log_crash("viral favorite section failed\n" + traceback.format_exc())
+                gid = None
         if gid is None:
             gid = favorite_ensure_channel_group(
                 raw.get("channel_id"), raw.get("channel_title"))
@@ -1640,6 +1995,9 @@ class NicheVM(QObject):
 
         self._requested_days = days
         self._from_cache = ""
+        if self._viral_active or self._viral_setup:
+            self._viral_active = self._viral_setup = False
+            self.viralChanged.emit()
         self._last_query = text     # which archive section favorites file under
         self._last_params = params  # ditto for the archive's stored params
         self._archive_note = ""
@@ -1667,8 +2025,11 @@ class NicheVM(QObject):
 
     def _worker(self, params):
         try:
-            rows = self._fetch(params)
-            rows = self._widen_until_matched(params, rows)
+            if params.get("mode") == "viral":
+                rows = self._fetch_viral(params)
+            else:
+                rows = self._fetch(params)
+                rows = self._widen_until_matched(params, rows)
             # Read every row's language/country evidence here, on the worker:
             # it is the one per-row cost of the audience filter, and doing it
             # now keeps the first live re-filter on the GUI thread instant.
@@ -2008,6 +2369,14 @@ class NicheVM(QObject):
         self.progressChanged.emit()
         self._update_quota()
 
+        if self._viral_active and not self._pool and error:
+            # A radar that was stopped or failed before showing anything goes
+            # back to its picks panel instead of an empty "nothing viral".
+            self._viral_active = False
+            self._viral_setup = True
+            self._viral_loaded_sig = None
+            self.viralChanged.emit()
+            self.changed.emit()
         if error == "__cancelled__":
             self._set_status(tr("Search stopped."), "warn")
             return
@@ -2025,7 +2394,7 @@ class NicheVM(QObject):
                      page=4, icon="nav_niche", source=tr("Niche Finder"))
             return
 
-        self._pool = rows
+        self._pool = self._ensure_gold(rows)
         self._pool_days = getattr(self, "_requested_days", None)
         cached_at = getattr(self, "_from_cache", "")
         if cached_at and getattr(self, "_cache_live", False):
@@ -2045,6 +2414,18 @@ class NicheVM(QObject):
         # Results are permanent from here on: the pool is merged into its
         # keyword section in the Search Archive whether or not the cache entry
         # later expires. Same auto-archive the legacy page did.
+        if (self._last_params or {}).get("mode") == "viral":
+            # A radar is a look, not a search: it lands in the archive only
+            # when the user presses "Save to Archive" (or stars a card).
+            self._viral_cache_memo = None
+            self.viralChanged.emit()          # lens counts
+            self.changed.emit()               # cost now reads "free · cached"
+            gold = sum(1 for r in self._pool if r.get("gold_tier") == "gold")
+            msg = tr("{n} viral videos on the radar.").format(n=len(self._filtered))
+            if gold:
+                msg += " " + tr("{g} of them are Gold.").format(g=gold)
+            self.toast.emit(msg, "success")
+            return
         self._archive_store()
         # Report what MATCHES, not what was fetched: with a narrow filter the
         # pool can be several hundred rows of which a handful qualify, and
@@ -2064,6 +2445,9 @@ class NicheVM(QObject):
         # in Single Channel Scan, which is deliberately not applied there.
         filters = self._current_filters()
         rows = apply_niche_filters(pool, filters)
+        if self._viral_active and self._viral_lens:
+            lens = self._VIRAL_LENSES[self._viral_lens][1]
+            rows = [r for r in rows if self._lens_ok(r, lens)]
         sort_key = NICHE_SORTS_UI[self._sort][1]
         rows = sort_niche_rows(rows, sort_key)
         channels = self._channels_view
@@ -2241,6 +2625,9 @@ class NicheVM(QObject):
             "multiplier": format_multiplier(mult) if mult is not None else "—",
             "multiplierValue": float(mult) if mult is not None else 0.0,
             "isGem": bool(is_gem_row(r)),
+            # Gold Score (app.core.niche.gold): 0-100 + "gold" / "hot" / "".
+            "goldScore": int(r.get("gold_score") or 0),
+            "goldTier": r.get("gold_tier") or "",
             "duration": fmt_duration(r.get("duration_s", 0)),
             # Whether this row is a Short — the card passes it to downloadThumb
             # so a Short's cover exports 1080×1920 and long-form 1920×1080.
@@ -2255,6 +2642,10 @@ class NicheVM(QObject):
             "perHour": humanize_count(r.get("velocity", 0) or 0),
             "engagement": (f"{eng * 100:.1f}%" if eng else "—"),
             "langLabel": _lang_label(r),
+            # Viral Radar: "#3 US" — where the video sits on the chart it was
+            # found on. Empty for every non-radar row, so the chip hides.
+            "viralTag": (f"#{r.get('viral_rank')} {r.get('viral_region') or ''}".strip()
+                         if r.get("viral_rank") else ""),
         }
         if channel:
             best = r.get("best_video") or {}
@@ -2292,6 +2683,7 @@ class NicheVM(QObject):
                 "Views": r.get("view_count", 0),
                 "Views/Subs": round(r["multiplier"], 2) if r.get("multiplier") else "",
                 "Views per hour": round(r.get("velocity", 0)),
+                "Gold score": r.get("gold_score", ""),
                 "Published": r.get("published_at", ""),
                 "Duration": fmt_duration(r.get("duration_s", 0)),
                 "Format": "Shorts" if r.get("is_short") else "Long-form",

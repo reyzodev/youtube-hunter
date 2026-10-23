@@ -294,7 +294,8 @@ class MonetizeVM(QObject):
             is_short = len(shorts) > len(longs)
         return ("short", True) if is_short else ("long", False)
 
-    def _estimate_ypp(self, recent):
+    def _estimate_ypp(self, recent, total_views=None, channel_age_days=None,
+                      short_share=None):
         """Rough public watch hours/year and Shorts views in 90 days — neither
         is exposed by any API, so both are projected from recent uploads.
 
@@ -326,7 +327,46 @@ class MonetizeVM(QObject):
                 shorts_90d += views * share
             else:
                 watch_sec_day += (views * dur * 0.45) / age_days
-        return watch_sec_day * 365 / 3600.0, shorts_90d
+        watch_hours = watch_sec_day * 365 / 3600.0
+        out = {"watch_hours": watch_hours, "shorts_90d": shorts_90d,
+               "shorts_avg_90d": 0.0, "watch_avg_year": 0.0,
+               "shorts_lifetime": 0.0}
+        # v1.3 — the two figures above only see the uploads that were fetched,
+        # so a channel with 300M lifetime views and a quiet last month came out
+        # at "~2M in 90 days, not monetized". Two things fix that:
+        #
+        #  * BACK CATALOGUE. Every view NOT on the fetched uploads is spread
+        #    over the channel's age and its 90-day slice is added in — the
+        #    same catalogue model the monthly-views projection already uses.
+        #  * THE BAR IS MET ONCE, NOT FOREVER. YouTube checks 10M Shorts views
+        #    in 90 days (or 4,000 watch hours in 365) when a channel APPLIES;
+        #    an accepted channel stays in the Partner Program when its views
+        #    later dip. So the real question is "has it ever cleared the bar?",
+        #    and the channel's lifetime average per 90 days answers it as a
+        #    floor: the busiest 90-day stretch can never be below the average
+        #    one. 300M views over 23 months = ~38M per 90 days on average, so at
+        #    least one stretch cleared 10M — whatever last month looked like.
+        if total_views and channel_age_days:
+            share_s = 1.0 if short_share is None else max(0.0, min(1.0, short_share))
+            age = max(float(channel_age_days), 1.0)
+            fetched = sum(self._views_of(v) for v in recent)
+            catalogue = max(0.0, float(total_views) - fetched)
+            out["shorts_90d"] += catalogue * share_s * min(1.0, 90.0 / age)
+            out["shorts_lifetime"] = float(total_views) * share_s
+            out["shorts_avg_90d"] = out["shorts_lifetime"] * 90.0 / max(age, 90.0)
+            # Long-form watch time over the channel's life, priced at the
+            # fetched long-form uploads' own duration × the usual 45% retention.
+            longs = [parse_iso8601_duration(
+                v.get("contentDetails", {}).get("duration", "")) for v in recent]
+            longs = [d for d in longs if d and d >= SHORT_MAX_SECONDS]
+            if longs:
+                avg_dur = sum(longs) / len(longs)
+                life_hours = (float(total_views) * (1.0 - share_s)
+                              * avg_dur * 0.45 / 3600.0)
+                out["watch_avg_year"] = life_hours * 365.0 / max(age, 365.0)
+                cat_hours = catalogue * (1.0 - share_s) * avg_dur * 0.45 / 3600.0
+                out["watch_hours"] += cat_hours * min(1.0, 365.0 / age)
+        return out
 
     def _gather_signals(self, channel_id, recent, is_shorts):
         """The two page scrapes the verdict needs — run ONCE per check.
@@ -337,29 +377,54 @@ class MonetizeVM(QObject):
         plain numbers only — no translated text — so it is safe to cache.
         """
         page = check_channel_page_signals(channel_id)
-        if not is_shorts:
-            candidates = [v for v in recent if parse_iso8601_duration(
-                v.get("contentDetails", {}).get("duration", "")) > 240]
-        else:
-            candidates = [v for v in recent if self._is_probably_short(v)]
-        check_list = (candidates or recent)[:4]
+
+        def _dur(v):
+            return parse_iso8601_duration(
+                v.get("contentDetails", {}).get("duration", ""))
+
+        longs = [v for v in recent if _dur(v) > 240]
+        shorts = [v for v in recent if self._is_probably_short(v)]
         super_thanks = midrolls = ads_seen = 0
+        ads_checked = 0
         checked_any = False
-        for v in check_list:
+
+        def probe(v, as_short, count_ads):
+            nonlocal super_thanks, midrolls, ads_seen, ads_checked, checked_any
             vid = v.get("id")
             if not vid:
-                continue
-            sig = check_video_monetization_signal(vid, is_shorts)
+                return
+            sig = check_video_monetization_signal(vid, as_short)
             checked_any = checked_any or sig["ok"]
             super_thanks += 1 if sig.get("super_thanks") else 0
-            midrolls += 1 if sig.get("midroll") else 0
-            ads_seen += 1 if sig.get("ads") else 0
+            if count_ads:
+                ads_checked += 1
+                midrolls += 1 if sig.get("midroll") else 0
+                ads_seen += 1 if sig.get("ads") else 0
+
+        if not is_shorts:
+            check_list = (longs or recent)[:4]
+            for v in check_list:
+                probe(v, False, True)
+        else:
+            # v1.3 — a Short has no ad slot of its own: Shorts ads play BETWEEN
+            # Shorts in the feed and the revenue is pooled, so the player
+            # response of a Short never carries adPlacements, however long it
+            # is "watched". Probing four Shorts for ads could only ever say
+            # NOT FOUND. The Shorts are still read for Super Thanks (that one
+            # does exist on Shorts); the ad probe goes to the channel's own
+            # long-form uploads, where an ad slot is real evidence.
+            check_list = (shorts or recent)[:4]
+            for v in check_list:
+                probe(v, True, False)
+            for v in longs[:3]:
+                probe(v, False, True)
         return {"page": page, "checked_any": checked_any,
                 "super_thanks": super_thanks, "midrolls": midrolls,
-                "ads_seen": ads_seen, "n_checked": max(1, len(check_list))}
+                "ads_seen": ads_seen, "n_checked": max(1, len(check_list)),
+                "ads_checked": ads_checked, "shorts_probe": bool(is_shorts)}
 
     def _verdict(self, subs, recent, mode, format_used, is_shorts, sig,
-                 total_views=None):
+                 total_views=None, channel_age_days=None, short_share=None):
         """Decide monetized / not, always answering, with a certainty score and
         an evidence checklist. Ported from the legacy algorithm.
 
@@ -404,12 +469,30 @@ class MonetizeVM(QObject):
         add(sig["super_thanks"] > 0, "super_thanks",
             tr("Super Thanks (fan funding) is enabled on recent uploads."),
             tr("No Super Thanks button on the recent uploads checked."))
-        add(sig["ads_seen"] > 0, "ads",
-            tr("YouTube served ad slots on {n} of {m} recent videos checked.").format(
-                n=sig["ads_seen"], m=n_checked),
-            tr("No ad slots came back on the {m} recent videos checked — the "
-               "logged-out player skips ads for its own reasons, so this alone "
-               "doesn't mean the channel isn't monetized.").format(m=n_checked))
+        ads_checked = sig.get("ads_checked", n_checked)
+        if sig.get("shorts_probe") and ads_checked == 0:
+            # Nothing to read: see _gather_signals. A note, not a miss, so it
+            # never counts against the channel in "x of y signals found".
+            add(False, "ads",
+                tr("Ads on Shorts can't be checked — Shorts ads play between "
+                   "videos in the feed and are pooled, so a Short never carries "
+                   "its own ad slot. This channel has no long-form uploads to "
+                   "check instead."), kind="note")
+        elif sig.get("shorts_probe"):
+            add(sig["ads_seen"] > 0, "ads",
+                tr("YouTube served ad slots on {n} of {m} of the channel's "
+                   "long-form videos.").format(n=sig["ads_seen"], m=ads_checked),
+                tr("No ad slots came back on the {m} long-form videos checked "
+                   "(Shorts carry no ad slot of their own, so those were read "
+                   "instead) — the logged-out player skips ads for its own "
+                   "reasons, so this alone proves nothing.").format(m=ads_checked))
+        else:
+            add(sig["ads_seen"] > 0, "ads",
+                tr("YouTube served ad slots on {n} of {m} recent videos checked.").format(
+                    n=sig["ads_seen"], m=n_checked),
+                tr("No ad slots came back on the {m} recent videos checked — the "
+                   "logged-out player skips ads for its own reasons, so this alone "
+                   "doesn't mean the channel isn't monetized.").format(m=n_checked))
         if not is_shorts:
             add(sig["midrolls"] >= 2, "midroll",
                 tr("Creator-placed mid-roll ad breaks on {n} recent videos.").format(
@@ -419,7 +502,14 @@ class MonetizeVM(QObject):
         proof_hits = [c for c in checks if c["kind"] == "proof" and c["ok"]]
 
         # ODDS · the thresholds YouTube actually applies
-        watch_hours, shorts_90d = self._estimate_ypp(recent)
+        est = self._estimate_ypp(recent, total_views, channel_age_days, short_share)
+        watch_hours, shorts_90d = est["watch_hours"], est["shorts_90d"]
+        shorts_avg = est["shorts_avg_90d"]
+        watch_avg = est["watch_avg_year"]
+        # Met once = met (see _estimate_ypp): the recent window OR the
+        # channel's lifetime average per window, which the best window beats.
+        shorts_ok = shorts_90d >= 10_000_000 or shorts_avg >= 10_000_000
+        watch_ok = watch_hours >= 4000 or watch_avg >= 4000
         subs_ok = subs is not None and subs >= 1000
         subs_txt = humanize_count(subs) if subs is not None else tr("Hidden")
         add(subs_ok, "subs_1k",
@@ -434,22 +524,43 @@ class MonetizeVM(QObject):
             # projection — and a back catalogue still being watched can put the
             # real figure well above it.
             short_txt = humanize_count(shorts_90d)
-            add(shorts_90d >= 10_000_000, "shorts_views",
-                tr("~{n} Shorts views in the last 90 days — past the 10M that opens "
-                   "the Shorts route in.").format(n=short_txt),
-                tr("~{n} Shorts views in the last 90 days — under the 10M the Shorts "
-                   "route needs. Projected from the {m} recent uploads, so a back "
-                   "catalogue that is still being watched can put the real figure "
-                   "higher.").format(n=short_txt, m=max(1, len(recent))),
+            if shorts_90d >= 10_000_000:
+                found = tr("~{n} Shorts views in the last 90 days — past the 10M "
+                           "that opens the Shorts route in.").format(n=short_txt)
+            else:
+                # Under 10M lately, but the lifetime average clears it: the
+                # channel has been past the bar, which is all the Partner
+                # Program asks (it is checked once, when a channel applies).
+                found = tr("~{a} Shorts views per 90 days on average over the "
+                           "channel's life ({t} in total) — so it has cleared the "
+                           "10M bar at least once, which is all the Partner "
+                           "Program checks. Lately ~{n} per 90 days, which does "
+                           "not take an accepted channel out.").format(
+                               a=humanize_count(shorts_avg),
+                               t=humanize_count(est["shorts_lifetime"]),
+                               n=short_txt)
+            add(shorts_ok, "shorts_views", found,
+                tr("~{n} Shorts views in the last 90 days, ~{a} per 90 days over "
+                   "the channel's life — under the 10M the Shorts route needs, "
+                   "in both the recent window and on average.").format(
+                       n=short_txt, a=humanize_count(shorts_avg)),
                 kind="odds")
         else:
-            add(watch_hours >= 4000, "watch_hours",
-                tr("~{n} public watch hours a year (estimated) — past the 4,000 "
-                   "bar.").format(n=humanize_count(watch_hours)),
+            if watch_hours >= 4000:
+                found = tr("~{n} public watch hours a year (estimated) — past the "
+                           "4,000 bar.").format(n=humanize_count(watch_hours))
+            else:
+                found = tr("~{a} watch hours a year on average over the channel's "
+                           "life — it has cleared the 4,000 bar at least once, "
+                           "which is all the Partner Program checks. Lately ~{n} "
+                           "a year.").format(a=humanize_count(watch_avg),
+                                             n=humanize_count(watch_hours))
+            add(watch_ok, "watch_hours", found,
                 tr("~{n} public watch hours a year (estimated) — under the 4,000 "
                    "bar.").format(n=humanize_count(watch_hours)), kind="odds")
 
-        threshold_ok = (shorts_90d >= 10_000_000 if is_shorts else watch_hours >= 4000)
+        # Either route opens the Partner Program, whatever the channel posts most.
+        threshold_ok = shorts_ok or watch_ok
 
         if not page["html_ok"] or not checked_any:
             add(False, "fetch_failed",
@@ -550,7 +661,7 @@ class MonetizeVM(QObject):
         try:
             uploads_id = cdet["relatedPlaylists"]["uploads"]
             pl = yt.playlistItems().list(
-                part="contentDetails", playlistId=uploads_id, maxResults=15).execute()
+                part="contentDetails", playlistId=uploads_id, maxResults=50).execute()
             vids = [i["contentDetails"]["videoId"] for i in pl.get("items", [])]
             if vids:
                 vresp = yt.videos().list(
@@ -666,6 +777,7 @@ class MonetizeVM(QObject):
             "signals": signals,
             "daily": daily, "monthly": monthly, "yearly": yearly,
             "short_share": short_share,
+            "channel_age_days": age_days,
             "revenue_format_used": revenue_format_used,
             "rpm_short": rpm_short, "rpm_long": rpm_long,
         }
@@ -746,7 +858,9 @@ class MonetizeVM(QObject):
 
         monetization = self._verdict(subs, recent, mode, ctx["format_used"],
                                      ctx["is_shorts"], ctx["signals"],
-                                     total_views=total_views)
+                                     total_views=total_views,
+                                     channel_age_days=ctx.get("channel_age_days"),
+                                     short_share=short_share)
 
         thumbs = snip.get("thumbnails", {})
         thumb_url = (thumbs.get("high") or thumbs.get("medium")

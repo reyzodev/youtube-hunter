@@ -85,6 +85,50 @@ _proc = None
 _port = 0
 _last_fail = 0.0
 _job = None
+# Why the last start attempt failed, as a sentence worth showing a user.
+# Empty while everything works.
+_last_error = ""
+
+# Windows codes that mean "a security product said no", not "the program is
+# broken". 225 ERROR_VIRUS_INFECTED is what Defender / Smart App Control
+# return when they refuse to start an executable; 4551 ERROR_BLOCKED_BY_POLICY
+# and 5 ERROR_ACCESS_DENIED are the same answer through a different door.
+_BLOCKED_CODES = {5, 225, 226, 4551, 0x800704EC, 0xC0000022, 0xC0E90002}
+
+_BLOCKED_TEXT = (
+    "Windows blocked bgutil-pot.exe, the helper that mints YouTube's PO "
+    "Token. It is not digitally signed, and Windows Security's Smart App "
+    "Control refuses to run programs it cannot verify. Downloads need it. "
+    "To allow it: Windows Security > App & browser control > Smart App "
+    "Control > Off, then restart YouTube Hunter. (Code signing the build is "
+    "the only fix that does not ask the user to change a Windows setting.)")
+
+
+def last_error():
+    """The last start failure as a user-facing sentence, or "" when fine."""
+    return _last_error
+
+
+def _note_start_failure(exc=None, code=None):
+    """Record WHY the helper didn't come up. A security block and a broken
+    binary both end as 'port 0' here, and they need very different advice."""
+    global _last_error
+    num = None
+    if exc is not None:
+        num = getattr(exc, "winerror", None)
+    if num is None and code is not None:
+        try:
+            num = int(code) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            num = None
+    if num in _BLOCKED_CODES:
+        _last_error = _BLOCKED_TEXT
+    elif exc is not None:
+        _last_error = "The download helper could not be started: %s" % exc
+    else:
+        _last_error = ("The download helper stopped before it answered. "
+                       "Antivirus or Windows Security may be blocking it.")
+
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -160,7 +204,8 @@ def installed():
 def status():
     path, src = find_exe()
     return {"installed": bool(path), "source": src, "enabled": enabled(),
-            "running": is_running(), "version": POT_VERSION if src == "managed" else ""}
+            "running": is_running(), "version": POT_VERSION if src == "managed" else "",
+            "error": _last_error}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -240,7 +285,7 @@ def _attach_job(proc):
 
 def ensure_server():
     """Start the server if needed. Returns the port, or 0 when unavailable."""
-    global _proc, _port, _last_fail
+    global _proc, _port, _last_fail, _last_error
     if not enabled():
         return 0
     with _lock:
@@ -258,8 +303,11 @@ def ensure_server():
                 [exe, "server", "--host", "127.0.0.1", "--port", str(port)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=flags)
-        except Exception:      # noqa: BLE001
+        except Exception as exc:      # noqa: BLE001
             _last_fail = time.monotonic()
+            # A security product blocking the exe lands here as WinError 225,
+            # so the reason has to be kept: "port 0" alone reads like a bug.
+            _note_start_failure(exc=exc)
             return 0
         _attach_job(proc)
         deadline = time.monotonic() + _START_TIMEOUT_S
@@ -268,16 +316,26 @@ def ensure_server():
                 break
             if _ping(port):
                 _proc, _port, _last_fail = proc, port, 0.0
+                _last_error = ""
                 return port
             time.sleep(0.15)
+        # Died on its own (blocked, killed, missing dependency) or never
+        # answered. The exit code tells the two apart.
+        code = None
+        try:
+            code = proc.poll()
+        except Exception:      # noqa: BLE001
+            pass
         try:
             proc.kill()
         except Exception:      # noqa: BLE001
             pass
         _last_fail = time.monotonic()
+        _note_start_failure(code=code)
         try:
             from app.crash import log_crash
-            log_crash("pot: bgutil-pot server did not start")
+            log_crash("pot: bgutil-pot server did not start (exit=%r): %s"
+                      % (code, _last_error))
         except Exception:      # noqa: BLE001
             pass
         return 0

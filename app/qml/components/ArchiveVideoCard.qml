@@ -326,6 +326,20 @@ C.GlassPanel {
                 anchors.top: parent.top
                 anchors.margins: Tokens.space2 + 2
                 spacing: Tokens.space1 + 1
+                // Viral Radar: the chart position it was found at ("#3 US")
+                MediaChip {
+                    visible: (row.viralTag || "") !== ""
+                    icon: "trending_up"
+                    label: row.viralTag || ""
+                    tint: U.mix(Theme.error, Qt.rgba(1, 1, 1, 1), 0.10)
+                }
+                // Gold Score (v1.1): "Gold 86" / "Hot 61" — the steal-worthy ones
+                MediaChip {
+                    visible: (row.goldTier || "") !== ""
+                    icon: row.goldTier === "gold" ? "star" : "bolt"
+                    label: (row.goldTier === "gold" ? I18n.tr("Gold") : I18n.tr("Hot")) + " " + (row.goldScore || 0)
+                    tint: row.goldTier === "gold" ? "#f2bd3a" : U.mix(Theme.warn, Qt.rgba(1, 1, 1, 1), 0.15)
+                }
                 MediaChip {
                     visible: row.isGem === true
                     icon: "diamond"

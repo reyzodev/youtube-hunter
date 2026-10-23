@@ -31,6 +31,8 @@ NICHE_SORTS_UI = [
     # Views ascending — the channel-scan "Low → High" toggle (and the sort
     # combo's matching entry). Appended last so every existing index is stable.
     ("Fewest Views", "view_count_asc", "viewCount", 3),
+    # v1.1 Gold Score — appended (never inserted) so saved sort indexes stay put.
+    ("Gold Score · steal-worthy first", "gold", "viewCount", 3),
 ]
 
 # AI Ideas' own mini control bar keeps sorting to three choices — unlike

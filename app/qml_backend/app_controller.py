@@ -159,6 +159,28 @@ class AppController(QObject):
         # runtime) off the GUI thread once the window has settled, so the
         # first download/cut doesn't spend its "Preparing…" on it.
         QTimer.singleShot(4000, self._prewarm_download_engine)
+        # v1.0.1: the prewarm also starts the PO Token helper. On Windows 11
+        # Smart App Control refuses to run it (it is not signed), and the only
+        # symptom used to be a download failing for an unrelated-looking
+        # reason. Say it once, plainly, a few seconds after the attempt.
+        QTimer.singleShot(14000, self._report_pot_block)
+
+    def _report_pot_block(self):
+        """Tell the user when Windows refused to start bgutil-pot.exe."""
+        try:
+            from app.core import pot
+            msg = pot.last_error()
+        except Exception:                # noqa: BLE001 — cosmetic
+            return
+        if not msg:
+            return
+        try:
+            from app.i18n import tr
+            from app.qml_backend.desktop_notifier import announce
+            announce("error", tr("Windows blocked the download helper"),
+                     msg, icon="error", force=True)
+        except Exception:                # noqa: BLE001 — cosmetic
+            pass
 
     def _prewarm_download_engine(self):
         import threading

@@ -34,6 +34,25 @@ def niche_cache_get(key, max_age_hours=12):
         return None, None
 
 
+def niche_cache_fetched_at(key, max_age_hours=12):
+    """Just the timestamp of a fresh cache entry ("" if none) — without
+    loading the rows, so a UI label can ask on every change for free."""
+    try:
+        conn = db_connect(DATA_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT fetched_at FROM niche_cache WHERE key = ?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return ""
+        age = iso_age_hours(row[0])
+        if age is not None and max_age_hours and age > max_age_hours:
+            return ""
+        return row[0]
+    except Exception:
+        return ""
+
+
 def niche_cache_put(key, params, rows):
     try:
         conn = db_connect(DATA_DB_PATH)

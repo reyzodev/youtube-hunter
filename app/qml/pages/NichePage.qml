@@ -41,7 +41,10 @@ Item {
     // while this page was hidden — re-read which videos have a file on disk
     // so each card's Download/Open button is correct when shown.
     onVisibleChanged: if (visible) Niche.refreshDownloaded()
-    Component.onCompleted: Niche.refreshDownloaded()
+    // Viral Radar: the first time the page is built, open the radar panel —
+    // picks + cost only. It fetches by itself only if the user switched on
+    // "Load on open" (v1.1: the quota is theirs to spend).
+    Component.onCompleted: { Niche.refreshDownloaded(); Qt.callLater(function () { Niche.autoLoadViral() }) }
 
     // Advanced drawer expanded/collapsed. Collapsed by default so the tuner
     // reads as three tracks and a row of recipes.
@@ -730,7 +733,8 @@ Item {
                                         }
                                         C.AppText {
                                             text: Niche.isRunning ? I18n.tr("Scanning YouTube")
-                                                                  : I18n.tr("Niche Finder · Outlier Radar")
+                                                  : Niche.viralActive ? I18n.tr("Niche Finder · Viral Radar")
+                                                  : I18n.tr("Niche Finder · Outlier Radar")
                                             weight: Tokens.weightBold
                                             font.pixelSize: Tokens.fontCaption
                                             font.letterSpacing: I18n.rtl ? 0 : Tokens.trackingLabel
@@ -1689,14 +1693,17 @@ Item {
                     Layout.fillWidth: true
                     visible: Niche.isRunning
                     pct: Niche.pct > 0 ? Niche.pct : -1
-                    title: I18n.tr("Searching YouTube for “{q}”")
-                           .replace("{q}", Niche.query)
-                    query: Niche.query
+                    title: Niche.viralActive
+                           ? I18n.tr("Reading what's viral · {t}").replace("{t}", Niche.viralTitle)
+                           : I18n.tr("Searching YouTube for “{q}”").replace("{q}", Niche.query)
+                    query: Niche.viralActive ? Niche.viralTitle : Niche.query
                     found: Niche.foundCount
                     detail: Niche.statusText
                     stages: Niche.stages
                     counts: Niche.liveCounts
-                    note: Niche.quotaText !== ""
+                    note: Niche.viralActive
+                          ? I18n.tr("This radar costs about {c} — it is cached for an hour.").replace("{c}", Niche.viralCost)
+                          : Niche.quotaText !== ""
                           ? I18n.tr("This run costs about {c} — results are cached, so reopening this search later is free.")
                             .replace("{c}", Niche.quotaText)
                           : ""
@@ -1895,6 +1902,13 @@ Item {
                         anchors.margins: Tokens.space5
                         spacing: Tokens.space4
 
+                        // Viral Radar header — only while the pool is a radar
+                        C.ViralRadarBar {
+                            Layout.fillWidth: true
+                            visible: Niche.viralActive || Niche.viralSetupOpen
+                            motion: page._motion
+                        }
+
                         // results toolbar
                         RowLayout {
                             Layout.fillWidth: true
@@ -1970,11 +1984,21 @@ Item {
                                 color: Theme.outline
                                 Layout.alignment: Qt.AlignVCenter
                             }
+                            // back to the radar after a keyword search
+                            C.PrimaryButton {
+                                variant: "ghost"
+                                iconName: "trending_up"
+                                text: I18n.tr("Viral now")
+                                visible: !Niche.viralActive && !Niche.viralSetupOpen
+                                implicitHeight: 40
+                                onClicked: Niche.openViralSetup()
+                            }
                             C.PrimaryButton {
                                 variant: "ghost"
                                 iconName: "inventory_2"
                                 text: I18n.tr("Archive results")
-                                visible: Niche.hasResults
+                                // the radar bar carries its own "Save to Archive"
+                                visible: Niche.hasResults && !Niche.viralActive
                                 implicitHeight: 40
                                 onClicked: Niche.archiveResults()
                             }
@@ -2032,7 +2056,11 @@ Item {
                                     Layout.topMargin: Tokens.space2
                                     horizontalAlignment: Text.AlignHCenter
                                     text: emptyState.filteredOut ? I18n.tr("No videos pass these filters")
-                                                                 : I18n.tr("Nothing on the radar yet")
+                                          : Niche.viralSetupOpen ? I18n.tr("Your quota, your call")
+                                          : (Niche.viralActive && Niche.viralLensIndex > 0)
+                                          ? I18n.tr("No {l} videos in this radar").replace("{l}", Niche.viralLensOptions[Niche.viralLensIndex])
+                                          : Niche.viralActive ? I18n.tr("Nothing viral in this window")
+                                          : I18n.tr("Nothing on the radar yet")
                                     weight: Tokens.weightExtraBold
                                     font.pixelSize: Tokens.fontTitle
                                     color: Theme.text_strong
@@ -2043,7 +2071,15 @@ Item {
                                     horizontalAlignment: Text.AlignHCenter
                                     text: emptyState.filteredOut
                                           ? I18n.tr("Nothing passes these cuts. Loosen a pill above or clear the filters to widen the net.")
-                                          : I18n.tr("Type a niche in the bar above and the outliers will show up here.")
+                                          : Niche.viralSetupOpen
+                                          ? I18n.tr("Pick a market, a category and a window above. Nothing is fetched until you press Find, and the button shows what it costs.")
+                                          : (Niche.viralActive && Niche.viralLensIndex > 0)
+                                          ? I18n.tr("Switch the lens back to All, or widen the window to pull in more.")
+                                          : Niche.viralActive
+                                          ? I18n.tr("The chart has nothing this fresh. Widen the window to 7d, or switch the source to Breakouts.")
+                                          : Niche.viralNeedsKey
+                                          ? I18n.tr("Type a niche in the bar above. Add a YouTube API key in Settings to open on what's viral right now.")
+                                          : I18n.tr("Type a niche in the bar above, or see what's viral on YouTube right now.")
                                     color: Theme.on_surface_var
                                     wrapMode: Text.Wrap
                                 }
@@ -2056,10 +2092,18 @@ Item {
                                     text: I18n.tr("Clear filters")
                                     onClicked: Niche.clearAllFilters()
                                 }
+                                C.PrimaryButton {
+                                    visible: !emptyState.filteredOut && !Niche.viralActive && !Niche.viralSetupOpen && !Niche.viralNeedsKey
+                                    Layout.alignment: Qt.AlignHCenter
+                                    Layout.topMargin: Tokens.space2
+                                    iconName: "trending_up"
+                                    text: I18n.tr("Show what's viral now")
+                                    onClicked: Niche.openViralSetup()
+                                }
 
                                 // the path, in order — numbered because it IS a sequence
                                 Row {
-                                    visible: !emptyState.filteredOut
+                                    visible: !emptyState.filteredOut && !Niche.viralActive && !Niche.viralSetupOpen
                                     Layout.alignment: Qt.AlignHCenter
                                     Layout.topMargin: Tokens.space3
                                     spacing: Tokens.space2

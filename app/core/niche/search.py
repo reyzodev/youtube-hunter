@@ -777,6 +777,10 @@ def compute_niche_metrics(rows):
         r["engagement"] = (((r.get("like_count", 0) or 0)
                             + (r.get("comment_count", 0) or 0)) / views) if views else 0.0
         r["outlier_ratio"] = views / median
+    # Gold Score (app.core.niche.gold): the one-number "steal this idea" rank.
+    # Pool-relative, so it is computed after every row has its velocity.
+    from app.core.niche.gold import apply_gold_scores
+    apply_gold_scores(rows)
     return rows
 
 
