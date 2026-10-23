@@ -41,6 +41,13 @@ Item {
              : cls === "inferred" ? Theme.secondary_container
              : Theme.warn
     }
+    // confidence colour: high reads green, medium a muted olive, low grey —
+    // deliberately never the amber that means "needs YouTube Studio"
+    function confTint(c) {
+        return c === "high" ? Theme.secondary_container
+             : c === "medium" ? U.mix(Theme.secondary_container, Theme.on_surface_var, 0.55)
+             : Theme.outline
+    }
 
     // ── lens state ──
     // 0 Measured · 1 Brief · 2 Evidence · 3 Limits
@@ -381,6 +388,63 @@ Item {
     }
 
     // A pill of a fixed tint — class labels, confidence, counters.
+    // Signal-strength confidence: three rising bars, `level` of them lit.
+    component ConfBars: Row {
+        property int level: 1
+        property color tint: Theme.secondary_container
+        spacing: 2
+        height: 12
+        Repeater {
+            model: 3
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: 3.5
+                height: 5 + index * 3.5
+                radius: 1.5
+                color: index < parent.level ? parent.tint
+                                            : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.16 : 0.14)
+            }
+        }
+    }
+
+    // A quiet pill action (icon + label) for toolbars and card footers.
+    component PillAction: AbstractButton {
+        id: pa
+        property string glyph: ""
+        property string label: ""
+        implicitHeight: 32
+        implicitWidth: paRow.implicitWidth + Tokens.space3 * 2
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        scale: pressed ? Tokens.pressScale : 1
+        Behavior on scale { NumberAnimation { duration: Tokens.durFast } }
+        background: Rectangle {
+            radius: Tokens.radiusPill
+            color: pa.hovered ? Theme.hover_bg : Theme.panel_bg
+            border.width: 1
+            border.color: pa.hovered ? U.withAlpha(Theme.primary, 0.40) : Theme.border
+            Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+        }
+        contentItem: Item {
+            Row {
+                id: paRow
+                anchors.centerIn: parent
+                spacing: 6
+                C.IconGlyph {
+                    name: pa.glyph; size: 14
+                    glyphColor: pa.hovered ? Theme.primary : Theme.on_surface_var
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                C.AppText {
+                    text: pa.label
+                    weight: Tokens.weightDemiBold
+                    font.pixelSize: Tokens.fontCaption + 1
+                    color: Theme.on_surface
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+        }
+    }
+
     component Tag: Rectangle {
         property string label: ""
         property color tint: Theme.on_surface_var
@@ -3701,6 +3765,26 @@ Item {
                     }
 
                     // ───────────────────────── 2 · EVIDENCE ──────────────
+                    // v1.0.2 "case file" ledger.
+                    //
+                    // Design plan (check the render against this):
+                    //   * Masthead — the ledger reads like the cover of a case
+                    //     file: claim + source totals set big, and a pill-segment
+                    //     composition bar that shows at a glance how much of the
+                    //     brief is measured vs reasoned vs owner-only.
+                    //   * Class tiles — the four filters become tiles (icon,
+                    //     name, one-line meaning, big count, share bar). The
+                    //     tile IS the legend, so the colours never need a key.
+                    //   * Entries — each claim is a file entry: class glyph
+                    //     tile, the claim set at reading size, then a quiet meta
+                    //     line: signal-bar confidence, a stack of source
+                    //     thumbnails, the caveat count. The class lives in the
+                    //     glyph + a gradient rail; no more three equal pills.
+                    //   * Unfolded — sources become media tiles (thumbnail,
+                    //     channel, views, reach) beside an amber "stress test"
+                    //     panel, side by side when there is room.
+                    //   * Motion — entries rise in on a short stagger, the
+                    //     chevron turns, the body fades; nothing loops.
                     ColumnLayout {
                         id: ledger
                         Layout.fillWidth: true
@@ -3708,13 +3792,41 @@ Item {
                         spacing: Tokens.space4
 
                         property string filter: ""
-                        property int openIdx: -1
+                        // 0 = the brief's own order, 1 = strongest first
+                        property int sortMode: 0
+                        // open entries, keyed by row index. `openRev` is bumped on
+                        // every change so bindings re-read the plain JS object.
+                        property var openMap: ({})
+                        property int openRev: 0
+                        readonly property bool anyOpen: {
+                            var _r = openRev
+                            for (var k in openMap) if (openMap[k]) return true
+                            return false
+                        }
+                        function isOpen(i) { var _r = openRev; return openMap[i] === true }
+                        function toggle(i) { openMap[i] = !(openMap[i] === true); openRev++ }
+                        function setAll(on) {
+                            var m = {}
+                            if (on) for (var i = 0; i < rows.length; i++) m[i] = true
+                            openMap = m
+                            openRev++
+                        }
+
+                        function confRank(c) { return c === "high" ? 3 : c === "medium" ? 2 : 1 }
                         readonly property var rows: {
                             var all = Insights.claims || []
-                            if (filter === "") return all
                             var out = []
                             for (var i = 0; i < all.length; i++)
-                                if (all[i].evidenceClass === filter) out.push(all[i])
+                                if (filter === "" || all[i].evidenceClass === filter) {
+                                    var r = all[i]
+                                    out.push({ d: r, n: i + 1 })
+                                }
+                            if (sortMode === 1)
+                                out.sort(function (a, b) {
+                                    var c = ledger.confRank(b.d.confidence) - ledger.confRank(a.d.confidence)
+                                    if (c !== 0) return c
+                                    return (b.d.sources || []).length - (a.d.sources || []).length
+                                })
                             return out
                         }
                         function countOf(cls) {
@@ -3723,7 +3835,33 @@ Item {
                             for (var i = 0; i < all.length; i++) if (all[i].evidenceClass === cls) n++
                             return n
                         }
-                        onFilterChanged: openIdx = -1
+                        function confCount(c) {
+                            var all = Insights.claims || []
+                            var n = 0
+                            for (var i = 0; i < all.length; i++) if ((all[i].confidence || "low") === c) n++
+                            return n
+                        }
+                        // distinct videos the whole ledger leans on
+                        readonly property int sourceCount: {
+                            var all = Insights.claims || []
+                            var seen = {}, n = 0
+                            for (var i = 0; i < all.length; i++) {
+                                var s = all[i].sources || []
+                                for (var j = 0; j < s.length; j++)
+                                    if (!seen[s[j].videoId]) { seen[s[j].videoId] = true; n++ }
+                            }
+                            return n
+                        }
+                        readonly property var classes: [
+                            { c: "observed",        l: I18n.tr("Observed"),             d: I18n.tr("Measured in this data"),   icon: "query_stats" },
+                            { c: "inferred",        l: I18n.tr("Inferred"),             d: I18n.tr("Reasoned from patterns"),  icon: "psychology" },
+                            { c: "requires_studio", l: I18n.tr("Needs YouTube Studio"), d: I18n.tr("Owner-only metrics"),      icon: "lock" }
+                        ]
+                        function classIcon(cls) {
+                            return cls === "observed" ? "query_stats" : cls === "inferred" ? "psychology" : "lock"
+                        }
+                        onFilterChanged: setAll(false)
+                        onSortModeChanged: setAll(false)
 
                         // nothing to audit yet
                         C.GlassPanel {
@@ -3736,10 +3874,18 @@ Item {
                                 anchors.centerIn: parent
                                 width: Math.min(520, parent.width - Tokens.space7 * 2)
                                 spacing: Tokens.space3
-                                C.IconGlyph {
-                                    name: "receipt"; size: 40
-                                    glyphColor: U.withAlpha(Theme.primary, 0.55)
+                                Rectangle {
                                     Layout.alignment: Qt.AlignHCenter
+                                    implicitWidth: 64; implicitHeight: 64
+                                    radius: Tokens.radiusXl
+                                    color: U.withAlpha(Theme.primary, Theme.isDark ? 0.12 : 0.08)
+                                    border.width: 1
+                                    border.color: U.withAlpha(Theme.primary, 0.30)
+                                    C.IconGlyph {
+                                        anchors.centerIn: parent
+                                        name: "receipt"; size: 30
+                                        glyphColor: Theme.primary
+                                    }
                                 }
                                 C.AppText {
                                     Layout.fillWidth: true
@@ -3766,70 +3912,312 @@ Item {
                             }
                         }
 
-                        // filter row
-                        RowLayout {
+                        // ══ masthead: the case-file cover ══
+                        C.GlassPanel {
+                            id: ledgerHead
                             Layout.fillWidth: true
                             visible: page.claimCount > 0
-                            spacing: Tokens.space2
-                            Repeater {
-                                model: [
-                                    { c: "",                l: I18n.tr("All"),                  n: page.claimCount },
-                                    { c: "observed",        l: I18n.tr("Observed"),             n: ledger.countOf("observed") },
-                                    { c: "inferred",        l: I18n.tr("Inferred"),             n: ledger.countOf("inferred") },
-                                    { c: "requires_studio", l: I18n.tr("Needs YouTube Studio"), n: ledger.countOf("requires_studio") }
-                                ]
-                                AbstractButton {
-                                    id: fBtn
-                                    visible: modelData.c === "" || modelData.n > 0
-                                    readonly property bool on: ledger.filter === modelData.c
-                                    readonly property color tint: modelData.c === "" ? Theme.primary : page.classTint(modelData.c)
-                                    implicitHeight: 36
-                                    implicitWidth: fRow.implicitWidth + Tokens.space4 * 2
-                                    onClicked: ledger.filter = modelData.c
-                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                    background: Rectangle {
-                                        radius: Tokens.radiusPill
-                                        color: fBtn.on ? U.withAlpha(fBtn.tint, 0.16)
-                                             : fBtn.hovered ? Theme.hover_bg : Theme.panel_bg
-                                        border.width: 1
-                                        border.color: fBtn.on ? U.withAlpha(fBtn.tint, 0.55) : Theme.border
-                                        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                            radius: Tokens.radiusXl
+                            implicitHeight: headGrid.implicitHeight + Tokens.space5 * 2
+                            clip: true
+
+                            // a slow wash of the accent from the reading corner
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: parent.radius
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.10 : 0.06) }
+                                    GradientStop { position: 0.6; color: U.withAlpha(Theme.primary, 0.0) }
+                                }
+                            }
+
+                            GridLayout {
+                                id: headGrid
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: Tokens.space5
+                                columns: ledgerHead.width >= 900 ? 2 : 1
+                                columnSpacing: Tokens.space7
+                                rowSpacing: Tokens.space5
+
+                                // left: the statement
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 5
+                                    Layout.alignment: Qt.AlignTop
+                                    spacing: Tokens.space2
+                                    Badge { label: I18n.tr("EVIDENCE LEDGER"); icon: "receipt"; tint: Theme.primary }
+                                    Row {
+                                        Layout.topMargin: Tokens.space2
+                                        spacing: Tokens.space3
+                                        C.AppText {
+                                            id: bigClaims
+                                            text: String(page.claimCount)
+                                            mono: true
+                                            weight: Tokens.weightExtraBold
+                                            font.pixelSize: 44
+                                            font.letterSpacing: -1.5
+                                            color: Theme.text_strong
+                                        }
+                                        C.AppText {
+                                            text: page.claimCount === 1 ? I18n.tr("claim") : I18n.tr("claims")
+                                            weight: Tokens.weightBold
+                                            font.pixelSize: Tokens.fontTitle
+                                            color: Theme.on_surface
+                                            anchors.baseline: bigClaims.baseline
+                                        }
+                                        C.AppText {
+                                            text: "·"
+                                            font.pixelSize: Tokens.fontTitle
+                                            color: Theme.outline
+                                            anchors.baseline: bigClaims.baseline
+                                        }
+                                        C.AppText {
+                                            text: String(ledger.sourceCount)
+                                            mono: true
+                                            weight: Tokens.weightExtraBold
+                                            font.pixelSize: 44
+                                            font.letterSpacing: -1.5
+                                            color: Theme.primary
+                                            anchors.baseline: bigClaims.baseline
+                                        }
+                                        C.AppText {
+                                            text: ledger.sourceCount === 1 ? I18n.tr("video cited") : I18n.tr("videos cited")
+                                            weight: Tokens.weightBold
+                                            font.pixelSize: Tokens.fontTitle
+                                            color: Theme.on_surface
+                                            anchors.baseline: bigClaims.baseline
+                                        }
                                     }
-                                    contentItem: Item {
+                                    C.AppText {
+                                        Layout.fillWidth: true
+                                        text: I18n.tr("Every claim the brief makes, the videos it rests on, and what would break it.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: Tokens.fontBody
+                                        color: Theme.on_surface_var
+                                    }
+                                }
+
+                                // right: composition + confidence
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 4
+                                    Layout.alignment: Qt.AlignVCenter
+                                    spacing: Tokens.space3
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Eyebrow { text: I18n.tr("COMPOSITION") }
+                                        Item { Layout.fillWidth: true }
+                                        C.AppText {
+                                            text: I18n.tr("{p}% measured").replace("{p}",
+                                                  page.claimCount ? Math.round(ledger.countOf("observed") * 100 / page.claimCount) : 0)
+                                            mono: true
+                                            font.pixelSize: Tokens.fontCaption
+                                            color: Theme.on_surface_var
+                                        }
+                                    }
+                                    // pill segments, one per class, width = share
+                                    Item {
+                                        id: compBar
+                                        Layout.fillWidth: true
+                                        implicitHeight: 10
+                                        readonly property var parts: {
+                                            var out = []
+                                            for (var i = 0; i < ledger.classes.length; i++) {
+                                                var n = ledger.countOf(ledger.classes[i].c)
+                                                if (n > 0) out.push({ c: ledger.classes[i].c, n: n })
+                                            }
+                                            return out
+                                        }
                                         Row {
-                                            id: fRow
-                                            anchors.centerIn: parent
-                                            spacing: 6
-                                            Rectangle {
-                                                visible: modelData.c !== ""
-                                                width: 8; height: 8; radius: 4
-                                                color: fBtn.tint
-                                                anchors.verticalCenter: parent.verticalCenter
+                                            anchors.fill: parent
+                                            spacing: 3
+                                            Repeater {
+                                                model: compBar.parts
+                                                Rectangle {
+                                                    readonly property real share: page.claimCount ? modelData.n / page.claimCount : 0
+                                                    width: Math.max(6, (compBar.width - 3 * (compBar.parts.length - 1)) * share)
+                                                    height: compBar.height
+                                                    radius: height / 2
+                                                    color: page.classTint(modelData.c)
+                                                    opacity: ledger.filter === "" || ledger.filter === modelData.c ? 1 : 0.28
+                                                    Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                                                    Behavior on width { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
+                                                }
                                             }
-                                            C.AppText {
-                                                text: modelData.l
-                                                weight: Tokens.weightBold
-                                                font.pixelSize: Tokens.fontCaption + 1
-                                                color: fBtn.on ? fBtn.tint : Theme.on_surface
-                                                anchors.verticalCenter: parent.verticalCenter
-                                            }
-                                            C.AppText {
-                                                text: String(modelData.n)
-                                                mono: true
-                                                font.pixelSize: Tokens.fontMicro
-                                                color: Theme.on_surface_var
-                                                anchors.verticalCenter: parent.verticalCenter
+                                        }
+                                    }
+                                    // confidence spread
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: Tokens.space2
+                                        spacing: Tokens.space4
+                                        Eyebrow { text: I18n.tr("CONFIDENCE") }
+                                        Item { Layout.fillWidth: true }
+                                        Repeater {
+                                            model: [
+                                                { k: "high",   l: I18n.tr("high"),   lv: 3 },
+                                                { k: "medium", l: I18n.tr("medium"), lv: 2 },
+                                                { k: "low",    l: I18n.tr("low"),    lv: 1 }
+                                            ]
+                                            Row {
+                                                spacing: 6
+                                                ConfBars {
+                                                    level: modelData.lv
+                                                    tint: page.confTint(modelData.k)
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+                                                C.AppText {
+                                                    text: modelData.l
+                                                    font.pixelSize: Tokens.fontCaption
+                                                    color: Theme.on_surface_var
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+                                                C.AppText {
+                                                    text: String(ledger.confCount(modelData.k))
+                                                    mono: true
+                                                    weight: Tokens.weightBold
+                                                    font.pixelSize: Tokens.fontCaption
+                                                    color: Theme.text_strong
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                        }
+
+                        // ══ class tiles: the filter and the legend in one ══
+                        GridLayout {
+                            id: classGrid
+                            Layout.fillWidth: true
+                            visible: page.claimCount > 0
+                            columns: ledger.width >= 980 ? 4 : 2
+                            columnSpacing: Tokens.space3
+                            rowSpacing: Tokens.space3
+                            Repeater {
+                                model: [ { c: "", l: I18n.tr("All claims"), d: I18n.tr("The whole brief"), icon: "receipt" } ]
+                                           .concat(ledger.classes)
+                                AbstractButton {
+                                    id: cTile
+                                    readonly property int n: modelData.c === "" ? page.claimCount : ledger.countOf(modelData.c)
+                                    readonly property bool on: ledger.filter === modelData.c
+                                    readonly property color tint: modelData.c === "" ? Theme.primary : page.classTint(modelData.c)
+                                    visible: modelData.c === "" || n > 0
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 1
+                                    implicitHeight: 72
+                                    onClicked: ledger.filter = modelData.c
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    scale: pressed ? Tokens.pressScale : 1
+                                    Behavior on scale { NumberAnimation { duration: Tokens.durFast } }
+
+                                    background: Rectangle {
+                                        radius: Tokens.radiusLg
+                                        color: cTile.on ? U.withAlpha(cTile.tint, Theme.isDark ? 0.14 : 0.09)
+                                             : cTile.hovered ? Theme.hover_bg : Theme.panel_bg
+                                        border.width: 1
+                                        border.color: cTile.on ? U.withAlpha(cTile.tint, 0.60)
+                                                    : cTile.hovered ? U.withAlpha(cTile.tint, 0.30) : Theme.border
+                                        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                        Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                        // share of the brief, along the floor of the tile
+                                        Rectangle {
+                                            anchors.left: parent.left
+                                            anchors.bottom: parent.bottom
+                                            anchors.leftMargin: Tokens.space4
+                                            anchors.bottomMargin: 8
+                                            width: (parent.width - Tokens.space4 * 2)
+                                            height: 3
+                                            radius: 2
+                                            color: U.withAlpha(cTile.tint, 0.14)
+                                            Rectangle {
+                                                width: parent.width * (page.claimCount ? cTile.n / page.claimCount : 0)
+                                                height: parent.height
+                                                radius: 2
+                                                color: cTile.tint
+                                                opacity: cTile.on ? 1 : 0.55
+                                                Behavior on width { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
+                                            }
+                                        }
+                                    }
+                                    leftPadding: Tokens.space4
+                                    rightPadding: Tokens.space4
+                                    topPadding: 0
+                                    bottomPadding: 6
+                                    contentItem: RowLayout {
+                                        spacing: Tokens.space3
+                                        Rectangle {
+                                            implicitWidth: 34; implicitHeight: 34
+                                            radius: Tokens.radiusMd
+                                            color: U.withAlpha(cTile.tint, cTile.on ? 0.22 : 0.12)
+                                            C.IconGlyph {
+                                                anchors.centerIn: parent
+                                                name: modelData.icon; size: 17
+                                                glyphColor: cTile.tint
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 1
+                                            C.AppText {
+                                                Layout.fillWidth: true
+                                                text: modelData.l
+                                                weight: Tokens.weightBold
+                                                font.pixelSize: Tokens.fontBody
+                                                color: cTile.on ? Theme.text_strong : Theme.on_surface
+                                                elide: Text.ElideRight
+                                            }
+                                            C.AppText {
+                                                Layout.fillWidth: true
+                                                text: modelData.d
+                                                font.pixelSize: Tokens.fontCaption
+                                                color: Theme.on_surface_var
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                        C.AppText {
+                                            text: String(cTile.n)
+                                            mono: true
+                                            weight: Tokens.weightExtraBold
+                                            font.pixelSize: Tokens.fontTitle
+                                            color: cTile.on ? cTile.tint : Theme.text_strong
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ══ toolbar: order + unfold ══
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: page.claimCount > 0
+                            spacing: Tokens.space3
+                            C.SlideSegment {
+                                Layout.preferredWidth: 300
+                                equal: true
+                                solid: false
+                                cellHeight: 32
+                                fontSize: Tokens.fontCaption + 1
+                                model: [ I18n.tr("Brief order"), I18n.tr("Strongest first") ]
+                                currentIndex: ledger.sortMode
+                                onActivated: (i) => ledger.sortMode = i
+                            }
                             Item { Layout.fillWidth: true }
                             C.AppText {
-                                text: I18n.tr("click a claim to see its sources")
+                                text: I18n.tr("{n} shown").replace("{n}", ledger.rows.length)
+                                mono: true
                                 font.pixelSize: Tokens.fontCaption
                                 color: Theme.outline
-                                visible: content.width > 900
+                            }
+                            PillAction {
+                                glyph: ledger.anyOpen ? "expand_less" : "expand_more"
+                                label: ledger.anyOpen ? I18n.tr("Collapse all") : I18n.tr("Expand all")
+                                onClicked: ledger.setAll(!ledger.anyOpen)
                             }
                         }
 
@@ -3859,38 +4247,69 @@ Item {
                             }
                         }
 
-                        // the claims
+                        // ══ the entries ══
                         Repeater {
                             model: ledger.rows
                             C.GlassPanel {
                                 id: claimCard
                                 Layout.fillWidth: true
                                 radius: Tokens.radiusLg
-                                readonly property color tint: page.classColor(modelData.classKey)
-                                readonly property bool isOpen: ledger.openIdx === index
-                                readonly property var srcs: modelData.sources || []
-                                readonly property var lims: modelData.limitations || []
+                                readonly property var d: modelData.d
+                                readonly property color tint: page.classColor(d.classKey)
+                                readonly property bool isOpen: ledger.isOpen(index)
+                                readonly property var srcs: d.sources || []
+                                readonly property var lims: d.limitations || []
+                                readonly property int confLevel: ledger.confRank(d.confidence)
+                                readonly property bool twoCol: width >= 940 && srcs.length > 0 && lims.length > 0
                                 implicitHeight: claimCol.implicitHeight + Tokens.space4 * 2
                                 hoverGlow: true
-                                border.color: isOpen ? U.withAlpha(tint, 0.5) : Theme.border
+                                border.color: isOpen ? U.withAlpha(tint, 0.55)
+                                            : hovered ? U.withAlpha(tint, 0.28) : Theme.border
                                 Behavior on implicitHeight { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
                                 clip: true
 
-                                // class stripe on the reading edge
+                                // entrance: a short rise, staggered by position
+                                opacity: 0
+                                transform: Translate { id: cardRise; y: 10 }
+                                Component.onCompleted: cardIn.start()
+                                ParallelAnimation {
+                                    id: cardIn
+                                    SequentialAnimation {
+                                        PauseAnimation { duration: Math.min(index, 8) * 35 }
+                                        NumberAnimation { target: claimCard; property: "opacity"; to: 1; duration: Tokens.durPage; easing.type: Easing.OutCubic }
+                                    }
+                                    SequentialAnimation {
+                                        PauseAnimation { duration: Math.min(index, 8) * 35 }
+                                        NumberAnimation { target: cardRise; property: "y"; to: 0; duration: Tokens.durPage; easing.type: Easing.OutCubic }
+                                    }
+                                }
+
+                                // open: the class colour washes in from the top
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: parent.radius
+                                    opacity: claimCard.isOpen ? 1 : 0
+                                    Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: U.withAlpha(claimCard.tint, Theme.isDark ? 0.09 : 0.06) }
+                                        GradientStop { position: 0.45; color: U.withAlpha(claimCard.tint, 0.0) }
+                                    }
+                                }
+
+                                // class rail on the reading edge, fading downwards
                                 Rectangle {
                                     width: 3
                                     anchors.top: parent.top
                                     anchors.bottom: parent.bottom
                                     anchors.left: parent.left
-                                    anchors.topMargin: Tokens.space3
-                                    anchors.bottomMargin: Tokens.space3
-                                    anchors.leftMargin: Tokens.space2
+                                    anchors.topMargin: Tokens.space4
+                                    anchors.bottomMargin: Tokens.space4
                                     radius: 2
-                                    color: claimCard.tint
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: claimCard.tint }
+                                        GradientStop { position: 1.0; color: U.withAlpha(claimCard.tint, claimCard.isOpen ? 0.25 : 0.55) }
+                                    }
                                 }
-
-                                TapHandler { onTapped: ledger.openIdx = claimCard.isOpen ? -1 : index }
-                                HoverHandler { cursorShape: Qt.PointingHandCursor }
 
                                 ColumnLayout {
                                     id: claimCol
@@ -3899,113 +4318,381 @@ Item {
                                     anchors.top: parent.top
                                     anchors.margins: Tokens.space4
                                     anchors.leftMargin: Tokens.space5
-                                    spacing: Tokens.space3
+                                    spacing: Tokens.space4
 
+                                    // ── header (the click target) ──
                                     RowLayout {
+                                        id: claimHead
                                         Layout.fillWidth: true
-                                        spacing: Tokens.space3
-                                        C.AppText {
-                                            Layout.fillWidth: true
-                                            text: modelData.claim
-                                            wrapMode: Text.WordWrap
-                                            weight: Tokens.weightMedium
-                                            font.pixelSize: Tokens.fontBody
-                                            lineHeight: 1.15
-                                            color: Theme.text_strong
-                                        }
-                                        C.IconGlyph {
+                                        spacing: Tokens.space4
+                                        TapHandler { onTapped: ledger.toggle(index) }
+                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+
+                                        Rectangle {
                                             Layout.alignment: Qt.AlignTop
-                                            name: claimCard.isOpen ? "expand_less" : "expand_more"
-                                            size: 18
-                                            glyphColor: Theme.on_surface_var
+                                            implicitWidth: 40; implicitHeight: 40
+                                            radius: Tokens.radiusMd
+                                            color: U.withAlpha(claimCard.tint, Theme.isDark ? 0.14 : 0.10)
+                                            border.width: 1
+                                            border.color: U.withAlpha(claimCard.tint, 0.32)
+                                            C.IconGlyph {
+                                                anchors.centerIn: parent
+                                                name: ledger.classIcon(claimCard.d.evidenceClass)
+                                                size: 19
+                                                glyphColor: claimCard.tint
+                                            }
                                         }
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: Tokens.space2
-                                        Tag { label: modelData.classLabel; tint: claimCard.tint; strong: true }
-                                        Tag {
-                                            label: I18n.tr("confidence: {c}").replace("{c}", modelData.confidenceLabel)
-                                            tint: modelData.confidence === "high" ? Theme.secondary_container
-                                                : modelData.confidence === "medium" ? Theme.on_surface : Theme.outline
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Tokens.space2
+
+                                            Row {
+                                                spacing: Tokens.space2
+                                                C.AppText {
+                                                    text: claimCard.d.classLabel.toUpperCase()
+                                                    weight: Tokens.weightBold
+                                                    font.pixelSize: Tokens.fontMicro
+                                                    font.letterSpacing: I18n.rtl ? 0 : Tokens.trackingLabel
+                                                    color: claimCard.tint
+                                                }
+                                                C.AppText {
+                                                    text: "·  " + I18n.tr("claim {n}").replace("{n}", (modelData.n < 10 ? "0" : "") + modelData.n)
+                                                    mono: true
+                                                    font.pixelSize: Tokens.fontMicro
+                                                    color: Theme.outline
+                                                }
+                                            }
+                                            C.AppText {
+                                                Layout.fillWidth: true
+                                                text: claimCard.d.claim
+                                                wrapMode: Text.WordWrap
+                                                weight: Tokens.weightDemiBold
+                                                font.pixelSize: Tokens.fontLabel + 1
+                                                lineHeight: 1.22
+                                                color: Theme.text_strong
+                                            }
+
+                                            // meta line: confidence · sources · caveats
+                                            Flow {
+                                                Layout.fillWidth: true
+                                                Layout.topMargin: 2
+                                                spacing: Tokens.space5
+
+                                                Row {
+                                                    spacing: Tokens.space2
+                                                    ConfBars {
+                                                        level: claimCard.confLevel
+                                                        tint: page.confTint(claimCard.d.confidence)
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                    C.AppText {
+                                                        text: I18n.tr("{c} confidence").replace("{c}", claimCard.d.confidenceLabel)
+                                                        weight: Tokens.weightMedium
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.on_surface
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                }
+
+                                                Row {
+                                                    visible: claimCard.srcs.length > 0
+                                                    spacing: Tokens.space2
+                                                    // overlapping thumbnails, like faces on a thread
+                                                    Item {
+                                                        width: 32 + (Math.min(3, claimCard.srcs.length) - 1) * 20
+                                                        height: 20
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        Repeater {
+                                                            model: Math.min(3, claimCard.srcs.length)
+                                                            Rectangle {
+                                                                x: index * 20
+                                                                z: 3 - index
+                                                                width: 32; height: 20
+                                                                radius: 6
+                                                                color: Theme.panel_bg
+                                                                Thumb {
+                                                                    anchors.fill: parent
+                                                                    anchors.margins: 1.5
+                                                                    radius: 5
+                                                                    srcW: 96
+                                                                    thumbId: claimCard.srcs[index].thumbId || ""
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    C.AppText {
+                                                        text: claimCard.srcs.length === 1 ? I18n.tr("1 source")
+                                                              : I18n.tr("{n} sources").replace("{n}", claimCard.srcs.length)
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.on_surface_var
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                }
+
+                                                Row {
+                                                    visible: claimCard.lims.length > 0
+                                                    spacing: 6
+                                                    C.IconGlyph {
+                                                        name: "warning"; size: 13
+                                                        glyphColor: Theme.warn
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                    C.AppText {
+                                                        text: claimCard.lims.length === 1 ? I18n.tr("1 caveat")
+                                                              : I18n.tr("{n} caveats").replace("{n}", claimCard.lims.length)
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: U.mix(Theme.warn, Theme.on_surface_var, 0.25)
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                }
+                                            }
                                         }
-                                        Tag {
-                                            visible: claimCard.srcs.length > 0
-                                            label: I18n.tr("{n} sources").replace("{n}", claimCard.srcs.length)
-                                            tint: Theme.on_surface_var
+
+                                        // chevron that turns
+                                        Rectangle {
+                                            Layout.alignment: Qt.AlignTop
+                                            implicitWidth: 32; implicitHeight: 32
+                                            radius: 16
+                                            color: claimCard.isOpen ? U.withAlpha(claimCard.tint, 0.16)
+                                                 : claimCard.hovered ? Theme.hover_bg : U.withAlpha(Theme.hover_bg, 0)
+                                            border.width: 1
+                                            border.color: claimCard.isOpen ? U.withAlpha(claimCard.tint, 0.45) : Theme.border
+                                            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                            C.IconGlyph {
+                                                anchors.centerIn: parent
+                                                name: "expand_more"
+                                                size: 18
+                                                glyphColor: claimCard.isOpen ? claimCard.tint : Theme.on_surface_var
+                                                rotation: claimCard.isOpen ? 180 : 0
+                                                Behavior on rotation { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
+                                            }
                                         }
                                     }
 
-                                    // unfolded: sources + limitations
+                                    // ── unfolded body ──
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         visible: claimCard.isOpen
-                                        spacing: Tokens.space2
-                                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.divider_h }
-                                        Eyebrow { visible: claimCard.srcs.length > 0; text: I18n.tr("RESTS ON") }
-                                        Flow {
+                                        opacity: claimCard.isOpen ? 1 : 0
+                                        Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                                        spacing: Tokens.space4
+
+                                        Rectangle {
                                             Layout.fillWidth: true
-                                            spacing: Tokens.space2
-                                            visible: claimCard.srcs.length > 0
-                                            Repeater {
-                                                model: claimCard.srcs
-                                                Rectangle {
-                                                    height: 30
-                                                    width: Math.min(320, srcRow.implicitWidth + Tokens.space4)
-                                                    radius: Tokens.radiusPill
-                                                    color: srcHover.hovered ? U.mix(Theme.surface_low, Theme.primary, 0.12) : Theme.surface_low
-                                                    border.width: 1
-                                                    border.color: srcHover.hovered ? U.withAlpha(Theme.primary, 0.45) : Theme.border
-                                                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
-                                                    MouseArea {
-                                                        id: srcHover
-                                                        readonly property bool hovered: containsMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: Qt.openUrlExternally(modelData.url)
+                                            implicitHeight: 1
+                                            gradient: Gradient {
+                                                orientation: Gradient.Horizontal
+                                                GradientStop { position: 0.0; color: U.withAlpha(claimCard.tint, 0.45) }
+                                                GradientStop { position: 1.0; color: U.withAlpha(claimCard.tint, 0.0) }
+                                            }
+                                        }
+
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: claimCard.twoCol ? 2 : 1
+                                            columnSpacing: Tokens.space5
+                                            rowSpacing: Tokens.space4
+
+                                            // rests on: the videos themselves
+                                            ColumnLayout {
+                                                id: srcCol
+                                                visible: claimCard.srcs.length > 0
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 3
+                                                Layout.alignment: Qt.AlignTop
+                                                spacing: Tokens.space3
+                                                RowLayout {
+                                                    spacing: Tokens.space2
+                                                    C.IconGlyph { name: "link"; size: 14; glyphColor: claimCard.tint }
+                                                    Eyebrow { text: I18n.tr("RESTS ON") }
+                                                    C.AppText {
+                                                        text: String(claimCard.srcs.length)
+                                                        mono: true
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.outline
                                                     }
-                                                    Row {
-                                                        id: srcRow
-                                                        anchors.centerIn: parent
-                                                        spacing: 6
-                                                        C.IconGlyph {
-                                                            name: "play_circle"; size: 14
-                                                            glyphColor: Theme.primary
-                                                            anchors.verticalCenter: parent.verticalCenter
+                                                }
+                                                GridLayout {
+                                                    Layout.fillWidth: true
+                                                    columns: Math.max(1, Math.min(claimCard.srcs.length, Math.floor((srcCol.width + Tokens.space3) / (300 + Tokens.space3))))
+                                                    columnSpacing: Tokens.space3
+                                                    rowSpacing: Tokens.space3
+                                                    Repeater {
+                                                        model: claimCard.srcs
+                                                        Rectangle {
+                                                            id: srcTile
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredWidth: 1
+                                                            implicitHeight: 72
+                                                            radius: Tokens.radiusMd
+                                                            readonly property bool hot: srcMa.containsMouse
+                                                            color: hot ? U.mix(Theme.surface_low, claimCard.tint, 0.10) : Theme.surface_low
+                                                            border.width: 1
+                                                            border.color: hot ? U.withAlpha(claimCard.tint, 0.50) : Theme.border
+                                                            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                                            Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                                            MouseArea {
+                                                                id: srcMa
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: Qt.openUrlExternally(modelData.url)
+                                                            }
+                                                            RowLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: Tokens.space2
+                                                                spacing: Tokens.space3
+                                                                Thumb {
+                                                                    Layout.preferredWidth: 100
+                                                                    Layout.preferredHeight: 56
+                                                                    radius: Tokens.radiusSm
+                                                                    srcW: 240
+                                                                    thumbId: modelData.thumbId || ""
+                                                                    // "Short" corner tag
+                                                                    Rectangle {
+                                                                        visible: modelData.isShort === true
+                                                                        anchors.right: parent.right
+                                                                        anchors.bottom: parent.bottom
+                                                                        anchors.margins: 4
+                                                                        width: shortLbl.implicitWidth + 8
+                                                                        height: 16
+                                                                        radius: 4
+                                                                        color: U.withAlpha("#000000", 0.62)
+                                                                        C.AppText {
+                                                                            id: shortLbl
+                                                                            anchors.centerIn: parent
+                                                                            text: I18n.tr("Short")
+                                                                            weight: Tokens.weightBold
+                                                                            font.pixelSize: Tokens.fontMicro
+                                                                            color: "#ffffff"
+                                                                        }
+                                                                    }
+                                                                }
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 3
+                                                                    C.AppText {
+                                                                        Layout.fillWidth: true
+                                                                        text: modelData.title
+                                                                        weight: Tokens.weightDemiBold
+                                                                        font.pixelSize: Tokens.fontCaption + 1
+                                                                        color: srcTile.hot ? Theme.text_strong : Theme.on_surface
+                                                                        wrapMode: Text.WordWrap
+                                                                        maximumLineCount: 2
+                                                                        elide: Text.ElideRight
+                                                                    }
+                                                                    C.AppText {
+                                                                        Layout.fillWidth: true
+                                                                        visible: text !== ""
+                                                                        text: {
+                                                                            var p = []
+                                                                            if (modelData.channelTitle) p.push(modelData.channelTitle)
+                                                                            if (modelData.views) p.push(I18n.tr("{v} views").replace("{v}", modelData.views))
+                                                                            return p.join("  ·  ")
+                                                                        }
+                                                                        font.pixelSize: Tokens.fontCaption
+                                                                        color: Theme.outline
+                                                                        elide: Text.ElideRight
+                                                                    }
+                                                                }
+                                                                ColumnLayout {
+                                                                    Layout.alignment: Qt.AlignVCenter
+                                                                    spacing: 2
+                                                                    C.AppText {
+                                                                        Layout.alignment: Qt.AlignRight
+                                                                        visible: (modelData.multiplier || "") !== ""
+                                                                        text: String(modelData.multiplier || "").replace(/x\s*$/i, "×")
+                                                                        mono: true
+                                                                        weight: Tokens.weightExtraBold
+                                                                        font.pixelSize: Tokens.fontLabel
+                                                                        color: claimCard.tint
+                                                                    }
+                                                                    C.IconGlyph {
+                                                                        Layout.alignment: Qt.AlignRight
+                                                                        name: "open_in_new"; size: 13
+                                                                        glyphColor: srcTile.hot ? claimCard.tint : Theme.outline
+                                                                        opacity: srcTile.hot ? 1 : 0.6
+                                                                    }
+                                                                }
+                                                            }
                                                         }
-                                                        C.AppText {
-                                                            text: modelData.title
-                                                            font.pixelSize: Tokens.fontCaption
-                                                            color: Theme.on_surface
-                                                            elide: Text.ElideRight
-                                                            width: Math.min(implicitWidth, 270)
-                                                            anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                }
+                                            }
+
+                                            // what would undermine it: an amber stress test
+                                            Rectangle {
+                                                visible: claimCard.lims.length > 0
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 2
+                                                Layout.alignment: Qt.AlignTop
+                                                implicitHeight: limCol.implicitHeight + Tokens.space4 * 2
+                                                radius: Tokens.radiusMd
+                                                color: U.withAlpha(Theme.warn, Theme.isDark ? 0.07 : 0.06)
+                                                border.width: 1
+                                                border.color: U.withAlpha(Theme.warn, 0.26)
+                                                ColumnLayout {
+                                                    id: limCol
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.margins: Tokens.space4
+                                                    spacing: Tokens.space3
+                                                    RowLayout {
+                                                        spacing: Tokens.space2
+                                                        C.IconGlyph { name: "warning"; size: 14; glyphColor: Theme.warn }
+                                                        Eyebrow { text: I18n.tr("WHAT WOULD UNDERMINE IT"); color: Theme.warn }
+                                                    }
+                                                    Repeater {
+                                                        model: claimCard.lims
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: Tokens.space3
+                                                            Rectangle {
+                                                                Layout.alignment: Qt.AlignTop
+                                                                Layout.topMargin: 7
+                                                                implicitWidth: 6; implicitHeight: 6
+                                                                radius: 3
+                                                                color: Theme.warn
+                                                            }
+                                                            C.AppText {
+                                                                Layout.fillWidth: true
+                                                                text: modelData
+                                                                wrapMode: Text.WordWrap
+                                                                font.pixelSize: Tokens.fontBody
+                                                                lineHeight: 1.2
+                                                                color: Theme.on_surface
+                                                                selectable: true
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        Eyebrow { visible: claimCard.lims.length > 0; text: I18n.tr("WHAT WOULD UNDERMINE IT"); color: Theme.warn }
-                                        Repeater {
-                                            model: claimCard.lims
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: Tokens.space2
-                                                C.IconGlyph {
-                                                    name: "warning"; size: 12
-                                                    glyphColor: Theme.warn
-                                                    Layout.alignment: Qt.AlignTop
-                                                    Layout.topMargin: 2
+
+                                        // footer: take the claim with you
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Tokens.space2
+                                            Item { Layout.fillWidth: true }
+                                            PillAction {
+                                                id: copyBtn
+                                                property bool done: false
+                                                glyph: done ? "check" : "content_copy"
+                                                label: done ? I18n.tr("Copied") : I18n.tr("Copy with sources")
+                                                onClicked: {
+                                                    var t = claimCard.d.claim + "\n[" + claimCard.d.classLabel + " · "
+                                                          + I18n.tr("{c} confidence").replace("{c}", claimCard.d.confidenceLabel) + "]"
+                                                    for (var i = 0; i < claimCard.srcs.length; i++)
+                                                        t += "\n- " + claimCard.srcs[i].title + "  " + claimCard.srcs[i].url
+                                                    for (var j = 0; j < claimCard.lims.length; j++)
+                                                        t += "\n! " + claimCard.lims[j]
+                                                    clipHelper.put(t)
+                                                    done = true
+                                                    copyReset.restart()
                                                 }
-                                                C.AppText {
-                                                    Layout.fillWidth: true
-                                                    text: modelData
-                                                    wrapMode: Text.WordWrap
-                                                    font.pixelSize: Tokens.fontCaption
-                                                    color: Theme.on_surface_var
-                                                    selectable: true
-                                                }
+                                                Timer { id: copyReset; interval: 1600; onTriggered: copyBtn.done = false }
                                             }
                                         }
                                     }

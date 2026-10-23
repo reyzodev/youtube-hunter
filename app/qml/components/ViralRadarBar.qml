@@ -14,6 +14,10 @@ import "../Utils.js" as U
 //   │ [Market ▾] [Category ▾] [24h|48h|7d|30d] [Source ▾] [Rank by ▾]  ◯ open│
 //   └──────────────────────────────────────────────────────────────────────┘
 //
+// v1.0.1: a Market other than Global means that market's CONTENT — local
+// title, channel not registered in another country (core/niche/viral.py +
+// audience.market_fit) — not just "watchable there".
+//
 // Every control here only decides WHERE the pool comes from (one cheap
 // videos.list chart read, cached for an hour); the Tuner below still cuts it
 // live, and "Rank by" is the page's own sort — Views ÷ Subs first is the
@@ -264,6 +268,7 @@ Rectangle {
 
             C.Dropdown {
                 width: 210
+                popupMaxHeight: 380
                 borderColor: U.mix(Theme.border, Theme.outline, 0.45)
                 model: Niche.viralRegionOptions
                 currentIndex: Niche.viralRegionIndex

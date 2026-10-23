@@ -24,7 +24,13 @@ _NICHE_SORTS = {
                                     and not r.get("subs_hidden") else 10 ** 12),
                                    -(r.get("view_count") or 0)),
     "published_at":     lambda r: -(r.get("age_hours") or 10 ** 9),
-    "engagement":       lambda r: (r.get("engagement") or 0),
+    # Engagement only means something once a video has an audience: a 40-view
+    # upload with 8 likes is "20%" and used to top this sort. Under 1K views
+    # a row sinks below every row that has one, then ranks among its own kind.
+    "engagement":       lambda r: (1 if (r.get("view_count") or 0) >= 1000 else 0,
+                                   r.get("engagement") or 0),
+    # Views ÷ the channel's own average video (search.compute_niche_metrics).
+    "channel_outlier":  lambda r: (r.get("channel_outlier") or -1),
     # Gold Score (app.core.niche.gold), views as the tie-break. Rows from an
     # archive saved before v1.1 have no score yet and sink to the bottom.
     "gold":             lambda r: (r.get("gold_score") or 0, r.get("view_count") or 0),

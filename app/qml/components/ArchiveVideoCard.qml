@@ -123,6 +123,14 @@ C.GlassPanel {
         ? [ { l: I18n.tr("views"),    v: row.views || "0",      m: -1 },
             { l: I18n.tr("videos"),   v: row.videoCount || "0", m: -1 },
             { l: I18n.tr("latest"),   v: row.ageShort || "—",   m: -1 } ]
+        : (row.chOutlier || "") !== ""
+        // v1.0.2: "× its channel's average video" — the cleanest outlier read.
+        // Only Niche Finder rows carry it; Archive cards keep three columns.
+        ? [ { l: I18n.tr("views"),    v: row.views || "0",      m: -1 },
+            { l: I18n.tr("vs ch. avg"), v: String(row.chOutlier).replace(/x\s*$/i, "×"), m: -1 },
+            { l: I18n.tr("per hour"), v: row.perHour || "0",    m: -1 },
+            { l: I18n.tr("engage"),   v: row.engagement || "—",
+              m: isNaN(card._engNum) ? -1 : Math.min(1, card._engNum / 8) } ]
         : [ { l: I18n.tr("views"),    v: row.views || "0",      m: -1 },
             { l: I18n.tr("per hour"), v: row.perHour || "0",    m: -1 },
             { l: I18n.tr("engage"),   v: row.engagement || "—",

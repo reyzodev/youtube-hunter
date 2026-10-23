@@ -495,9 +495,11 @@ Item {
         color: Theme.on_surface_var
     }
 
-    // Language / Country explainer + precision dial. Everything it says comes
-    // from the VM (audienceSummary / audienceWarning), so the sentence and the
-    // filter can never disagree.
+    // Country explainer. v1.0.1: one Country picker means "content made for
+    // that country" (title in its language, channel not registered elsewhere),
+    // so the old Language dropdown and Broad/Smart/Strict dial are gone. The
+    // sentence comes from the VM (audienceSummary), so it can never disagree
+    // with the filter.
     component AudienceCard: Rectangle {
         id: ac
         radius: Tokens.radiusMd
@@ -527,7 +529,7 @@ Item {
                     border.color: Niche.audienceActive ? U.withAlpha(Theme.primary, 0.32) : Theme.outline_variant
                     C.IconGlyph {
                         anchors.centerIn: parent
-                        name: "translate"; size: 16
+                        name: "public"; size: 16
                         fill: Niche.audienceActive
                         glyphColor: Niche.audienceActive ? Theme.primary : Theme.on_surface_var
                     }
@@ -536,7 +538,7 @@ Item {
                     Layout.fillWidth: true
                     spacing: 1
                     C.AppText {
-                        text: I18n.tr("Audience match")
+                        text: I18n.tr("Country match")
                         weight: Tokens.weightBold
                         font.pixelSize: Tokens.fontBody
                         color: Theme.text_strong
@@ -551,19 +553,6 @@ Item {
                 }
             }
 
-            C.SlideSegment {
-                    Layout.fillWidth: true
-                    equal: true
-                    solid: false
-                    cellHeight: 30
-                    fontSize: Tokens.fontCaption
-                    enabledCells: Niche.audienceActive
-                    opacity: Niche.audienceActive ? 1 : 0.55
-                    model: Niche.precisionOptions
-                    currentIndex: Niche.precisionIndex
-                    onActivated: (i) => Niche.precisionIndex = i
-            }
-
             C.AppText {
                 Layout.fillWidth: true
                 text: Niche.audienceSummary
@@ -573,25 +562,49 @@ Item {
                 lineHeight: 1.15
             }
 
+            // English keyword + non-English country: translate it first, or
+            // "king" + France finds nothing (French titles say "roi").
+            Rectangle {
+                Layout.fillWidth: true
+                visible: Niche.translateAvailable
+                height: 1
+                color: Theme.border
+            }
             RowLayout {
                 Layout.fillWidth: true
-                visible: Niche.audienceWarning !== ""
-                spacing: Tokens.space2
+                visible: Niche.translateAvailable
+                spacing: Tokens.space3
                 C.IconGlyph {
-                    name: "warning"; size: 14; fill: true
-                    glyphColor: Theme.warn
+                    name: "translate"; size: 16
+                    fill: Niche.translateKeyword
+                    glyphColor: Niche.translateKeyword ? Theme.primary : Theme.on_surface_var
                     Layout.alignment: Qt.AlignTop
-                    Layout.topMargin: 1
+                    Layout.topMargin: 2
                 }
-                C.AppText {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: Niche.audienceWarning
-                    font.pixelSize: Tokens.fontCaption
-                    weight: Tokens.weightDemiBold
-                    color: Theme.warn
-                    wrapMode: Text.Wrap
+                    spacing: 1
+                    C.AppText {
+                        text: I18n.tr("Translate my keyword")
+                        weight: Tokens.weightDemiBold
+                        font.pixelSize: Tokens.fontBody
+                        color: Niche.translateKeyword ? Theme.primary : Theme.text_strong
+                    }
+                    C.AppText {
+                        Layout.fillWidth: true
+                        text: Niche.translateHint
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.on_surface_var
+                        wrapMode: Text.Wrap
+                    }
+                }
+                C.AppSwitch {
+                    Layout.alignment: Qt.AlignVCenter
+                    checked: Niche.translateKeyword
+                    onToggled: Niche.translateKeyword = checked
                 }
             }
+
         }
     }
 
@@ -1511,7 +1524,7 @@ Item {
 
                                         GridLayout {
                                             Layout.fillWidth: true
-                                            columns: page._narrow ? 1 : 2
+                                            columns: page._narrow ? 1 : 3
                                             columnSpacing: Tokens.space4
                                             rowSpacing: Tokens.space4
                                             ColumnLayout {
@@ -1524,25 +1537,73 @@ Item {
                                                 FieldCap { text: I18n.tr("Sort results by") }
                                                 C.Dropdown { Layout.fillWidth: true; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.sortOptions; currentIndex: Niche.sortIndex; onActivated: { Niche.sortIndex = currentIndex; Niche.applyFilters() } }
                                             }
+                                            // new channels blowing up = an open niche
+                                            ColumnLayout {
+                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                FieldCap { text: I18n.tr("Channel age") }
+                                                C.Dropdown { Layout.fillWidth: true; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.channelAgeOptions; currentIndex: Niche.channelAgeIndex; onActivated: Niche.channelAgeIndex = currentIndex }
+                                            }
+                                            // v1.0.2 — "does this niche work at 8–20 min?"
+                                            ColumnLayout {
+                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                FieldCap { text: I18n.tr("Video length") }
+                                                C.Dropdown { Layout.fillWidth: true; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.durationOptions; currentIndex: Niche.durationIndex; onActivated: Niche.durationIndex = currentIndex }
+                                            }
+                                            // few uploads + a big hit = the idea did the work
+                                            ColumnLayout {
+                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                FieldCap { text: I18n.tr("Channel uploads") }
+                                                C.Dropdown { Layout.fillWidth: true; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.uploadsOptions; currentIndex: Niche.uploadsIndex; onActivated: Niche.uploadsIndex = currentIndex }
+                                            }
+                                            ColumnLayout {
+                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                FieldCap { text: I18n.tr("Category") }
+                                                C.Dropdown { Layout.fillWidth: true; popupMaxHeight: 380; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.categoryOptions; currentIndex: Niche.categoryIndex; onActivated: Niche.categoryIndex = currentIndex }
+                                            }
                                         }
 
-                                        ColumnLayout {
-                                            spacing: Tokens.space2
+                                        GridLayout {
                                             Layout.fillWidth: true
-                                            FieldCap { text: I18n.tr("Format") }
-                                            C.SlideSegment {
+                                            columns: page._narrow ? 1 : 2
+                                            columnSpacing: Tokens.space4
+                                            rowSpacing: Tokens.space4
+                                            ColumnLayout {
+                                                spacing: Tokens.space2
                                                 Layout.fillWidth: true
-                                                equal: true
-                                                solid: false
-                                                cellHeight: 36
-                                                fontSize: Tokens.fontCaption + 1
-                                                model: [
-                                                    { icon: "movie",     label: Niche.formatOptions[0] || "" },
-                                                    { icon: "fmt_long",  label: Niche.formatOptions[1] || "" },
-                                                    { icon: "fmt_short", label: Niche.formatOptions[2] || "" }
-                                                ]
-                                                currentIndex: Niche.formatIndex
-                                                onActivated: (i) => { Niche.formatIndex = i; Niche.applyFilters() }
+                                                Layout.preferredWidth: 3
+                                                FieldCap { text: I18n.tr("Format") }
+                                                C.SlideSegment {
+                                                    Layout.fillWidth: true
+                                                    equal: true
+                                                    solid: false
+                                                    cellHeight: 36
+                                                    fontSize: Tokens.fontCaption + 1
+                                                    model: [
+                                                        { icon: "movie",     label: Niche.formatOptions[0] || "" },
+                                                        { icon: "fmt_long",  label: Niche.formatOptions[1] || "" },
+                                                        { icon: "fmt_short", label: Niche.formatOptions[2] || "" }
+                                                    ]
+                                                    currentIndex: Niche.formatIndex
+                                                    onActivated: (i) => { Niche.formatIndex = i; Niche.applyFilters() }
+                                                }
+                                            }
+                                            // one prolific channel can't flood the page:
+                                            // "how many channels are winning" is the saturation read
+                                            ColumnLayout {
+                                                spacing: Tokens.space2
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 2
+                                                FieldCap { text: I18n.tr("Per channel") }
+                                                C.SlideSegment {
+                                                    Layout.fillWidth: true
+                                                    equal: true
+                                                    solid: false
+                                                    cellHeight: 36
+                                                    fontSize: Tokens.fontCaption + 1
+                                                    model: [ I18n.tr("All"), I18n.tr("Best 1"), I18n.tr("Best 3") ]
+                                                    currentIndex: Niche.perChannelIndex
+                                                    onActivated: (i) => { Niche.perChannelIndex = i }
+                                                }
                                             }
                                         }
 
@@ -1588,6 +1649,43 @@ Item {
                                             }
                                         }
 
+                                        // v1.0.2 — the signals a pro filters on after
+                                        // reach: beats its OWN channel, still moving,
+                                        // people actually reacting.
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: page._narrow ? 1 : 3
+                                            columnSpacing: Tokens.space3
+                                            rowSpacing: Tokens.space4
+                                            C.LineField {
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 1
+                                                borderColor: U.mix(Theme.border, Theme.outline, 0.45)
+                                                label: I18n.tr("Min × channel average"); labelIcon: "bolt"
+                                                placeholder: "5"
+                                                text: Niche.outlierMin
+                                                onTextChanged: { if (Niche.outlierMin !== text) { Niche.outlierMin = text; filterTimer.restart() } }
+                                            }
+                                            C.LineField {
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 1
+                                                borderColor: U.mix(Theme.border, Theme.outline, 0.45)
+                                                label: I18n.tr("Min views / hour"); labelIcon: "speed"
+                                                placeholder: "1K"
+                                                text: Niche.velMin
+                                                onTextChanged: { if (Niche.velMin !== text) { Niche.velMin = text; filterTimer.restart() } }
+                                            }
+                                            C.LineField {
+                                                Layout.fillWidth: true
+                                                Layout.preferredWidth: 1
+                                                borderColor: U.mix(Theme.border, Theme.outline, 0.45)
+                                                label: I18n.tr("Min engagement %"); labelIcon: "favorite"
+                                                placeholder: "4"
+                                                text: Niche.engMin
+                                                onTextChanged: { if (Niche.engMin !== text) { Niche.engMin = text; filterTimer.restart() } }
+                                            }
+                                        }
+
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: Tokens.space2
@@ -1599,7 +1697,7 @@ Item {
                                             }
                                             C.AppText {
                                                 Layout.fillWidth: true
-                                                text: I18n.tr("These ranges drive the search itself, not just the results it already fetched. If the first pass finds too few videos that fit, the app widens the search on its own - deeper time windows, more pages - and that spends more of today's search quota. Subscribers are ignored in Single Channel Scan.")
+                                                text: I18n.tr("× channel average = views against the channel's own typical video, the cleanest outlier signal. Type -word in the results filter to exclude it. Too few matches? The next run widens itself (uses more quota).")
                                                 font.pixelSize: Tokens.fontCaption
                                                 color: Theme.outline
                                                 wrapMode: Text.Wrap
@@ -1644,14 +1742,18 @@ Item {
                                                 Layout.columnSpan: page._narrow ? 1 : 2
                                                 FieldCap { text: I18n.tr("Search depth") }
                                                 C.Dropdown { Layout.fillWidth: true; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.depthOptions; currentIndex: Niche.depthIndex; onActivated: Niche.depthIndex = currentIndex }
+                                                // "Deep scan" is no longer a separate toggle: Deep and up slice the window
+                                                C.AppText {
+                                                    Layout.fillWidth: true
+                                                    text: I18n.tr("Deep and above also slice the time window, so small channels surface.")
+                                                    font.pixelSize: Tokens.fontCaption
+                                                    color: Theme.outline
+                                                    wrapMode: Text.Wrap
+                                                }
                                             }
                                             ColumnLayout {
-                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
-                                                FieldCap { text: I18n.tr("Language") }
-                                                C.Dropdown { Layout.fillWidth: true; popupMaxHeight: 380; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.langOptions; currentIndex: Niche.langIndex; onActivated: Niche.langIndex = currentIndex }
-                                            }
-                                            ColumnLayout {
-                                                spacing: Tokens.space2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                spacing: Tokens.space2; Layout.fillWidth: true
+                                                Layout.columnSpan: page._narrow ? 1 : 2
                                                 FieldCap { text: I18n.tr("Country") }
                                                 C.Dropdown { Layout.fillWidth: true; popupMaxHeight: 380; enabled: Niche.mode === 0; opacity: enabled ? 1 : 0.5; borderColor: U.mix(Theme.border, Theme.outline, 0.45); model: Niche.regionOptions; currentIndex: Niche.regionIndex; onActivated: Niche.regionIndex = currentIndex }
                                             }
@@ -1664,16 +1766,9 @@ Item {
                                         // the current settings will actually do.
                                         AudienceCard {
                                             Layout.fillWidth: true
+                                            visible: Niche.mode === 0
                                         }
 
-                                        ToggleCard {
-                                            visible: Niche.mode === 0
-                                            icon: "biotech"
-                                            label: I18n.tr("Deep scan")
-                                            hint: I18n.tr("Slower, digs through more of each channel")
-                                            on: Niche.deepScan
-                                            onFlipped: (v) => Niche.deepScan = v
-                                        }
                                         ToggleCard {
                                             icon: "autorenew"
                                             label: I18n.tr("Ignore cache")
@@ -1950,7 +2045,7 @@ Item {
                                         selectionColor: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.35)
                                         selectedTextColor: Theme.text_strong
                                         Layout.fillWidth: true
-                                        placeholderText: I18n.tr("Filter these results by word …")
+                                        placeholderText: I18n.tr("Filter by word … (-word excludes)")
                                         placeholderTextColor: Theme.outline
                                         color: Theme.on_surface
                                         font.family: Fonts.body

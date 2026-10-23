@@ -685,12 +685,23 @@ class InsightsVM(QObject):
         for claim in (self._ai or {}).get("claims", []) or []:
             sources = []
             for vid in claim.get("source_video_ids", []) or []:
-                row = by_id.get(str(vid))
+                row = by_id.get(str(vid)) or {}
+                mult = row.get("multiplier")
                 sources.append({
                     "videoId": str(vid),
-                    "title": (row or {}).get("title", "") or str(vid),
-                    "url": (row or {}).get("video_url", "")
+                    "title": row.get("title", "") or str(vid),
+                    "url": row.get("video_url", "")
                            or ("https://www.youtube.com/watch?v=%s" % vid),
+                    # v1.0.2 ledger: the source tile shows the video itself
+                    # (thumbnail, channel, reach) instead of a bare title chip.
+                    "thumbId": _thumb_id(row.get("thumbnail_url", "")
+                                         or ("https://i.ytimg.com/vi/%s/mqdefault.jpg" % vid)),
+                    "channelTitle": row.get("channel_title", "") or "",
+                    "views": (humanize_count(row.get("view_count") or 0)
+                              if row.get("view_count") else ""),
+                    "multiplier": (format_multiplier(mult)
+                                   if mult is not None else ""),
+                    "isShort": bool(row.get("is_short")),
                 })
             cls = claim.get("evidence_class", "inferred")
             out.append({

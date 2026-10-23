@@ -33,7 +33,97 @@ NICHE_SORTS_UI = [
     ("Fewest Views", "view_count_asc", "viewCount", 3),
     # v1.1 Gold Score — appended (never inserted) so saved sort indexes stay put.
     ("Gold Score · steal-worthy first", "gold", "viewCount", 3),
+    # v1.0.2 — views ÷ the channel's own average video. Appended, never
+    # inserted, so every saved sort index (Search Archive) keeps its meaning.
+    ("Outlier · vs channel average", "channel_outlier", "viewCount", 3),
 ]
+
+# What the Niche Finder's "Sort results by" actually offers, as indexes into
+# NICHE_SORTS_UI and in this order. The table above stays whole (the Search
+# Archive sorts saved sections by index into it); the page just stopped
+# offering the two rows that only produce noise in a discovery tool:
+#   * "Smallest Channel First" — a raw subscriber ascending sort puts 0-view
+#     uploads from empty channels on top; "Smallest Channel · Highest Views"
+#     is the version of that idea that works.
+#   * "Fewest Views" — a channel-scan tool, not a niche-hunting one (the
+#     Archive keeps its Low → High toggle).
+# Gold Score moves up next to Best Finds: they are the two "what should I
+# steal" rankings.
+# v1.0.2: "Outlier · vs channel average" (9) sits with the two other
+# "what should I copy" rankings, ahead of the raw-volume sorts.
+NICHE_SORTS_VISIBLE = [0, 8, 9, 1, 2, 4, 5, 6]
+
+# "Channel age" — the cut that finds NEW channels blowing up, which is what a
+# creator looking for an open niche most wants to see: if a 3-month-old channel
+# is pulling a million views, the niche is not saturated. Free: the creation
+# date comes in the same channels.list payload the subscriber count does.
+# (label, max channel age in days; None = any)
+NICHE_CHANNEL_AGES = [
+    ("Any channel age", None),
+    ("Channel under 3 months", 90),
+    ("Channel under 6 months", 180),
+    ("Channel under 1 year", 365),
+    ("Channel under 2 years", 730),
+]
+
+# ── v1.0.2 refinements (all instant, all local, zero quota) ─────────────
+# Video length. "Format" only knew Shorts vs long-form, but the question a
+# creator actually asks is "does this niche work at 8–20 min" (mid-roll ads
+# start at 8:00) or "are 1-hour compilations winning here". Shorts may now run
+# up to 3 minutes, hence the 1–3 min bucket.
+# (label, min seconds inclusive, max seconds exclusive; None = open)
+NICHE_DURATIONS = [
+    ("Any length", None, None),
+    ("Under 1 min", None, 60),
+    ("1–3 min", 60, 180),
+    ("3–8 min", 180, 480),
+    ("8–20 min · mid-roll ads", 480, 1200),
+    ("20–60 min", 1200, 3600),
+    ("Over 1 hour", 3600, None),
+]
+
+# How many uploads the channel has in total. A channel with 12 videos and a
+# 2M-view hit is the most replicable signal there is: it was not years of
+# compounding audience, it was the idea. (label, max uploads; None = any)
+NICHE_CHANNEL_UPLOADS = [
+    ("Any upload count", None),
+    ("Under 10 uploads", 10),
+    ("Under 30 uploads", 30),
+    ("Under 100 uploads", 100),
+    ("Under 300 uploads", 300),
+]
+
+# Results per channel. One prolific channel used to fill a whole page; capping
+# it shows how MANY channels are winning, which is the real saturation read.
+# (label, cap; 0 = unlimited)
+NICHE_PER_CHANNEL = [
+    ("All videos per channel", 0),
+    ("Best 1 per channel", 1),
+    ("Best 3 per channel", 3),
+]
+
+# YouTube category, read from the videos.list payload we already pay for.
+# "!10" = everything except Music, the category that floods every chart.
+# (label, token for apply_niche_filters' "category")
+NICHE_CATEGORIES = [
+    ("All categories", ""),
+    ("All except Music", "!10"),
+    ("Entertainment", "24"),
+    ("Gaming", "20"),
+    ("People & Blogs", "22"),
+    ("Comedy", "23"),
+    ("Howto & Style", "26"),
+    ("Education", "27"),
+    ("Science & Technology", "28"),
+    ("News & Politics", "25"),
+    ("Sports", "17"),
+    ("Film & Animation", "1"),
+    ("Autos & Vehicles", "2"),
+    ("Pets & Animals", "15"),
+    ("Travel & Events", "19"),
+    ("Music", "10"),
+]
+
 
 # AI Ideas' own mini control bar keeps sorting to three choices — unlike
 # NICHE_SORTS_UI above, it has to sit in one row next to the format toggle
@@ -86,6 +176,11 @@ NICHE_DEPTHS = [
 # window, plus the widening passes — and returns whatever YouTube has in range.
 NICHE_DEPTH_TARGETS = [50, 100, 200, 300, 700, None]
 
+# From this depth row on the search also slices its time window ("deep scan"),
+# so each slice gets its own top-N and small channels surface. It used to be a
+# separate toggle; asking for 200+ videos is already asking to dig deeper.
+NICHE_DEEP_FROM_DEPTH = 2
+
 # Language / Country now come from app.core.niche.audience, which also owns
 # the logic that makes them real filters (they used to be search.list hints
 # only — see that module's docstring). Shape kept as (UI name, value) so every
@@ -100,19 +195,34 @@ NICHE_REGIONS = [(name, code) for name, code, _langs in _AUD_COUNTRIES]
 # How hard Language/Country filter: (UI name, mode token). Index 1 = default.
 NICHE_AUDIENCE_PRECISION = list(_AUD_PRECISIONS)
 
-# one-click filter combinations
+# one-click filter combinations — v1.0.2 "recipes".
+#
+# Each recipe is a complete question a creator asks, not a single number:
+# applying one resets EVERY instant cut first (so recipes never stack into a
+# mystery state), then sets only what it names. Keys missing from a recipe go
+# back to their default. Sort / format / duration / channel age are indexes
+# into the tables above; "sort" is an index into NICHE_SORTS_UI.
+#
+# Why these six:
+#   * Tiny channel, huge video — the classic outlier: the idea did the work.
+#     100K views (not 1M) so it fires on mid-sized niches too.
+#   * New channel breakout — a channel under 6 months pulling 100K+ means the
+#     niche is still open to newcomers.
+#   * 5× its own average — a video far above what ITS channel normally does:
+#     the packaging/topic is the reason, not the audience.
+#   * Mid-roll long-form — 8–20 min, small channel, real reach: the format that
+#     actually pays (mid-roll ads unlock at 8:00).
+#   * Shorts rocket — a Short from a sub-50K channel past 1M views.
 NICHE_PRESETS = [
-    ("Under 1K subs", {"subs_min": "0", "subs_max": "1000", "views_min": "",
-                       "views_max": "", "mult_min": ""}),
-    ("1K – 10K subs", {"subs_min": "1000", "subs_max": "10000", "views_min": "",
-                       "views_max": "", "mult_min": ""}),
-    ("Tiny channel, huge video", {"subs_min": "", "subs_max": "5000",
-                                  "views_min": "1M", "views_max": "",
-                                  "mult_min": "100"}),
-    ("10M+ views", {"subs_min": "", "subs_max": "", "views_min": "10M",
-                    "views_max": "", "mult_min": ""}),
-    ("Clear filters", {"subs_min": "", "subs_max": "", "views_min": "",
-                       "views_max": "", "mult_min": ""}),
+    ("Tiny channel, huge video", {"subs_max": "10K", "views_min": "100K",
+                                  "mult_min": "20", "sort": 0}),
+    ("New channel breakout", {"channel_age": 2, "views_min": "100K", "sort": 0}),
+    ("5× its own average", {"outlier_min": "5", "views_min": "20K", "sort": 9}),
+    ("Mid-roll long-form", {"format": 1, "duration": 4, "subs_max": "100K",
+                            "mult_min": "3", "sort": 8}),
+    ("Shorts rocket", {"format": 2, "subs_max": "50K", "views_min": "1M",
+                       "sort": 0}),
+    ("Clear filters", {}),
 ]
 
 # Hard ceiling on how many rows a view will take on. It used to be the

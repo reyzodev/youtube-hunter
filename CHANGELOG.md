@@ -7,6 +7,39 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Niche Finder: a country means that country's content
+
+Picking **Germany** used to return Indian uploads. `regionCode` only says "can be
+watched in Germany", and a search with no query is "the most-watched uploads on
+all of YouTube" — so the Country filter was labelling, not filtering.
+
+- **The picker now means content made for that market**: a breakout search sends
+  `relevanceLanguage` (the market's main language) with the region, and the
+  language detector (v4, rebuilt with each language's real function words and
+  title staples) decides whether a title belongs to that market. The old
+  separate Language dropdown and the Broad/Smart/Strict dial are gone — one
+  Country picker, one sentence from the VM explaining exactly what it does.
+- **Keywords are translated for non-English markets** (`app/core/niche/translate.py`):
+  "king" + France searched nothing because French titles say *roi*. Each
+  comma-separated keyword is translated on its own (Google's public endpoint,
+  then your AI provider, then as typed), memoised for the session, and switched
+  off with `"niche_translate_kw": false`. A failed translation never fails the
+  search.
+- **New sort: "Outlier · vs channel average"** — views ÷ the channel's own
+  average video, the cleanest outlier read there is. Appended to the sort table,
+  so every saved Search Archive sort index keeps its meaning; Niche Finder shows
+  the subset that makes sense there.
+- **Channel age** is captured from the same `channels.list` call, and the
+  **engagement** sort no longer crowns a 40-view upload with 8 likes: under 1K
+  views a row sinks below every row that has an audience.
+- **Insights:** the brief's claims are now a proper evidence ledger — each claim
+  resolves its cited videos, carries an evidence class with its own colour, and
+  the page counts what it could and could not cite.
+- **Archive cards** show the channel-outlier multiplier for Niche Finder rows
+  (Search Archive cards keep their three columns).
+
+---
+
 ## Unreleased — Cutter: the clip size you see is the clip you get
 
 A 1080p cut used to come out at ~12 Mbit/s against a 2–5 Mbit/s source, so the

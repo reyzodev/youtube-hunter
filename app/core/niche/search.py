@@ -714,6 +714,10 @@ def merge_niche_row(base, v_item=None, ch_item=None):
         row["channel_thumb_url"] = ((c_thumbs.get("default")
                                      or c_thumbs.get("medium") or {}).get("url", ""))
         row["channel_country"] = c_snip.get("country", "")
+        # When the channel was created — free in the same channels.list payload,
+        # and what the "Channel age" cut (new channels blowing up) reads.
+        if c_snip.get("publishedAt"):
+            row["channel_created_at"] = c_snip.get("publishedAt")
         # The channel's own declared language — weak, but free, evidence.
         row["channel_lang"] = c_snip.get("defaultLanguage", "") or ""
         row["subs_hidden"] = bool(c_stats.get("hiddenSubscriberCount", False))
@@ -777,6 +781,20 @@ def compute_niche_metrics(rows):
         r["engagement"] = (((r.get("like_count", 0) or 0)
                             + (r.get("comment_count", 0) or 0)) / views) if views else 0.0
         r["outlier_ratio"] = views / median
+        # Channel outlier: this video against its OWN channel's average video
+        # (lifetime views ÷ uploads, free in the channels.list payload we
+        # already pay for). This is the number pros actually hunt with — views
+        # ÷ subs flatters Shorts channels and punishes channels whose subs went
+        # stale; "6× what this channel normally gets" is a repeatable signal.
+        ch_views = r.get("channel_total_views") or 0
+        ch_videos = r.get("channel_video_count") or 0
+        if ch_views > 0 and ch_videos > 0:
+            avg = ch_views / float(ch_videos)
+            r["channel_avg_views"] = avg
+            r["channel_outlier"] = (views / avg) if avg > 0 else None
+        else:
+            r["channel_avg_views"] = None
+            r["channel_outlier"] = None
     # Gold Score (app.core.niche.gold): the one-number "steal this idea" rank.
     # Pool-relative, so it is computed after every row has its velocity.
     from app.core.niche.gold import apply_gold_scores
@@ -813,6 +831,27 @@ def apply_niche_filters(rows, f):
     aud_lang = _aud.norm_lang(f.get("lang") or "")
     aud_region = (f.get("region") or "").strip().upper()
     aud_precision = f.get("precision") or "smart"
+    # v1.0.1: one "Country" picker that means "content made for this country"
+    # (title in its language, channel not registered elsewhere). Takes over
+    # from lang/region when set. See audience.market_fit.
+    market = (f.get("market") or "").strip().upper()
+    if market:
+        aud_lang = aud_region = ""
+    ch_age_days = f.get("channel_max_age_days")
+    # "-word" in the quick filter EXCLUDES titles containing it — the cut a
+    # niche hunter reaches for constantly ("minecraft -mod -server").
+    exclude_terms = [t[1:] for t in text_terms if t.startswith("-") and len(t) > 1]
+    text_terms = [t for t in text_terms if not t.startswith("-")]
+    outlier_min = f.get("outlier_min")
+    dur_min = f.get("dur_min_s")
+    dur_max = f.get("dur_max_s")
+    eng_min = f.get("eng_min")
+    vel_min = f.get("vel_min")
+    ch_videos_max = f.get("ch_videos_max")
+    # Category: "24" keeps only that category, "!10" drops it (e.g. "no music
+    # videos" on a trending chart). Rows with no category (scrape-only) are
+    # kept only by an exclusion, never by an inclusion.
+    category = str(f.get("category") or "").strip()
     out = []
     for r in rows:
         subs = r.get("subscriber_count")
@@ -851,14 +890,70 @@ def apply_niche_filters(rows, f):
                     continue
             elif age > days * 24:
                 continue
-        if text_terms:
+        if text_terms or exclude_terms:
             haystack = _fold_text(f"{r.get('title','')} {r.get('channel_title','')}")
-            if not all(t in haystack for t in text_terms):
+            if text_terms and not all(t in haystack for t in text_terms):
                 continue
+            if exclude_terms and any(t in haystack for t in exclude_terms):
+                continue
+        if outlier_min is not None:
+            co = r.get("channel_outlier")
+            if co is None or co < outlier_min:
+                continue
+        if dur_min is not None or dur_max is not None:
+            dur = r.get("duration_s") or 0
+            if dur <= 0:
+                continue
+            if dur_min is not None and dur < dur_min:
+                continue
+            if dur_max is not None and dur >= dur_max:
+                continue
+        if eng_min is not None:
+            # same floor as the engagement sort: under 1K views the rate is noise
+            if (r.get("view_count") or 0) < 1000 or (r.get("engagement") or 0) < eng_min:
+                continue
+        if vel_min is not None and (r.get("velocity") or 0) < vel_min:
+            continue
+        if ch_videos_max is not None:
+            n_up = r.get("channel_video_count") or 0
+            if n_up <= 0 or n_up > ch_videos_max:
+                continue
+        if category:
+            cat = str(r.get("category_id") or "")
+            if category.startswith("!"):
+                if cat and cat == category[1:]:
+                    continue
+            elif cat != category:
+                continue
+        if ch_age_days:
+            # A channel we have no creation date for is not "new" — leaving it
+            # in would let every stale cached row through the cut.
+            c_age = iso_age_hours(r.get("channel_created_at")) if r.get("channel_created_at") else None
+            if c_age is None or c_age > ch_age_days * 24:
+                continue
+        if market and not _aud.market_fit(r, market):
+            continue
         # Language / country last: it is the only cut that does real work per
         # row (memoised after the first pass), so every cheaper cut runs first.
         if (aud_lang or aud_region) and not _aud.passes(r, aud_lang, aud_region,
                                                          aud_precision):
             continue
+        out.append(r)
+    return out
+
+
+def cap_per_channel(rows, limit):
+    """Keep at most `limit` rows per channel, in the order given (so after a
+    sort it keeps each channel's best). One prolific channel can otherwise fill
+    a whole page and hide every other channel doing the same thing. 0 = off."""
+    if not limit or limit <= 0:
+        return list(rows)
+    seen, out = {}, []
+    for r in rows:
+        cid = r.get("channel_id") or r.get("channel_title") or ""
+        n = seen.get(cid, 0)
+        if cid and n >= limit:
+            continue
+        seen[cid] = n + 1
         out.append(r)
     return out

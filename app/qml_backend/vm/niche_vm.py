@@ -45,20 +45,26 @@ from app.core.exports import write_export
 from app.core.net import explain_network_error
 from app.core.thumbs import prefetch_thumbs
 from app.core.niche.config import (
-    NICHE_DEPTH_TARGETS, NICHE_DEPTHS, NICHE_LANGS, NICHE_MAX_POOL, NICHE_PAGE_SIZE, NICHE_PRESETS,
-    NICHE_REGIONS, NICHE_SORTS_UI, NICHE_TIMEFRAMES, NICHE_AUDIENCE_PRECISION)
+    NICHE_CATEGORIES, NICHE_CHANNEL_AGES, NICHE_CHANNEL_UPLOADS,
+    NICHE_DEEP_FROM_DEPTH, NICHE_DEPTH_TARGETS, NICHE_DEPTHS, NICHE_DURATIONS,
+    NICHE_MAX_POOL, NICHE_PAGE_SIZE, NICHE_PER_CHANNEL, NICHE_PRESETS,
+    NICHE_REGIONS, NICHE_SORTS_UI, NICHE_SORTS_VISIBLE, NICHE_TIMEFRAMES)
 from app.core.niche import audience as _A
+from app.core.niche import translate as _T
 from app.core.niche.helpers import (
-    fmt_duration, format_multiplier, is_gem_row, parse_human_number)
+    fmt_duration, format_multiplier, is_gem_row, iso_age_hours,
+    parse_human_number)
 from app.core.niche import search as _S
 from app.core.niche.search import (
-    apply_niche_filters, build_time_windows, capped_window_count,
+    apply_niche_filters, build_time_windows, cap_per_channel, capped_window_count,
     compute_niche_metrics,
     enrich_channels, enrich_videos, estimate_search_calls, merge_niche_row,
     niche_scrape_search, niche_search_api)
 from app.core.niche.viral import (
     VIRAL_CATEGORIES, VIRAL_REGIONS, VIRAL_SOURCES, VIRAL_WINDOWS,
-    estimate_viral_units, fetch_viral, viral_label)
+    estimate_viral_units, fetch_viral, legacy_viral_category_code,
+    legacy_viral_region_code, viral_category_index, viral_label,
+    viral_region_index)
 from app.core.niche.sorting import (
     aggregate_by_channel, parse_human_float, sort_niche_rows)
 from app.core.niche.gold import apply_gold_scores
@@ -246,17 +252,30 @@ class NicheVM(QObject):
         self._sort = 0
         self._format = 0
         self._depth = 1
-        self._lang = 0
+        # v1.0.1: one Country picker = "content made for that country" (see
+        # audience.market_fit). The separate Language dropdown and the
+        # Broad/Smart/Strict dial are gone: a creator who picks Germany wants
+        # German videos, not a puzzle of two dropdowns and a precision dial.
         self._region = 0
-        # How strictly Language / Country filter (index into
-        # NICHE_AUDIENCE_PRECISION): 0 broad · 1 smart · 2 strict.
-        self._precision = 1
+        # "Channel age" cut (index into NICHE_CHANNEL_AGES): new channels only.
+        self._channel_age = 0
+        # Translate the keyword into the picked country's language before
+        # searching (app.core.niche.translate). On by default, remembered.
+        self._translate_kw = bool(cfg.get("niche_translate_kw", True))
+        self._translate_note = ""     # "Searched in French: “king” → “roi”."
         self._subs_min = ""
         self._subs_max = ""
         self._views_min = ""
         self._views_max = ""
         self._mult_min = ""
-        self._deep = False
+        # v1.0.2 refinements — all instant, all local (see config.py).
+        self._outlier_min = ""        # × the channel's own average video
+        self._vel_min = ""            # views / hour
+        self._eng_min = ""            # engagement %, typed as "4" = 4%
+        self._duration = 0            # index into NICHE_DURATIONS
+        self._uploads = 0             # index into NICHE_CHANNEL_UPLOADS
+        self._per_channel = 0         # index into NICHE_PER_CHANNEL
+        self._category = 0            # index into NICHE_CATEGORIES
         self._quick = ""
         self._channels_view = False
 
@@ -267,8 +286,19 @@ class NicheVM(QObject):
         self._viral_active = False     # the pool on screen is a viral pool
         self._viral_tried = False      # auto-load already ran this session
         self._viral_source = self._clamp(vcfg.get("source", 0), VIRAL_SOURCES)
-        self._viral_region = self._clamp(vcfg.get("region", 0), VIRAL_REGIONS)
-        self._viral_category = self._clamp(vcfg.get("category", 0), VIRAL_CATEGORIES)
+        # Saved as a code since v1.0.1 (the list grew to every country); an
+        # older config only has the index into the old 24-country list.
+        _vcode = vcfg.get("region_code")
+        if _vcode is None:
+            _vcode = legacy_viral_region_code(vcfg.get("region", 0))
+        self._viral_region = viral_region_index(_vcode)
+        self._viral_stats = None       # {"fetched","kept","foreign"} of the last run
+        # Saved as a code since v1.0.2 ("All except Music" was inserted at
+        # index 1); an older config only has the index into the old list.
+        _ccode = vcfg.get("category_code")
+        if _ccode is None:
+            _ccode = legacy_viral_category_code(vcfg.get("category", 0))
+        self._viral_category = viral_category_index(_ccode)
         self._viral_window = self._clamp(vcfg.get("window", 2), VIRAL_WINDOWS)
         # v1.1: the radar spends the user's own Google quota, so it never
         # runs by itself any more — it opens on a "pick, see the cost, press
@@ -363,7 +393,44 @@ class NicheVM(QObject):
 
     @Property("QStringList", notify=labelsChanged)
     def sortOptions(self):
-        return [tr(row[0]) for row in NICHE_SORTS_UI]
+        # A curated, re-ordered subset of NICHE_SORTS_UI (the archive still
+        # uses the full list by index, so the table itself is left alone).
+        return [tr(NICHE_SORTS_UI[i][0]) for i in NICHE_SORTS_VISIBLE]
+
+    def _get_sort_ui(self):
+        try:
+            return NICHE_SORTS_VISIBLE.index(self._sort)
+        except ValueError:
+            return 0
+
+    def _set_sort_ui(self, v):
+        try:
+            internal = NICHE_SORTS_VISIBLE[int(v)]
+        except (IndexError, TypeError, ValueError):
+            internal = NICHE_SORTS_VISIBLE[0]
+        if internal != self._sort:
+            self._sort = internal
+            self.changed.emit()
+
+    @Property("QStringList", notify=labelsChanged)
+    def channelAgeOptions(self):
+        return [tr(n) for n, _ in NICHE_CHANNEL_AGES]
+
+    @Property("QStringList", notify=labelsChanged)
+    def durationOptions(self):
+        return [tr(n) for n, _a, _b in NICHE_DURATIONS]
+
+    @Property("QStringList", notify=labelsChanged)
+    def uploadsOptions(self):
+        return [tr(n) for n, _ in NICHE_CHANNEL_UPLOADS]
+
+    @Property("QStringList", notify=labelsChanged)
+    def perChannelOptions(self):
+        return [tr(n) for n, _ in NICHE_PER_CHANNEL]
+
+    @Property("QStringList", notify=labelsChanged)
+    def categoryOptions(self):
+        return [tr(n) for n, _ in NICHE_CATEGORIES]
 
     @Property("QStringList", notify=labelsChanged)
     def formatOptions(self):
@@ -374,67 +441,80 @@ class NicheVM(QObject):
         return [tr(n) for n, _ in NICHE_DEPTHS]
 
     @Property("QStringList", notify=labelsChanged)
-    def langOptions(self):
-        return [tr(n) for n, _ in NICHE_LANGS]
-
-    @Property("QStringList", notify=labelsChanged)
     def regionOptions(self):
         return [tr(n) for n, _ in NICHE_REGIONS]
 
-    @Property("QStringList", notify=labelsChanged)
-    def precisionOptions(self):
-        return [tr(n) for n, _ in NICHE_AUDIENCE_PRECISION]
-
-    # ── audience (language + country) explainer ─────────────────────────
-    def _aud_codes(self):
-        lang = _A.norm_lang(NICHE_LANGS[self._lang][1]) if self._lang else ""
-        region = NICHE_REGIONS[self._region][1] if self._region else ""
-        if self._mode == 1:
-            region = ""      # a channel scan has exactly one country
-        return lang, region
+    # ── country (= that country's content) explainer ─────────────────────
+    def _market_code(self):
+        """The Country pick as a region code; '' for "Any country" and in
+        Single Channel Scan (a channel has exactly one country)."""
+        if self._mode == 1 or not self._region:
+            return ""
+        return NICHE_REGIONS[self._region][1]
 
     @Property(str, notify=changed)
     def audienceSummary(self):
-        """One sentence saying what Language / Country will actually do with the
-        current settings — the question "what does this even do" answered in
-        place, and re-answered every time a dropdown moves."""
-        lang, region = self._aud_codes()
-        prec = NICHE_AUDIENCE_PRECISION[self._precision][1]
-        ln = tr(NICHE_LANGS[self._lang][0]) if lang else ""
-        cn = tr(NICHE_REGIONS[self._region][0]) if region else ""
-        if not lang and not region:
-            return tr("Off. Results come from every language and country.")
-        if lang and region:
-            what = tr("Keeps videos in {lang} from channels based in {country}.")
-        elif lang:
-            what = tr("Keeps videos in {lang}.")
-        else:
-            what = tr("Keeps videos from channels based in {country}.")
-        what = what.replace("{lang}", ln).replace("{country}", cn)
-        how = {
-            "broad": tr("Broad: only drops videos that clearly point elsewhere; unknowns stay."),
-            "smart": tr("Smart: needs real evidence (declared audio language, the title's own language, the channel's registered country)."),
-            "strict": tr("Strict: only videos the creator explicitly declared. Fewest results, zero guesses."),
-        }[prec]
-        return what + " " + how
-
-    @Property(str, notify=changed)
-    def audienceWarning(self):
-        lang, region = self._aud_codes()
-        if _A.pair_warning(lang, region):
-            return tr("{lang} is not a main language in {country}, so expect very few results.").replace(
-                "{lang}", tr(NICHE_LANGS[self._lang][0])).replace(
-                "{country}", tr(NICHE_REGIONS[self._region][0]))
-        return ""
+        """One sentence saying what the Country pick will actually do."""
+        code = self._market_code()
+        if not code:
+            return tr("Any country: results from every market and language.")
+        names = [_A.language_name(c) for c in _A.country_languages(code)]
+        names = [tr(n) for n in names if n][:3]
+        # "Turkish or Kurdish", "German, French or Italian"
+        langs = (names[0] if len(names) == 1 else
+                 ", ".join(names[:-1]) + " " + tr("or") + " " + names[-1]) if names else ""
+        return tr("Only {country} content: the title is in {langs}, the channel "
+                  "is not registered in another market, and the video is not "
+                  "spoken in a foreign language.").replace(
+            "{country}", tr(NICHE_REGIONS[self._region][0])).replace(
+            "{langs}", langs or tr("a local language"))
 
     @Property(bool, notify=changed)
     def audienceActive(self):
-        lang, region = self._aud_codes()
-        return bool(lang or region)
+        return bool(self._market_code())
+
+    # ── keyword translation (Country picked, English not spoken there) ──
+    def _translate_target(self):
+        code = self._market_code()
+        return _T.target_language(code) if code else ""
+
+    @Property(bool, notify=changed)
+    def translateAvailable(self):
+        """The picked country does not speak English: offer the switch."""
+        return bool(self._translate_target())
+
+    def _get_translate_kw(self):
+        return self._translate_kw
+
+    def _set_translate_kw(self, v):
+        v = bool(v)
+        if v == self._translate_kw:
+            return
+        self._translate_kw = v
+        try:
+            cfg = load_app_config()
+            cfg["niche_translate_kw"] = v
+            save_app_config(cfg)
+        except Exception:
+            log_crash("translate pref save failed:\n" + traceback.format_exc())
+        self.changed.emit()
+
+    translateKeyword = Property(bool, _get_translate_kw, _set_translate_kw, notify=changed)
+
+    @Property(str, notify=changed)
+    def translateHint(self):
+        lang = _A.language_name(self._translate_target())
+        if not lang:
+            return ""
+        if self._translate_kw:
+            return tr("Your keyword is translated to {lang} before searching. "
+                      "Typing it in {lang} yourself works too.").replace("{lang}", tr(lang))
+        return tr("Keywords are searched exactly as typed. Type them in {lang} "
+                  "to find {lang} videos.").replace("{lang}", tr(lang))
 
     def _on_audience_changed(self):
-        # Language / Country are now real filters over the fetched pool as well
-        # as hints to the next search, so a change re-filters on the spot.
+        # Country is a real filter over the fetched pool as well as a hint to
+        # the next search, so a change re-filters on the spot.
         self._update_quota()
         self.applyFilters()
 
@@ -470,6 +550,9 @@ class NicheVM(QObject):
             ("views_min", tr("Views ≥ {v}")),
             ("views_max", tr("Views ≤ {v}")),
             ("mult_min", tr("Views ÷ subs ≥ {v}")),
+            ("outlier_min", tr("≥ {v}× channel avg")),
+            ("vel_min", tr("≥ {v} views/h")),
+            ("eng_min", tr("Engagement ≥ {v}%")),
         ]
         for key, tmpl in num:
             # Single Channel Scan has no subscriber range (see _current_filters)
@@ -492,13 +575,24 @@ class NicheVM(QObject):
                         "label": self.formatOptions[self._format]})
         if self._depth != 1:
             out.append({"key": "depth", "label": tr(NICHE_DEPTHS[self._depth][0])})
-        if self._lang != 0:
-            out.append({"key": "lang", "label": tr(NICHE_LANGS[self._lang][0])})
         if self._region != 0 and self._mode != 1:
             out.append({"key": "region", "label": tr(NICHE_REGIONS[self._region][0])})
+        if self._channel_age != 0:
+            out.append({"key": "channel_age",
+                        "label": tr(NICHE_CHANNEL_AGES[self._channel_age][0])})
+        if self._duration != 0:
+            out.append({"key": "duration",
+                        "label": tr(NICHE_DURATIONS[self._duration][0])})
+        if self._uploads != 0:
+            out.append({"key": "uploads",
+                        "label": tr(NICHE_CHANNEL_UPLOADS[self._uploads][0])})
+        if self._per_channel != 0:
+            out.append({"key": "per_channel",
+                        "label": tr(NICHE_PER_CHANNEL[self._per_channel][0])})
+        if self._category != 0:
+            out.append({"key": "category",
+                        "label": tr(NICHE_CATEGORIES[self._category][0])})
         # toggles that differ from their default
-        if self._deep:
-            out.append({"key": "deep", "label": tr("Deep scan")})
         if self._force:
             out.append({"key": "force", "label": tr("Cache ignored")})
         return out
@@ -516,14 +610,16 @@ class NicheVM(QObject):
         defaults = {
             "subs_min": "", "subs_max": "", "views_min": "", "views_max": "",
             "mult_min": "", "timeframe": 2, "sort": 0, "format": 0, "depth": 1,
-            "lang": 0, "region": 0, "deep": False,
+            "region": 0, "channel_age": 0,
+            "outlier_min": "", "vel_min": "", "eng_min": "",
+            "duration": 0, "uploads": 0, "per_channel": 0, "category": 0,
             "force": False,
         }
         if key not in defaults:
             return
         setattr(self, "_" + key, defaults[key])
         self.changed.emit()
-        if key in ("timeframe", "depth", "deep"):
+        if key in ("timeframe", "depth", "region"):
             self._update_quota()
         self.applyFilters()
 
@@ -533,14 +629,15 @@ class NicheVM(QObject):
         reference design's "Clear filters" action."""
         self._subs_min = self._subs_max = ""
         self._views_min = self._views_max = self._mult_min = ""
+        self._outlier_min = self._vel_min = self._eng_min = ""
+        self._duration = self._uploads = self._per_channel = self._category = 0
         self._quick = ""
         self._timeframe = 2
         self._sort = 0
         self._format = 0
         self._depth = 1
-        self._lang = 0
         self._region = 0
-        self._deep = False
+        self._channel_age = 0
         self._force = False
         self.changed.emit()
         self._update_quota()
@@ -596,23 +693,35 @@ class NicheVM(QObject):
     mode = _prop_int("mode", changed)
     source = _prop_int("source", changed)
     query = _prop_str("query", changed)
-    sortIndex = _prop_int("sort", changed)
+    sortIndex = Property(int, _get_sort_ui, _set_sort_ui, notify=changed)
     formatIndex = _prop_int("format", changed)
-    langIndex = _prop_int("lang", changed, on_change=lambda self: self._on_audience_changed())
     regionIndex = _prop_int("region", changed, on_change=lambda self: self._on_audience_changed())
-    precisionIndex = _prop_int("precision", changed, on_change=lambda self: self._on_audience_changed())
+    channelAgeIndex = _prop_int("channel_age", changed, on_change=lambda self: self.applyFilters())
     subsMin = _prop_str("subs_min", changed)
     subsMax = _prop_str("subs_max", changed)
     viewsMin = _prop_str("views_min", changed)
     viewsMax = _prop_str("views_max", changed)
     multMin = _prop_str("mult_min", changed)
+    outlierMin = _prop_str("outlier_min", changed)
+    velMin = _prop_str("vel_min", changed)
+    engMin = _prop_str("eng_min", changed)
+    durationIndex = _prop_int("duration", changed, on_change=lambda self: self.applyFilters())
+    uploadsIndex = _prop_int("uploads", changed, on_change=lambda self: self.applyFilters())
+    perChannelIndex = _prop_int("per_channel", changed, on_change=lambda self: self.applyFilters())
+    categoryIndex = _prop_int("category", changed, on_change=lambda self: self.applyFilters())
     quickFilter = _prop_str("quick", changed)
     channelsView = _prop_bool("channels_view", changed)
 
     # these feed the quota estimate, so refresh it on change
     timeframeIndex = _prop_int("timeframe", changed, on_change=lambda self: self._update_quota())
     depthIndex = _prop_int("depth", changed, on_change=lambda self: self._update_quota())
-    deepScan = _prop_bool("deep", changed, on_change=lambda self: self._update_quota())
+
+    @property
+    def _deep(self):
+        """"Deep scan" (slice the time window so small channels get their own
+        top-N) used to be its own toggle next to Search depth — two knobs for
+        one question. It now simply comes with the deeper depths."""
+        return self._depth >= NICHE_DEEP_FROM_DEPTH
 
     # ── Viral Radar (v1.1) ──────────────────────────────────────────────
     # The page opens on what is viral right now instead of an empty radar; a
@@ -634,7 +743,10 @@ class NicheVM(QObject):
             cfg = load_app_config()
             cfg["viral_radar"] = {
                 "source": self._viral_source, "region": self._viral_region,
-                "category": self._viral_category, "window": self._viral_window,
+                "region_code": VIRAL_REGIONS[self._viral_region][1],
+                "category": self._viral_category,
+                "category_code": VIRAL_CATEGORIES[self._viral_category][1],
+                "window": self._viral_window,
                 "auto_open": self._viral_autoload,
             }
             save_app_config(cfg)
@@ -703,6 +815,10 @@ class NicheVM(QObject):
         at = self._viral_cached_at()
         if at:
             return tr("free · cached {ago}").format(ago=days_ago_str(at))
+        if (VIRAL_SOURCES[self._viral_source][1] == "breakout"
+                and VIRAL_REGIONS[self._viral_region][1]):
+            # one country pages on until it has enough local videos
+            return tr("up to ~{n} units").format(n=f"{self._viral_units():,}")
         return tr("~{n} units").format(n=f"{self._viral_units():,}")
 
     @Property(int, notify=changed)
@@ -737,7 +853,8 @@ class NicheVM(QObject):
     @Property(int, constant=True)
     def goldSortIndex(self):
         """Index of "Gold Score" in sortOptions (the Gold lens switches to it)."""
-        return next((i for i, row in enumerate(NICHE_SORTS_UI) if row[1] == "gold"), 0)
+        return next((ui for ui, i in enumerate(NICHE_SORTS_VISIBLE)
+                     if NICHE_SORTS_UI[i][1] == "gold"), 0)
 
     @Property(bool, notify=viralChanged)
     def viralSetupOpen(self):
@@ -769,7 +886,13 @@ class NicheVM(QObject):
         self.viralChanged.emit()
 
     # Lens: a one-tap cut of the radar pool. Local, zero quota.
+    # "Gold" must stay at index 1 (ViralRadarBar switches the sort to Gold
+    # Score when it is picked). v1.0.2 adds the three cuts a trend hunter
+    # actually asks of a radar: what is accelerating, what beats its own
+    # channel, and which new channels are riding it.
     _VIRAL_LENSES = (("All", ""), ("Gold", "gold"), ("Hidden gems", "gems"),
+                     ("Rising fast", "rising"), ("Outliers", "outliers"),
+                     ("New channels", "new"),
                      ("Shorts", "shorts"), ("Long-form", "long"))
 
     @Property("QStringList", notify=labelsChanged)
@@ -783,6 +906,12 @@ class NicheVM(QObject):
         v = max(0, min(len(self._VIRAL_LENSES) - 1, int(v)))
         if v != self._viral_lens:
             self._viral_lens = v
+            # A lens that is a ranking as much as a cut also sorts by it, so
+            # the strongest row is the first card (Gold does the same in QML).
+            lens_sort = {"rising": 2, "outliers": 9}.get(self._VIRAL_LENSES[v][1])
+            if lens_sort is not None and self._sort != lens_sort:
+                self._sort = lens_sort
+                self.changed.emit()
             self.viralChanged.emit()
             self.applyFilters()
 
@@ -792,11 +921,30 @@ class NicheVM(QObject):
     def viralLensCounts(self):
         """How many pool rows each lens would show, for the chip badges."""
         pool = (self._pool or []) if self._viral_active else []
-        return [len(pool)] + [sum(1 for r in pool if self._lens_ok(r, k))
+        ctx = self._lens_context(pool)
+        return [len(pool)] + [sum(1 for r in pool if self._lens_ok(r, k, ctx))
                               for _, k in self._VIRAL_LENSES[1:]]
 
     @staticmethod
-    def _lens_ok(r, lens):
+    def _lens_context(pool):
+        """Pool-relative numbers some lenses need (computed once per pass)."""
+        vels = sorted(r.get("velocity") or 0 for r in pool if (r.get("velocity") or 0) > 0)
+        med = vels[len(vels) // 2] if vels else 0
+        return {"vel_median": med}
+
+    @staticmethod
+    def _lens_ok(r, lens, ctx=None):
+        if lens == "rising":
+            # 3× the radar's own median speed — on a trending chart everything
+            # is fast, so only the outrunners count.
+            med = (ctx or {}).get("vel_median") or 0
+            return med > 0 and (r.get("velocity") or 0) >= 3 * med
+        if lens == "outliers":
+            return (r.get("channel_outlier") or 0) >= 5
+        if lens == "new":
+            created = r.get("channel_created_at")
+            age = iso_age_hours(created) if created else None
+            return age is not None and age <= 180 * 24
         if lens == "gold":
             return r.get("gold_tier") == "gold"
         if lens == "gems":
@@ -821,6 +969,9 @@ class NicheVM(QObject):
             "region_code": VIRAL_REGIONS[self._viral_region][1],
             "category_id": VIRAL_CATEGORIES[self._viral_category][1],
             "hours": VIRAL_WINDOWS[self._viral_window][1],
+            # v1.0.1 market filter: a new key so radars cached before it (full
+            # of other countries' videos) are never served again.
+            "market_v": 2,
             "query": self.viralTitle,
             "queries": [],
         }
@@ -900,13 +1051,16 @@ class NicheVM(QObject):
             cached, fetched_at = niche_cache_get(key, max_age_hours=1)
             if cached:
                 self._from_cache = fetched_at or ""
+                self._viral_stats = None
                 return self._ensure_gold(cached)
         yt = build_youtube_service((self._api_key or "").strip())
+        stats = {}
         rows = fetch_viral(
             yt, source=params["viral_source"], region_code=params["region_code"],
             category_id=params["category_id"], hours=params["hours"],
             stop_check=self._stop_check, progress=self._progress,
-            quota_cb=search_quota_bump)
+            quota_cb=search_quota_bump, stats=stats)
+        self._viral_stats = stats
         if rows:
             niche_cache_put(key, params, rows)
         return rows
@@ -1241,24 +1395,32 @@ class NicheVM(QObject):
         else:
             subs_min = parse_human_number(self._subs_min)
             subs_max = parse_human_number(self._subs_max)
-        aud_lang, aud_region = self._aud_codes()
+        market = self._market_code()
         days = NICHE_TIMEFRAMES[self._timeframe][1]
         if self._viral_active:
-            # The radar picked its own market and window at fetch time; the
-            # search form's Country / Published cuts would only fight it. The
-            # Language cut stays — "viral, but only in Persian" is a real ask.
-            aud_region = ""
+            # The radar picked its own market (and already cut the pool to that
+            # market's content at fetch time) and its own window; the search
+            # form's Country / Published cuts would only fight it.
+            market = ""
             days = None
         return {
-            # Language / country as real filters (app.core.niche.audience).
-            "lang": aud_lang,
-            "region": aud_region,
-            "precision": NICHE_AUDIENCE_PRECISION[self._precision][1],
+            # Country = that country's content (app.core.niche.audience.market_fit).
+            "market": market,
+            "channel_max_age_days": NICHE_CHANNEL_AGES[self._channel_age][1],
             "subs_min": subs_min,
             "subs_max": subs_max,
             "views_min": parse_human_number(self._views_min),
             "views_max": parse_human_number(self._views_max),
             "mult_min": parse_human_float(self._mult_min),
+            "outlier_min": parse_human_float(self._outlier_min),
+            "vel_min": parse_human_float(self._vel_min),
+            # typed as a percentage ("4" = 4 %), stored as a fraction
+            "eng_min": (lambda v: v / 100.0 if v is not None else None)(
+                parse_human_float(str(self._eng_min or "").replace("%", ""))),
+            "dur_min_s": NICHE_DURATIONS[self._duration][1],
+            "dur_max_s": NICHE_DURATIONS[self._duration][2],
+            "ch_videos_max": NICHE_CHANNEL_UPLOADS[self._uploads][1],
+            "category": NICHE_CATEGORIES[self._category][1],
             "format": _FMT_MAP[self._format],
             "days": days,
             "text": self._quick,
@@ -1276,14 +1438,17 @@ class NicheVM(QObject):
         YouTube's top results are" — i.e. when a plain fetch is likely to come
         back with few or no matches and the run should be prepared to widen."""
         f = self._current_filters()
-        if f["format"] or f["lang"] or f["region"]:
+        if f["format"] or f["market"] or f["channel_max_age_days"]:
             return True
         if self._mode == 1:
             # A channel scan is already narrow; a view range still counts.
             return (f["views_min"] is not None or f["views_max"] is not None
                     or f["mult_min"] is not None)
-        return any(f[k] is not None for k in
-                   ("subs_min", "subs_max", "views_min", "views_max", "mult_min"))
+        if f.get("category") or f.get("ch_videos_max"):
+            return True
+        return any(f.get(k) is not None for k in
+                   ("subs_min", "subs_max", "views_min", "views_max", "mult_min",
+                    "outlier_min", "vel_min", "eng_min", "dur_min_s", "dur_max_s"))
 
     @Slot()
     def _update_quota(self):
@@ -1337,15 +1502,21 @@ class NicheVM(QObject):
         if not (0 <= index < len(NICHE_PRESETS)):
             return
         preset = NICHE_PRESETS[index][1]
-        self._subs_min = preset.get("subs_min", "")
-        self._subs_max = preset.get("subs_max", "")
-        self._views_min = preset.get("views_min", "")
-        self._views_max = preset.get("views_max", "")
-        self._mult_min = preset.get("mult_min", "")
+        # A recipe is a whole question: reset every instant cut, then set only
+        # what the recipe names (so two recipes never stack into a mystery).
+        for key in ("subs_min", "subs_max", "views_min", "views_max", "mult_min",
+                    "outlier_min", "vel_min", "eng_min"):
+            setattr(self, "_" + key, str(preset.get(key, "")))
+        self._format = int(preset.get("format", 0))
+        self._duration = int(preset.get("duration", 0))
+        self._channel_age = int(preset.get("channel_age", 0))
+        self._uploads = int(preset.get("uploads", 0))
+        self._per_channel = int(preset.get("per_channel", 0))
+        self._category = int(preset.get("category", 0))
+        self._sort = int(preset.get("sort", 0))
         if "timeframe" in preset:
             self._timeframe = preset["timeframe"]
-        if "sort" in preset:
-            self._sort = preset["sort"]
+            self._update_quota()
         self.changed.emit()
         self.applyFilters()
 
@@ -1985,13 +2156,19 @@ class NicheVM(QObject):
                 "deep": self._deep,
                 "order": sort_row[2],
                 "scrape_sort": sort_row[3],
-                "lang": NICHE_LANGS[self._lang][1],
+                # Country steers the search to that market and its main
+                # language (both are hints to YouTube); market_fit then
+                # holds the results to it for real.
+                "lang": _A.primary_language_api(NICHE_REGIONS[self._region][1]),
                 "region": NICHE_REGIONS[self._region][1],
                 "fmt": fmt,
                 # Hard cap on how many videos this run collects (None = the
                 # last depth row: no cap, everything YouTube has in range).
                 "target": target,
             }
+            if self._translate_kw and self._translate_target():
+                # translated on the worker (it is a network call); see _worker
+                params["translate_region"] = NICHE_REGIONS[self._region][1]
 
         self._requested_days = days
         self._from_cache = ""
@@ -2004,6 +2181,7 @@ class NicheVM(QObject):
         self._archive_seq += 1
         self._pool_live_token += 1   # a new search replaces an archived pool
         self._scrape_note = ""
+        self._translate_note = ""
         self._stop = False
         self._running = True
         # Freeze the filters the user is searching WITH, on this (the GUI)
@@ -2028,6 +2206,7 @@ class NicheVM(QObject):
             if params.get("mode") == "viral":
                 rows = self._fetch_viral(params)
             else:
+                self._translate_params(params)
                 rows = self._fetch(params)
                 rows = self._widen_until_matched(params, rows)
             # Read every row's language/country evidence here, on the worker:
@@ -2050,6 +2229,33 @@ class NicheVM(QObject):
             # "YouTube" is not passed through tr(): it is a brand name, and the
             # sentence it lands in is already translated.
             self._searchDone.emit([], explain_network_error(exc, "YouTube"))
+
+    def _translate_params(self, params):
+        """Worker thread: put the keyword(s) into the picked country's language
+        before anything is fetched — so the cache key, the API search, the
+        scrape and the widening passes all use the translated words. The
+        typed keyword stays in `query_typed` (the archive section is still
+        filed under what the user typed)."""
+        region = params.get("translate_region")
+        if not region or params.get("mode") != "keyword":
+            return
+        lang = _A.language_name(_T.target_language(region))
+        self._progress(2, tr("Translating your keyword to {lang} …").format(lang=tr(lang)),
+                       "discover", {})
+        try:
+            from app.core.net import configured_proxy
+            proxy = configured_proxy()
+        except Exception:
+            proxy = ""
+        typed = params.get("queries") or [params.get("query", "")]
+        new_q, pairs = _T.translate_queries(typed, region, proxy)
+        params["query_typed"] = params.get("query", "")
+        if pairs:
+            params["queries"] = new_q
+            params["query"] = ", ".join(new_q)
+            shown = ", ".join("“{a}” → “{b}”".format(a=a, b=b) for a, b in pairs)
+            self._translate_note = tr("Searched in {lang}: {pairs}.").format(
+                lang=tr(lang), pairs=shown)
 
     def _widen_until_matched(self, params, rows):
         """Keep fetching until the pool actually contains the rows the filters ask for.
@@ -2163,10 +2369,13 @@ class NicheVM(QObject):
     def _has_narrow_filters_for(self, filters):
         """_has_narrow_filters() against a filter dict rather than live form
         state, so the worker can ask the question without touching the UI."""
-        if filters.get("format") or filters.get("lang") or filters.get("region"):
+        if (filters.get("format") or filters.get("market")
+                or filters.get("channel_max_age_days")
+                or filters.get("category") or filters.get("ch_videos_max")):
             return True
         return any(filters.get(k) is not None for k in
-                   ("subs_min", "subs_max", "views_min", "views_max", "mult_min"))
+                   ("subs_min", "subs_max", "views_min", "views_max", "mult_min",
+                    "outlier_min", "vel_min", "eng_min", "dur_min_s", "dur_max_s"))
 
     # ── fetch pipelines (worker thread — never touch Qt/widget state) ────
     def _fetch(self, params):
@@ -2424,6 +2633,10 @@ class NicheVM(QObject):
             msg = tr("{n} viral videos on the radar.").format(n=len(self._filtered))
             if gold:
                 msg += " " + tr("{g} of them are Gold.").format(g=gold)
+            note = self._viral_market_note()
+            if note:
+                self._set_status((self._status + "  " + note).strip(),
+                                 "warn" if not self._pool else self._status_kind)
             self.toast.emit(msg, "success")
             return
         self._archive_store()
@@ -2447,10 +2660,14 @@ class NicheVM(QObject):
         rows = apply_niche_filters(pool, filters)
         if self._viral_active and self._viral_lens:
             lens = self._VIRAL_LENSES[self._viral_lens][1]
-            rows = [r for r in rows if self._lens_ok(r, lens)]
+            ctx = self._lens_context(pool)
+            rows = [r for r in rows if self._lens_ok(r, lens, ctx)]
         sort_key = NICHE_SORTS_UI[self._sort][1]
         rows = sort_niche_rows(rows, sort_key)
         channels = self._channels_view
+        if not channels:
+            # after the sort, so each channel keeps its BEST rows
+            rows = cap_per_channel(rows, NICHE_PER_CHANNEL[self._per_channel][1])
         if channels:
             rows = aggregate_by_channel(rows)
             rows = sort_niche_rows(rows, sort_key)
@@ -2477,6 +2694,8 @@ class NicheVM(QObject):
             aud = self._audience_note(pool, rows, filters)
             if aud:
                 msg += " " + aud
+            if self._translate_note:
+                msg += " " + self._translate_note
             if self._widen_passes:
                 # Say that the search already went looking harder, or the user
                 # will reasonably assume the app only tried once.
@@ -2502,47 +2721,48 @@ class NicheVM(QObject):
             # A short web-scrape run: say it is YouTube's ceiling, not a failure.
             if self._scrape_note:
                 msg += "  " + self._scrape_note
+            if self._translate_note:
+                msg += "  " + self._translate_note
             aud = self._audience_note(pool, rows, filters)
             if aud:
                 msg += "  " + aud
             self._set_status(msg, "ok")
 
     def _audience_note(self, pool, rows, filters):
-        """How the language / country cut decided — so a short result reads as
-        "92 had no language info" instead of as a broken search."""
-        lang, region = filters.get("lang"), filters.get("region")
-        if not (lang or region) or self._channels_view:
+        """How the Country cut decided — so a short result reads as "38 were
+        other countries' videos" instead of as a broken search."""
+        market = filters.get("market")
+        if not market or self._channels_view:
             return ""
-        base = dict(filters, lang="", region="")
-        before = apply_niche_filters(pool, base)
+        before = apply_niche_filters(pool, dict(filters, market=""))
         dropped = max(0, len(before) - len(rows))
-        b = _A.breakdown(rows, lang, region)
-        parts = []
-        for dim in ("lang", "region"):
-            d = b[dim]
-            if not d:
-                continue
-            ver, lik = d.get(_A.VERIFIED, 0), d.get(_A.LIKELY, 0)
-            unk = d.get(_A.UNKNOWN, 0)
-            label = tr("Language") if dim == "lang" else tr("Country")
-            bit = tr("{dim}: {v} verified, {l} inferred").format(dim=label, v=ver, l=lik)
-            if unk:
-                bit += tr(", {u} unknown").format(u=unk)
-            parts.append(bit)
-        note = " · ".join(parts)
-        if dropped:
-            note += (" · " if note else "") + tr(
-                "{n} filtered out by language/country").format(n=dropped)
-            if filters.get("precision") != "broad":
-                # Name the lever: most drops on a narrow pool are "no data", not
-                # "wrong language", and Broad keeps those.
-                prec = filters.get("precision")
-                unk = sum(1 for r in before
-                          if _A.passes(r, lang, region, "broad")
-                          and not _A.passes(r, lang, region, prec))
-                if unk:
-                    note += " " + tr("(Broad would keep {u} more with weaker evidence)").format(u=unk)
-        return note
+        if not dropped:
+            return ""
+        return tr("{n} hidden as not {country} content.").format(
+            n=dropped, country=tr(_A.country_name(market) or market))
+
+    def _viral_market_note(self):
+        """After a single-country radar run: how many of YouTube's hits were
+        other markets' videos, and what to try when nothing local was left."""
+        st = self._viral_stats or {}
+        code = VIRAL_REGIONS[self._viral_region][1]
+        if not code or not st:
+            return ""
+        country = tr(VIRAL_REGIONS[self._viral_region][0])
+        fetched, kept, foreign = st.get("fetched", 0), st.get("kept", 0), st.get("foreign", 0)
+        if not fetched:
+            if VIRAL_SOURCES[self._viral_source][1] == "chart":
+                return tr("YouTube has no trending chart for {country} in this "
+                          "category. Try Breakouts or another category.").format(
+                    country=country)
+            return ""
+        if not kept:
+            return tr("None of the {n} videos YouTube returned were {country} "
+                      "content. Try a wider window (7d / 30d) or Breakouts.").format(
+                n=fetched, country=country)
+        if foreign:
+            return tr("{n} videos from other countries were left out.").format(n=foreign)
+        return ""
 
     def _render_page(self):
         """Flatten just the current page into the dicts the QML cards bind to.
@@ -2624,6 +2844,10 @@ class NicheVM(QObject):
             "views": humanize_count(r.get("view_count", 0) or 0),
             "multiplier": format_multiplier(mult) if mult is not None else "—",
             "multiplierValue": float(mult) if mult is not None else 0.0,
+            # × the channel's own average video ("" when unknown — the card
+            # then keeps its three-stat strip).
+            "chOutlier": (format_multiplier(r.get("channel_outlier"))
+                          if r.get("channel_outlier") is not None and not channel else ""),
             "isGem": bool(is_gem_row(r)),
             # Gold Score (app.core.niche.gold): 0-100 + "gold" / "hot" / "".
             "goldScore": int(r.get("gold_score") or 0),
@@ -2682,7 +2906,13 @@ class NicheVM(QObject):
                 "Subscribers": r.get("subscriber_count"),
                 "Views": r.get("view_count", 0),
                 "Views/Subs": round(r["multiplier"], 2) if r.get("multiplier") else "",
+                "x Channel avg": (round(r["channel_outlier"], 2)
+                                  if r.get("channel_outlier") is not None else ""),
                 "Views per hour": round(r.get("velocity", 0)),
+                "Engagement %": (round((r.get("engagement") or 0) * 100, 2)
+                                 if r.get("view_count") else ""),
+                "Channel uploads": r.get("channel_video_count") or "",
+                "Channel created": r.get("channel_created_at", "") or "",
                 "Gold score": r.get("gold_score", ""),
                 "Published": r.get("published_at", ""),
                 "Duration": fmt_duration(r.get("duration_s", 0)),

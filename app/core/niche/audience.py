@@ -49,7 +49,7 @@ import re
 
 # Bumped whenever the detector changes, so memoised guesses on cached/archived
 # rows are recomputed instead of trusted.
-_DETECT_VERSION = 3
+_DETECT_VERSION = 4
 _MEMO_KEY = "_aud"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -418,6 +418,69 @@ _LATIN = {
     "uz": ("va bu uchun bilan qanday yangi eng".split(),
            "uchun qanday".split()),
 }
+# v4 (market filter): the title is now what decides "is this German content",
+# so the profiles above were too thin — "Mein neues Auto ist da" scored 0.24
+# and "I Survived 100 Days in Minecraft" scored nothing at all. These are more
+# of the function words and title staples each language actually puts in a
+# title. Weight 1 (common) like the base lists.
+_LATIN_EXTRA = {
+    "en": "i me we they he she his her our their was were be been have has had "
+          "do does did will would can't don't i'm it's didn't won't never ever "
+          "every people world first last day days hours minutes life when who "
+          "spent survived tried built bought made got went found tested "
+          "challenge funny moments full episode reaction".split(),
+    "de": "auf aus bei nach vor über unter um wenn dann aber oder weil noch schon "
+          "nur auch mal jetzt heute hier alle alles mehr sehr kein keine meine "
+          "deine sein ihr uns euch sie er man habe hat haben bin bist sind war "
+          "wird werden kann muss soll will gibt geht macht neues neuen neuer "
+          "besten erste ersten folge teil tage stunden jahre deutschland deutsch "
+          "deutsche warum wieso wer wo endlich gegen vom zum zur am ins dem des "
+          "einen einem einer ohne zwischen wieder immer nie gut schlecht".split(),
+    "es": "su sus al se le les nos yo él ella hay fue ser estar está son tiene "
+          "puede hoy aquí todo todos nada nunca siempre ahora día días horas "
+          "años primera vez parte capítulo".split(),
+    "pt": "seu sua se ao aos pelo pela eu ele ela nós tem foi ser estar está são "
+          "hoje aqui tudo todos nada nunca sempre agora dia dias horas anos "
+          "primeira vez parte episódio".split(),
+    "fr": "je tu il elle nous on ils dans sur par au aux ce cette ces son sa ses "
+          "mes tes être avoir fait faut tout tous rien jamais toujours "
+          "aujourd'hui jour jours heures ans première fois partie épisode".split(),
+    "it": "io tu lui lei noi loro nel nella sul sulla al alla dei delle gli "
+          "lo ho ha hanno essere fatto tutto tutti niente mai sempre oggi "
+          "giorno giorni ore anni prima volta parte puntata".split(),
+    "nl": "ik jij hij zij wij ze mijn jouw ons onze er naar bij uit om aan "
+          "maar ook nog al dan heb heeft hebben was waren wordt worden kan "
+          "moet gaat alles niets nooit altijd vandaag dag dagen uur jaar "
+          "eerste keer deel aflevering".split(),
+    "tr": "bu şu o ben sen biz siz onlar benim senin ama ya için kadar sonra "
+          "önce hiç her bugün gün saat yıl ilk kez bölüm".split(),
+    "id": "aku kamu dia kami kita mereka akan sudah belum lagi hari jam tahun "
+          "pertama kali bagian episode".split(),
+}
+for _lang, _words in _LATIN_EXTRA.items():
+    _common, _strong = _LATIN[_lang]
+    _LATIN[_lang] = (list(dict.fromkeys(list(_common) + _words)), _strong)
+
+# Words every market puts in a title — music, gaming, trailers — that say
+# nothing about the language around them. "Apache 207 - Roller (Official
+# Video)" is a German release, not an English one, so these never vote.
+_NEUTRAL_WORDS = set(
+    "official video music audio live trailer teaser vs highlights shorts short "
+    "remix lyrics lyric feat ft prod unboxing review vlog gameplay top best new "
+    "part episode ep tv show news podcast mix edit tiktok asmr minecraft "
+    "fortnite roblox gta iphone samsung ok okay wow omg".split())
+
+# Endings a word only has in one language (a cheap morphology vote).
+_SUFFIX_VOTES = (
+    ("de", ("ungen", "ung", "keit", "heit", "schaft", "lich", "chen", "isch", "ieren")),
+    ("es", ("ción", "ciones", "mente", "ísimo")),
+    ("pt", ("ção", "ções", "mente", "inho", "inha")),
+    ("fr", ("tion", "eux", "euse", "ment", "ée", "ées")),
+    ("it", ("zione", "zioni", "mente", "issimo")),
+    ("nl", ("heid", "lijk", "tje", "tjes")),
+    ("tr", ("lar", "ler", "yor", "lık", "lik")),
+)
+
 # Letters only some Latin-script languages use. One sighting is a strong vote.
 _LATIN_CHARS = {
     "es": "ñ¿¡", "pt": "ãõç", "fr": "çœèêëàâîïûù", "de": "ßäöü",
@@ -450,8 +513,17 @@ def _latin_guess(text):
         return "", 0.0
     scores = {}
     for w in words:
-        for lang, wt in _WORD_VOTES.get(w, ()):
-            scores[lang] = scores.get(lang, 0.0) + wt
+        if w in _NEUTRAL_WORDS:
+            continue
+        votes = _WORD_VOTES.get(w)
+        if votes:
+            for lang, wt in votes:
+                scores[lang] = scores.get(lang, 0.0) + wt
+        elif len(w) >= 6:
+            for lang, ends in _SUFFIX_VOTES:
+                if w.endswith(ends):
+                    scores[lang] = scores.get(lang, 0.0) + 0.75
+                    break
     char_hits = {}
     for ch in low:
         if ord(ch) > 0x7F:
@@ -581,6 +653,9 @@ def row_evidence(row):
         "country": (row.get("channel_country") or "").strip().upper(),
         "text": t_code,
         "text_conf": t_conf,
+        # The title on its own: what the market filter judges a video by.
+        "title": title_code,
+        "title_conf": title_conf,
     }
     try:
         row[_MEMO_KEY] = memo
@@ -743,3 +818,106 @@ def card_label(row):
             code = "≈" + code
     country = ev["audio_region"] if (src == "audio" and ev["audio_region"]) else ev["country"]
     return " · ".join(p for p in (code, country) if p)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  MARKET FIT — "content made for this country"
+# ═════════════════════════════════════════════════════════════════════════
+# The one rule behind the Country picker (Niche Finder) and the Viral now
+# market picker. A YouTuber who picks Germany wants German videos: a German
+# title, German speakers, a channel that is not registered in another market.
+# Two separate Language / Country dropdowns with a Broad/Smart/Strict dial made
+# them assemble that themselves — and the radar skipped it entirely, which is
+# why "Germany" used to come back full of Indian uploads (search.list's
+# regionCode only means "can be watched in").
+#
+# Order of evidence, strongest first:
+#   1. channel.snippet.country  — registered in a different market -> out.
+#      Same-language neighbours stay (Austria/Switzerland for Germany,
+#      Mexico for Spain, the UK for the US): same audience, same content.
+#   2. the title's own language — confidently in a language the country does
+#      not speak -> out. This is the hard gate the user asked for: Germany
+#      means a German title, and a confident English or Hindi title is out
+#      even from a German channel.
+#   3. declared spoken language — a foreign one is out, unless the title is
+#      already confidently local (a stale "en" default is common).
+#   4. at least ONE positive signal must exist: a local title, a local
+#      declared language, or a channel registered in the country. A video
+#      with no evidence at all is not shown "just in case".
+MARKET_NATIVE, MARKET_MATCH = "native", "match"
+_TITLE_SURE = 0.35       # title confidence that settles the language
+_TEXT_SURE = 0.45        # title+description blob: needs a bit more
+
+
+def primary_language(region):
+    """'de' for DE, 'en' for US — the language a country's YouTube mostly
+    speaks ('' for an unknown / empty region)."""
+    ls = country_languages(region)
+    return ls[0] if ls else ""
+
+
+def primary_language_api(region):
+    """primary_language() in the form search.list's relevanceLanguage takes."""
+    code = primary_language(region)
+    return next((api for _n, c, api in LANGUAGES if c == code), code)
+
+
+def _same_market(channel_country, region):
+    """True when a channel registered in `channel_country` makes content for
+    `region`'s audience: the same country, or a neighbour whose main language
+    is the region's main language."""
+    cc, region = (channel_country or "").upper(), (region or "").upper()
+    if not cc or cc == region:
+        return True
+    a, b = primary_language(cc), primary_language(region)
+    return bool(a) and _family(a) == _family(b)
+
+
+def market_fit(row, region):
+    """MARKET_NATIVE (registered in the country and local), MARKET_MATCH (local
+    content from a same-language neighbour or an unregistered channel), or ''
+    when the video is not content for `region`. Empty region -> MARKET_NATIVE."""
+    region = (region or "").strip().upper()
+    if not region:
+        return MARKET_NATIVE
+    langs = set(country_languages(region))
+    if not langs:
+        return MARKET_NATIVE          # a country we know nothing about: no cut
+    fams = {_family(x) for x in langs}
+
+    def local(code):
+        return bool(code) and (code in langs or _family(code) in fams)
+
+    ev = row_evidence(row)
+    cc = ev["country"]
+    # 1 · registered in another market
+    if cc and not _same_market(cc, region):
+        return ""
+    # 2 · the title decides the language
+    title_local = False
+    if ev.get("title") and ev.get("title_conf", 0) >= _TITLE_SURE:
+        if not local(ev["title"]):
+            return ""
+        title_local = True
+    text_local = False
+    if not title_local and ev["text"]:
+        if ev["text_conf"] >= _TEXT_SURE and not local(ev["text"]):
+            return ""
+        text_local = local(ev["text"]) and ev["text_conf"] >= 0.3
+    # 3 · a foreign spoken language, unless the title already settled it
+    if ev["audio"] and not local(ev["audio"]) and not title_local:
+        return ""
+    # 4 · something has to say "local"
+    positive = (title_local or text_local or local(ev["audio"])
+                or local(ev["meta"]) or (cc == region))
+    if not positive:
+        return ""
+    return MARKET_NATIVE if cc == region else MARKET_MATCH
+
+
+def market_breakdown(rows, region):
+    """{'native': n, 'match': n, 'out': n} for the status line."""
+    out = {MARKET_NATIVE: 0, MARKET_MATCH: 0, "out": 0}
+    for r in rows:
+        out[market_fit(r, region) or "out"] += 1
+    return out
