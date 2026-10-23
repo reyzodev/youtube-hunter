@@ -24,7 +24,9 @@ import tempfile
 import threading
 
 from app.core.download import (
-    CLIENT_LADDER, DOWNLOAD_CANCELLED, client_ladder, note_good_clients, _info_richness, _COOKIE_BROWSERS, _fmt_short_side,
+    BYPASS_CLIENTS, DOWNLOAD_CANCELLED, client_ladder, note_good_clients,
+    _info_richness, _COOKIE_BROWSERS, _fmt_short_side, _stream_kbps,
+    _vcodec_family,
     _is_bot_or_403, _is_cookie_problem, _QuietLogger, _UA,
     channel_meta_from_info, friendly_extract_error)
 from app.core.audio_tracks import (audio_tracks_from_formats, select_audio,
@@ -1054,6 +1056,10 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
         # the process ends on its own).
         stalled = {"flag": False}
         last_io = {"t": _time.monotonic()}
+        # v1.0.1: the watchdog naps on an Event instead of time.sleep(2), so
+        # it wakes the moment ffmpeg is done. With the plain sleep the final
+        # w.join() below added up to 2 s of dead time to EVERY cut.
+        done_evt = threading.Event()
 
         def _drain():
             try:
@@ -1092,7 +1098,8 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
                         except Exception:  # noqa: BLE001
                             pass
                     break
-                _time.sleep(2)
+                if done_evt.wait(1.0):
+                    break
 
         w = threading.Thread(target=_watchdog, daemon=True)
         w.start()
@@ -1145,6 +1152,7 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
             except Exception:         # noqa: BLE001
                 pass
         proc.wait(timeout=600)
+        done_evt.set()
         t.join(timeout=5)
         w.join(timeout=5)
         err_tail = (errs[0] if errs else "")[-1500:]
@@ -1195,8 +1203,251 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
     return True, ""
 
 
+# ── v1.0.1: the H.264 encoder for frame-accurate cuts ───────────────────
+# The primary cut re-encodes (see _cut_args). libx264 on the CPU is the slow
+# part of a long 1440p/4K clip, while almost every Windows PC has a hardware
+# H.264 encoder sitting idle (NVIDIA NVENC, Intel Quick Sync, AMD AMF) that
+# does the same job several times faster at no CPU cost. Which one works is
+# decided ONCE per process by a 3-frame test encode (an encoder can be compiled
+# into ffmpeg yet have no GPU/driver behind it), and libx264 stays as the
+# guaranteed fallback — both here and at cut time if a hardware run fails.
+# Turn it off with `"cut_hw_encode": false` in config.json.
+#
+# v1.0.2 — HOW BIG THE CLIP IS. Every re-encoded cut used CRF 18 (near-lossless),
+# which spends bits preserving the compression noise already baked into a
+# YouTube stream: a 1080p clip came out at ~12 Mbit/s against the source's 2-5
+# (a 2.5-minute cut = 223 MB). The level is now a setting, `"cut_quality"` in
+# config.json:
+#     "high"      the old behaviour (editing / archiving; biggest files)
+#     "balanced"  DEFAULT — visually the same for sharing and most edits,
+#                 roughly half the size of "high"
+#     "small"     smallest, a little softer on fine detail and fast motion
+# One number per encoder family: x264 CRF, NVENC CQ, QSV global_quality,
+# AMF QP (I, P). Lower = better quality = bigger file.
+_QUALITY_LEVELS = {
+    "high":     {"crf": 18, "cq": 19, "qsv": 20, "amf": (18, 20)},
+    "balanced": {"crf": 23, "cq": 25, "qsv": 25, "amf": (23, 25)},
+    "small":    {"crf": 27, "cq": 29, "qsv": 29, "amf": (27, 29)},
+}
+_DEFAULT_QUALITY = "balanced"
+_HW_NAMES = ("h264_nvenc", "h264_qsv", "h264_amf")
+
+# v1.0.3 — A SIZE YOU CAN KNOW BEFORE THE CUT. The CRF levels above are
+# constant-QUALITY: the encoder spends whatever the picture needs, so the file
+# size is only known once the cut is done. The extension's Cut panel showed the
+# download's size scaled to the clip length and a "≈ 44 MB" 1080p cut came out
+# at 166 MB on High. Now a re-encoded cut is BITRATE-targeted (ABR with a peak
+# cap, the same approach download.py's H.264 conversion already uses), and the
+# panel's estimate is computed from the very same numbers — so the size shown
+# is the size you get, within a few percent.
+#
+# target video kbps = source kbps × codec factor × level factor
+#   codec factor: how many more bits H.264 needs than the source codec for the
+#                 same picture (same table as download.py's conversion; H.264
+#                 sources are 1.0).
+#   level factor: High keeps generous headroom over the source (re-encoding
+#                 costs a generation), Balanced a little, Small trims.
+# The CRF table stays as the fallback when the source bitrate is unknown.
+_CUT_LEVEL_RATE = {"high": 1.6, "balanced": 1.1, "small": 0.75}
+_CUT_SRC_FACTOR = {"h264": 1.0, "vp9": 1.35, "av1": 1.6, "hevc": 1.3}
+_CUT_MIN_KBPS = 300
+_CUT_AUDIO_KBPS = 192            # every re-encoded cut: AAC 192 kbps
+_CUT_MUX_OVERHEAD = 1.006        # MP4 index + faststart moov, measured < 1 %
+
+
+def cut_video_kbps(src_kbps, vcodec, level=None):
+    """Video bitrate a re-encoded cut is encoded at, or 0 when the source
+    bitrate is unknown (the CRF fallback is used then). Shared by the encoder
+    and by the size estimate so the two can never disagree."""
+    try:
+        src = float(src_kbps or 0)
+    except (TypeError, ValueError):
+        src = 0.0
+    if src <= 0:
+        return 0
+    level = level if level in _CUT_LEVEL_RATE else _cut_quality()
+    fam = _vcodec_family(vcodec)
+    k = src * _CUT_SRC_FACTOR.get(fam, 1.35) * _CUT_LEVEL_RATE[level]
+    return max(_CUT_MIN_KBPS, int(round(k)))
+
+
+def _format_for_url(formats, url):
+    if not url:
+        return None
+    return next((f for f in (formats or []) if f.get("url") == url), None)
+
+
+def _fallback_video_format(formats, cap_h):
+    """The stream yt-dlp's own fallback would most likely fetch for ≤ cap_h
+    (bestvideo[height<=cap], resolution first) — used only when there is no
+    direct-HTTP pick to read the bitrate from."""
+    cap = int(cap_h or 2160)
+    if cap <= 0 or cap > 2160:
+        cap = 2160
+    vids = [f for f in (formats or [])
+            if (f.get("vcodec") or "none") != "none"
+            and 0 < (_fmt_short_side(f) or 0) <= cap]
+    if not vids:
+        return None
+    return max(vids, key=lambda f: (_fmt_short_side(f),
+                                    1 if _vcodec_family(f.get("vcodec")) == "vp9" else 0,
+                                    f.get("tbr") or 0))
+
+
+def _video_target_for(formats, cap_h, duration, audio_lang="", v_url=None,
+                      level=None):
+    """(target_kbps, source_video_format) for a re-encoded cut at ≤ cap_h."""
+    f = _format_for_url(formats, v_url)
+    if f is None:
+        direct = [x for x in (formats or []) if _is_direct_http(x)]
+        v0 = _pick_streams(direct, cap_h, audio_lang)[0] if direct else None
+        f = _format_for_url(direct, v0) or _fallback_video_format(formats, cap_h)
+    if f is None:
+        return 0, None
+    return cut_video_kbps(_stream_kbps(f, duration), f.get("vcodec"), level), f
+
+
+def cut_size_rates(formats, duration, audio_lang="", level=None):
+    """Bytes per second of clip, for every output the Cut panel offers — what
+    the panel multiplies by the clip length. {cap_key: {"mp4": Bps,
+    "copy": Bps}, "audio": {"mp3": Bps, ...}}. 0 = unknown."""
+    out = {}
+    try:
+        duration = float(duration or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    direct = [f for f in (formats or []) if _is_direct_http(f)]
+    for cap in _CUT_CAPS:
+        try:
+            v_url, a_url, _ext, px = (_pick_streams(direct, cap, audio_lang)
+                                      if direct else (None, None, "", 0))
+            target, vf = _video_target_for(formats, cap, duration, audio_lang,
+                                           v_url=v_url, level=level)
+            mp4 = ((target + _CUT_AUDIO_KBPS) * 1000 / 8 * _CUT_MUX_OVERHEAD
+                   if target else 0)
+            copy = 0
+            if vf is not None and v_url:
+                af = _format_for_url(direct, a_url)
+                kb = _stream_kbps(vf, duration) + (
+                    _stream_kbps(af, duration) if af is not None else 0)
+                copy = kb * 1000 / 8 * _CUT_MUX_OVERHEAD if kb > 0 else 0
+            out[f"{cap}p"] = {"mp4": int(mp4), "copy": int(copy)}
+        except Exception:             # noqa: BLE001 — one tier ≠ no estimate
+            out[f"{cap}p"] = {"mp4": 0, "copy": 0}
+    # audio-only cuts: fixed-rate encoders, except WAV (arithmetic) and FLAC
+    auds = [f for f in direct if (f.get("vcodec") or "none") == "none"
+            and (f.get("acodec") or "none") != "none" and f.get("url")]
+    auds = _original_audio_only(auds, audio_lang)
+    ac = max(auds, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0), default=None)
+    asr = int((ac or {}).get("asr") or 48000)
+    ch = int((ac or {}).get("audio_channels") or 2)
+    pcm = asr * ch * 2
+    out["audio"] = {"mp3": 192000 // 8, "m4a": 192000 // 8, "opus": 128000 // 8,
+                    "wav": pcm, "flac": int(pcm * 0.6)}
+    return out
+
+
+def _cut_quality():
+    try:
+        from app.config import load_app_config
+        q = str(load_app_config().get("cut_quality", _DEFAULT_QUALITY)).lower()
+    except Exception:                 # noqa: BLE001
+        q = _DEFAULT_QUALITY
+    return q if q in _QUALITY_LEVELS else _DEFAULT_QUALITY
+
+
+def _encoder_args(name, level=None, kbps=0):
+    """ffmpeg video-encoder arguments for `name`: bitrate-targeted at `kbps`
+    when given (predictable size, see cut_video_kbps), else the CRF/CQ value
+    of the quality level."""
+    if kbps and kbps > 0:
+        k = int(kbps)
+        rate = ["-b:v", f"{k}k", "-maxrate", f"{int(k * 1.5)}k",
+                "-bufsize", f"{k * 2}k"]
+        if name == "h264_nvenc":
+            return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
+                    "-rc", "vbr", *rate, "-pix_fmt", "yuv420p"]
+        if name == "h264_qsv":
+            return ["-c:v", "h264_qsv", "-preset", "faster", *rate,
+                    "-pix_fmt", "nv12"]
+        if name == "h264_amf":
+            return ["-c:v", "h264_amf", "-quality", "balanced",
+                    "-rc", "vbr_peak", *rate, "-pix_fmt", "nv12"]
+        return ["-c:v", "libx264", "-preset", "veryfast", *rate,
+                "-pix_fmt", "yuv420p"]
+    q = _QUALITY_LEVELS[level if level in _QUALITY_LEVELS else _cut_quality()]
+    if name == "h264_nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
+                "-rc", "vbr", "-cq", str(q["cq"]), "-b:v", "0",
+                "-pix_fmt", "yuv420p"]
+    if name == "h264_qsv":
+        return ["-c:v", "h264_qsv", "-preset", "faster",
+                "-global_quality", str(q["qsv"]), "-pix_fmt", "nv12"]
+    if name == "h264_amf":
+        return ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                "-qp_i", str(q["amf"][0]), "-qp_p", str(q["amf"][1]),
+                "-pix_fmt", "nv12"]
+    return ["-c:v", "libx264", "-preset", "veryfast",
+            "-crf", str(q["crf"]), "-pix_fmt", "yuv420p"]
+
+
+_ENCODER_CACHE = {}               # ffmpeg path -> [working hardware encoder names]
+_ENCODER_LOCK = threading.Lock()
+
+
+def _hw_encode_enabled():
+    try:
+        from app.config import load_app_config
+        return bool(load_app_config().get("cut_hw_encode", True))
+    except Exception:                 # noqa: BLE001
+        return True
+
+
+def _encoder_works(ffmpeg, args):
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-v", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=640x360:r=30:d=0.2", "-frames:v", "3",
+             *args, "-f", "null", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, creationflags=flags)
+        return proc.returncode == 0
+    except Exception:                 # noqa: BLE001
+        return False
+
+
+def video_encoders(ffmpeg, kbps=0):
+    """[(name, args)] to try for a re-encoded cut, fastest first; libx264 is
+    always last. Probed once per ffmpeg binary and cached. `kbps` > 0 makes
+    every entry bitrate-targeted (see cut_video_kbps)."""
+    use_hw = _hw_encode_enabled()
+    with _ENCODER_LOCK:
+        hw = _ENCODER_CACHE.get(ffmpeg)
+        if hw is None:
+            hw = []
+            listed = ""
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            try:
+                listed = subprocess.run(
+                    [ffmpeg, "-hide_banner", "-encoders"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=10, creationflags=flags).stdout or ""
+            except Exception:         # noqa: BLE001
+                listed = ""
+            for name in _HW_NAMES:
+                if name in listed and _encoder_works(ffmpeg, _encoder_args(name, "balanced")):
+                    hw = [name]
+                    break
+            _ENCODER_CACHE[ffmpeg] = hw
+    level = _cut_quality()
+    return ([(n, _encoder_args(n, level, kbps)) for n in hw] if use_hw else []) + [
+        ("libx264", _encoder_args("libx264", level, kbps))]
+
+
 def _cut_args(ffmpeg, v_url, a_url, start, seg_len, ext,
-               audio_reencode=False, video_reencode=False, audio_only=False):
+               audio_reencode=False, video_reencode=False, audio_only=False,
+               vcodec_args=None):
     """Shared ffmpeg argument builder.
 
     Three output strategies, in the order `cut_link` tries them:
@@ -1231,13 +1482,26 @@ def _cut_args(ffmpeg, v_url, a_url, start, seg_len, ext,
     never does" split — and a single dropped HTTP range request without
     `-reconnect 1` aborts the whole cut.
     """
-    pre = max(0.0, float(start) - 10.0)
-    off = max(0.0, float(start) - pre)
+    if video_reencode or audio_only:
+        # v1.0.1: a TRANSCODE is already frame-accurate with a pure input
+        # seek (ffmpeg's accurate_seek decodes from the keyframe and drops
+        # what precedes `start`). The 10 s pre-roll below only made both
+        # remote streams download and decode ten extra seconds per cut —
+        # ~20-40 MB on a 4K clip — for an identical first frame (measured:
+        # same frame, same 12.000 s duration, A/V start 0.000 on both).
+        pre, off = max(0.0, float(start)), 0.0
+    else:
+        pre = max(0.0, float(start) - 10.0)
+        off = max(0.0, float(start) - pre)
 
     def _input(url):
         # Input options must precede their `-i`. `-rw_timeout` is in
         # microseconds (15 s); reconnect flags turn one dead CDN connection
         # into a resume instead of a failed cut.
+        if not str(url).lower().startswith(("http://", "https://")):
+            # a local file (the fetch-then-cut fallback): ffmpeg rejects the
+            # HTTP-only options outright ("Option user_agent not found")
+            return ["-ss", f"{pre:.3f}", "-i", url]
         return ["-user_agent", _UA,
                 "-headers", "Referer: https://www.youtube.com/\r\n",
                 "-reconnect", "1", "-reconnect_streamed", "1",
@@ -1252,7 +1516,9 @@ def _cut_args(ffmpeg, v_url, a_url, start, seg_len, ext,
         args += ["-map", "0:v:0", "-map", "1:a:0"]
     elif audio_only:
         args += ["-map", "0:a:0", "-vn"]
-    args += ["-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}"]
+    if off > 0:
+        args += ["-ss", f"{off:.3f}"]
+    args += ["-t", f"{seg_len:.3f}"]
     if audio_only:
         codecs = {"mp3": ["-c:a", "libmp3lame", "-b:a", "192k"],
                   "m4a": ["-c:a", "aac", "-b:a", "192k"],
@@ -1261,13 +1527,13 @@ def _cut_args(ffmpeg, v_url, a_url, start, seg_len, ext,
                   "flac": ["-c:a", "flac"]}
         args += codecs.get((ext or "mp3").lower(), codecs["mp3"])
     elif video_reencode:
-        # `-crf 18` is near-visually-lossless; `-pix_fmt yuv420p` matters
+        # Encoder args come from video_encoders(): bitrate-targeted when the
+        # source bitrate is known, the CRF level otherwise. `-pix_fmt yuv420p` matters
         # because YouTube can serve 10-bit or odd-chroma sources that editors
         # refuse. `veryfast` keeps a long 4K cut from feeling like a render
         # job while still compressing far better than the source bitrate.
-        args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                 "-pix_fmt", "yuv420p",
-                 "-c:a", "aac", "-b:a", "192k"]
+        args += list(vcodec_args or _encoder_args("libx264"))
+        args += ["-c:a", "aac", "-b:a", "192k"]
     elif audio_reencode:
         # Last-resort mux: keep the video bit-for-bit, re-encode ONLY the
         # audio to AAC so ANY pair fits into .mp4 (VP9-webm video + Opus
@@ -1365,20 +1631,30 @@ def _media_short_side(path):
     return 0
 
 
+def log_section_failure(exc):
+    try:
+        from app.crash import log_crash
+        log_crash("cutter: section download unavailable, fetching the whole "
+                  "file: " + str(exc)[:300])
+    except Exception:                 # noqa: BLE001
+        pass
+
+
 def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                           title, vid, tag, want_px, on_status=None,
                           on_progress=None, proxy_url="",
                           cookies_browser="", should_cancel=None,
-                          audio_lang=""):
+                          audio_lang="", video_kbps=0):
     """Fetch-then-cut fallback for tiers the fast HTTP-seek path can't do.
 
     yt-dlp itself downloads the requested tier — with its own per-client
     headers, challenge/PO-token handling, fragment retries and fallbacks
     (everything a raw `ffmpeg -i <url>` lacks, and the reason 4K/1440p
-    remote seeks fail while smaller tiers pass) — then the segment is
-    stream-copied locally out of the finished file. Slower than the direct
-    cut (the whole video lands in a temp dir first) but succeeds wherever
-    the Downloads page succeeds. Blocking — call on a worker thread.
+    remote seeks fail while smaller tiers pass). v1.0.1: only the requested
+    section is fetched (and re-encoded on the way) when the engine can; the
+    whole-file download + local frame-accurate cut is kept as the safety net.
+    Succeeds wherever the Downloads page succeeds. Blocking — call on a
+    worker thread.
     Returns (ok, message_or_CANCELLED, filepath, measured_px).
     """
     def _status(text):
@@ -1455,6 +1731,62 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                 if on_progress:
                     on_progress(pct, done)
 
+    try:
+        ffmpeg = _ffmpeg_exe()
+    except Exception as exc:          # noqa: BLE001
+        return False, str(exc), "", 0
+    # the bitrate cut_link worked out for this tier, so the size matches the
+    # panel's estimate on this path too
+    encoders = video_encoders(ffmpeg, video_kbps)
+
+    def _stem(got):
+        got_label = f"{got}p" if got else (f"{cap}p" if want_px else tr("best"))
+        return (f"{sanitize_filename(title)} [clip {tag}] [{vid}] {got_label}"
+                + (f" [{audio_lang}]" if audio_lang else ""))
+
+    def _local_cut(src, got):
+        """Frame-accurate re-encode out of the finished file (same reasoning
+        as cut_link's primary path), stream copy only as the last resort."""
+        out_path = _unique_path(target_dir, f"{_stem(got)}.mp4")
+        _status(tr("Cutting {a} → {b} …").format(
+            a=fmt_clock(start), b=fmt_clock(end)))
+
+        def _prog2(p, w):
+            if on_progress:
+                try:
+                    p, w = int(p), int(w)
+                except (TypeError, ValueError):
+                    p, w = 0, 0
+                on_progress(78 + min(22, max(0, p * 22 // 100)), w)
+
+        msg = ""
+        for _name, enc_args in encoders:
+            ok, msg = _run_ffmpeg_cut(
+                _cut_args(ffmpeg, src, None, start, seg_len, "mp4",
+                          video_reencode=True, vcodec_args=enc_args)
+                + ["-map", "0:v:0", "-map", "0:a:0?"],
+                seg_len, out_path, _prog2, should_cancel)
+            if ok or msg == DOWNLOAD_CANCELLED:
+                return ok, msg, out_path
+        ok, msg = _run_ffmpeg_cut(
+            _cut_args(ffmpeg, src, None, start, seg_len, "mp4", audio_reencode=True)
+            + ["-map", "0:v:0", "-map", "0:a:0?"],
+            seg_len, out_path, _prog2, should_cancel)
+        return ok, msg, out_path
+
+    # v1.0.1 — SECTION FIRST. The fallback used to download the WHOLE video
+    # (a 2-hour 4K file for a 20-second clip) and then cut it. yt-dlp can hand
+    # only [start, end) to ffmpeg itself (download_ranges) with its own
+    # headers / PO-token-bound URLs — exactly what the raw remote seek lacked —
+    # and re-encode it frame-accurately on the way (force_keyframes_at_cuts +
+    # our encoder args). The full download stays as the safety net for
+    # streams ffmpeg can't range-read (SABR/HLS-only answers).
+    section_ok = True
+    try:
+        from yt_dlp.utils import download_range_func
+    except Exception:                 # noqa: BLE001 — older engine
+        section_ok = False
+
     last_err = ""
     with tempfile.TemporaryDirectory(prefix="niche_cut_") as tmp:
         for attempt in plan:
@@ -1471,74 +1803,76 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                 opts["extractor_args"] = {"youtube": yt_args}
             if attempt.get("cookies"):
                 opts["cookiesfrombrowser"] = (attempt["cookies"],)
-            _status(tr("Downloading the {q} file, then cutting…").format(
-                q=f"{cap}p"))
+            modes = ["section", "full"] if section_ok else ["full"]
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    inf = ydl.extract_info(url, download=True)
-                    reqs = inf.get("requested_downloads") or []
-                    src = ((reqs[0].get("filepath") if reqs else None)
-                           or ydl.prepare_filename(inf))
-                try:
-                    empty = (not src or not os.path.isfile(src)
-                             or os.path.getsize(src) <= 0)
-                except OSError:
-                    empty = True
-                if empty:
-                    last_err = tr("The download came out empty.")
-                    continue
-                got = _media_short_side(src)
-                if floor and got and got < floor:
-                    last_err = f"got {got}p, asked for {cap}"
+                for mode in modes:
+                    run = dict(opts)
+                    if mode == "section":
+                        run["download_ranges"] = download_range_func(
+                            None, [(float(start), float(end))])
+                        run["force_keyframes_at_cuts"] = True
+                        run["external_downloader_args"] = {"ffmpeg_o": [
+                            *encoders[0][1], "-c:a", "aac", "-b:a", "192k",
+                            "-movflags", "+faststart"]}
+                        _status(tr("Fetching only {a} → {b} at {q}…").format(
+                            a=fmt_clock(start), b=fmt_clock(end), q=f"{cap}p"))
+                    else:
+                        _status(tr("Downloading the {q} file, then cutting…")
+                                .format(q=f"{cap}p"))
                     try:
-                        os.remove(src)
+                        with yt_dlp.YoutubeDL(run) as ydl:
+                            inf = ydl.extract_info(url, download=True)
+                            reqs = inf.get("requested_downloads") or []
+                            src = ((reqs[0].get("filepath") if reqs else None)
+                                   or ydl.prepare_filename(inf))
+                    except Exception as exc:  # noqa: BLE001
+                        if (mode == "section" and not _is_bot_or_403(str(exc))
+                                and not (should_cancel and should_cancel())):
+                            # the section path itself didn't work here: stop
+                            # trying it, fetch the whole file this time
+                            section_ok = False
+                            log_section_failure(exc)
+                            continue
+                        raise
+                    try:
+                        empty = (not src or not os.path.isfile(src)
+                                 or os.path.getsize(src) <= 0)
                     except OSError:
-                        pass
-                    continue
-                got_label = f"{got}p" if got else (
-                    f"{cap}p" if want_px else tr("best"))
-                stem = (f"{sanitize_filename(title)} [clip {tag}] "
-                        f"[{vid}] {got_label}"
-                        + (f" [{audio_lang}]" if audio_lang else ""))
-                _s, ext = os.path.splitext(src)
-                out_ext = (ext or ".mp4").lstrip(".") or "mp4"
-                out_path = _unique_path(target_dir, f"{stem}.{out_ext}")
-                _status(tr("Cutting {a} → {b} …").format(
-                    a=fmt_clock(start), b=fmt_clock(end)))
-
-                def _prog2(p, w):
-                    if on_progress:
+                        empty = True
+                    got = 0 if empty else _media_short_side(src)
+                    if empty or (floor and got and got < floor):
+                        last_err = (tr("The download came out empty.") if empty
+                                    else f"got {got}p, asked for {cap}")
                         try:
-                            p = int(p)
-                        except (TypeError, ValueError):
-                            p = 0
+                            if src and os.path.isfile(src):
+                                os.remove(src)
+                        except OSError:
+                            pass
+                        if mode == "section" and empty:
+                            section_ok = False
+                            continue
+                        break
+                    if mode == "section":
+                        # already the finished, frame-accurate clip
+                        out_path = _unique_path(target_dir, f"{_stem(got)}.mp4")
                         try:
-                            w = int(w)
-                        except (TypeError, ValueError):
-                            w = 0
-                        on_progress(78 + min(22, max(0, p * 22 // 100)), w)
-
-                try:
-                    ffmpeg = _ffmpeg_exe()
-                except Exception as exc:      # noqa: BLE001
-                    return False, str(exc), "", 0
-                pre = max(0.0, float(start) - 10.0)
-                off = max(0.0, float(start) - pre)
-                args = [ffmpeg, "-hide_banner", "-y",
-                        "-ss", f"{pre:.3f}", "-i", src,
-                        "-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}",
-                        "-c", "copy",
-                        "-avoid_negative_ts", "make_zero",
-                        "-progress", "pipe:1", "-nostats", "-v", "error"]
-                if out_ext.lower() == "mp4":
-                    args += ["-movflags", "+faststart"]
-                ok, msg = _run_ffmpeg_cut(args, seg_len, out_path, _prog2,
-                                          should_cancel)
-                if ok:
-                    return True, out_path, out_path, int(got or 0)
-                if msg == DOWNLOAD_CANCELLED:
-                    return False, msg, "", 0
-                last_err = msg or last_err
+                            os.replace(src, out_path)
+                        except OSError:
+                            import shutil
+                            shutil.move(src, out_path)
+                        if on_progress:
+                            try:
+                                on_progress(100, os.path.getsize(out_path))
+                            except OSError:
+                                pass
+                        return True, out_path, out_path, int(got or 0)
+                    ok, msg, out_path = _local_cut(src, got)
+                    if ok:
+                        return True, out_path, out_path, int(got or 0)
+                    if msg == DOWNLOAD_CANCELLED:
+                        return False, msg, "", 0
+                    last_err = msg or last_err
+                    break
             except Exception as exc:          # noqa: BLE001
                 if should_cancel is not None and should_cancel():
                     return False, DOWNLOAD_CANCELLED, "", 0
@@ -1548,18 +1882,15 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                 except Exception:             # noqa: BLE001
                     last_err = str(exc)
                 # Bot check / CDN 403: browser cookies are the only thing that
-                # gets past them, so the cookie rungs are appended to the plan
-                # now — on demand, and always followed by no-cookie client rungs
-                # so a locked or undecryptable cookie DB can't end the cut.
-                # (Same shape as the download page's ladder; the cut used to
-                # give up here and print the engine's own "Sign in to confirm
-                # you're not a bot" line at the user.)
+                # gets past them, so the cookie rungs are appended once, on
+                # demand, followed by a no-cookie rung so a locked or
+                # undecryptable cookie DB can't end the cut.
                 if not cookies_added and _is_bot_or_403(last_err):
                     cookies_added = True
                     for b in _COOKIE_BROWSERS:
                         if b != cookies_browser:
                             plan.append({"cookies": b, "clients": None})
-                    for clients in ([], ["android"], ["android_vr"], ["tv"]):
+                    for clients in ([],) + tuple(BYPASS_CLIENTS):
                         plan.append({"cookies": None, "clients": clients})
                     _status(tr("Trying browser cookies…"))
                 continue
@@ -1682,6 +2013,17 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
             except Exception:         # noqa: BLE001 — reporting only
                 pass
 
+    # v1.0.3: the re-encode's bitrate, from the stream actually being cut
+    # (see cut_video_kbps) — the Cut panel's estimate uses the same numbers.
+    v_kbps = 0
+    if not audio_only:
+        try:
+            v_kbps, _vf = _video_target_for(
+                pool, height_cap, dur, audio_lang,
+                v_url=cands[0][0] if cands else None)
+        except Exception:             # noqa: BLE001 — CRF fallback then
+            v_kbps = 0
+
     def _run_fallback():
         _status(tr("Trying full download instead…"))
         return _cut_via_ydl_download(
@@ -1689,7 +2031,8 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
             title, vid, tag, want,
             on_status=on_status, on_progress=on_progress,
             proxy_url=proxy_url, cookies_browser=cookies_browser,
-            should_cancel=should_cancel, audio_lang=audio_lang)
+            should_cancel=should_cancel, audio_lang=audio_lang,
+            video_kbps=v_kbps)
 
     # An explicit 4K/1440p pick whose tier is not even VISIBLE right now must
     # not silently arrive as a lower tier: go straight to the fetch-then-cut
@@ -1735,16 +2078,26 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
         out_path = _out_for(output_format)
         _status(tr("Cutting {a} → {b} (re-encoding for exact sync) …").format(
             a=fmt_clock(start), b=fmt_clock(end)))
-        ok, msg = _run_ffmpeg_cut(
-            _cut_args(ffmpeg, v_url, a_url, start, seg_len, "mp4",
-                      video_reencode=not audio_only, audio_only=audio_only),
-            seg_len, out_path, on_progress, should_cancel)
-        if ok:
-            _report(int(got_px or 0), label)
-            return True, out_path, out_path
-        if msg == DOWNLOAD_CANCELLED:
-            return False, msg, ""
-        last_err = msg or last_err
+        # Hardware encoder first when this PC has one, libx264 after it —
+        # a GPU/driver hiccup costs one retry, never the frame-accurate cut.
+        encoders = [(None, None)] if audio_only else video_encoders(ffmpeg, v_kbps)
+        for _enc_name, enc_args in encoders:
+            ok, msg = _run_ffmpeg_cut(
+                _cut_args(ffmpeg, v_url, a_url, start, seg_len,
+                          output_format if audio_only else "mp4",
+                          video_reencode=not audio_only, audio_only=audio_only,
+                          vcodec_args=enc_args),
+                seg_len, out_path, on_progress, should_cancel)
+            if ok:
+                _report(int(got_px or 0), label)
+                return True, out_path, out_path
+            if msg == DOWNLOAD_CANCELLED:
+                return False, msg, ""
+            last_err = msg or last_err
+            # an HTTP failure is not the encoder's fault: don't re-download
+            # the same segment with another encoder, go to the next stream
+            if _looks_like_expired_url(msg):
+                break
         _status(tr("Re-encode unavailable — copying the stream instead …"))
 
     for idx, (v_url, a_url, ext, px) in enumerate(cands):
@@ -1881,46 +2234,63 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
                                              b=fmt_clock(end)))
 
     # Re-encode first — see cut_link for why stream copy cannot give a cut that
-    # is both frame-accurate and in sync. A local file cuts identically to a
-    # remote one here, only without the reconnect plumbing.
-    re_out = _unique_path(target_dir, f"{sanitize_filename(stem)} "
-                          f"[clip {clip_tag(start, end)}].{output_format}")
-    re_args = [ffmpeg, "-hide_banner", "-y",
-               "-ss", f"{pre:.3f}", "-i", path,
-               "-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}",
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-               "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "192k",
-               # Deliberately NO `-avoid_negative_ts make_zero`: measured, it
-               # re-bases video (+66 ms) and audio (+43 ms) by different
-               # amounts and leaves a 23 ms A/V offset that is not there
-               # without it. See _cut_args for the full measurement.
-               "-progress", "pipe:1", "-nostats", "-v", "error",
-               "-movflags", "+faststart"]
+    # is both frame-accurate and in sync. v1.0.1: through the shared argument
+    # builder (accurate input seek, no 10 s pre-roll decode) and the fastest
+    # working encoder (GPU when present, libx264 after it). WebM cannot hold
+    # H.264, so a webm pick goes straight to the stream copy instead of
+    # failing an encode first.
     if audio_only:
-        re_args = [x for x in re_args if x not in ("-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart")]
-        re_args += ["-map", "0:a:0", "-vn"]
-        re_args += {"mp3": ["-c:a", "libmp3lame", "-b:a", "192k"], "m4a": ["-c:a", "aac", "-b:a", "192k"], "opus": ["-c:a", "libopus", "-b:a", "128k"], "wav": ["-c:a", "pcm_s16le"], "flac": ["-c:a", "flac"]}.get(output_format, ["-c:a", "libmp3lame", "-b:a", "192k"])
-    # NOTE: `re_out` is NOT appended here — _run_ffmpeg_cut adds the output
-    # path itself, and a path in both places makes ffmpeg open the SAME file
-    # twice, which yields an MP4 container with no streams in it.
-    ok, msg = _run_ffmpeg_cut(re_args, seg_len, re_out,
-                              on_progress, should_cancel)
-    if ok:
-        return True, re_out, re_out
-    if msg == DOWNLOAD_CANCELLED:
+        ok, msg = _run_ffmpeg_cut(
+            _cut_args(ffmpeg, path, None, start, seg_len, output_format,
+                      audio_only=True),
+            seg_len, out_path, on_progress, should_cancel)
+        if ok:
+            return True, out_path, out_path
         return False, msg, ""
+    if output_format in ("mp4", "mkv"):
+        msg = ""
+        for _name, enc_args in video_encoders(ffmpeg):
+            ok, msg = _run_ffmpeg_cut(
+                _cut_args(ffmpeg, path, None, start, seg_len, output_format,
+                          video_reencode=True, vcodec_args=enc_args)
+                + ["-map", "0:v:0", "-map", "0:a:0?"],
+                seg_len, out_path, on_progress, should_cancel)
+            if ok:
+                return True, out_path, out_path
+            if msg == DOWNLOAD_CANCELLED:
+                return False, msg, ""
+    if output_format == "webm":
+        # VP9/AV1 sources copy straight into webm (fast path below); anything
+        # else needs VP9 — realtime settings keep it from feeling like a render.
+        ok, msg = _run_ffmpeg_cut(
+            [ffmpeg, "-hide_banner", "-y", "-ss", f"{start:.3f}", "-i", path,
+             "-t", f"{seg_len:.3f}", "-map", "0:v:0", "-map", "0:a:0?",
+             "-c", "copy", "-avoid_negative_ts", "make_zero",
+             "-progress", "pipe:1", "-nostats", "-v", "error"],
+            seg_len, out_path, on_progress, should_cancel)
+        if ok or msg == DOWNLOAD_CANCELLED:
+            return (True, out_path, out_path) if ok else (False, msg, "")
+        ok, msg = _run_ffmpeg_cut(
+            [ffmpeg, "-hide_banner", "-y", "-ss", f"{start:.3f}", "-i", path,
+             "-t", f"{seg_len:.3f}", "-map", "0:v:0", "-map", "0:a:0?",
+             "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+             "-row-mt", "1", "-crf", "30", "-b:v", "0",
+             "-c:a", "libopus", "-b:a", "128k",
+             "-progress", "pipe:1", "-nostats", "-v", "error"],
+            seg_len, out_path, on_progress, should_cancel)
+        return (True, out_path, out_path) if ok else (False, msg, "")
     # No encoder available (or the source defeated it): fall back to stream
     # copy, which keeps the original codecs. Still keyframe-approximate — that
     # limitation is inherent to copy — but a working file beats no file.
-    _status(tr("Re-encode unavailable — copying the stream instead …"))
+    if output_format in ("mp4", "mkv"):
+        _status(tr("Re-encode unavailable — copying the stream instead …"))
     args = [ffmpeg, "-hide_banner", "-y",
             "-ss", f"{pre:.3f}", "-i", path,
             "-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}",
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             "-progress", "pipe:1", "-nostats", "-v", "error"]
-    if ext.lower() == "mp4":
+    if output_format == "mp4":
         args += ["-movflags", "+faststart"]
     ok, msg = _run_ffmpeg_cut(args, seg_len, out_path,
                               on_progress, should_cancel)

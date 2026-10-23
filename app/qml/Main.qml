@@ -642,7 +642,20 @@ Window {
             {
                 target: "tour_nav_8",
                 title: I18n.tr("5 · Downloads"),
-                body: I18n.tr("The download queue, with live progress and a quality picker per video. Open the finished file or its folder straight from the row.")
+                body: I18n.tr("Any video, at the exact quality and format you pick: MP4 / MKV / WEBM or audio only, with the real file size shown before you start.")
+            },
+            {
+                page: 8,
+                target: "tour_downloads",
+                title: I18n.tr("Your download queue"),
+                body: I18n.tr("Live speed, size and ETA per row; pause, resume, then open the file or its folder right from here. Two downloads run at once, the rest wait their turn.")
+            },
+
+            // ── Video Cutter ──
+            {
+                target: "tour_nav_12",
+                title: I18n.tr("6 · Video Cutter"),
+                body: I18n.tr("Paste a link, mark In and Out, and only that clip is fetched and cut: frame-accurate, in sync, ready for any editor. Local files work too.")
             },
 
             // ── Quota + Settings (the two things to know before you start) ──
@@ -662,9 +675,9 @@ Window {
 
     // First run only: open the tour once the shell has actually laid out.
     Timer {
-        interval: 650
+        interval: 450
         // wait for the splash to clear, the tour spotlights the shell under it
-        running: !App.tourSeen && splash.done
+        running: !App.tourSeen && splash.done && !tour.running
         onTriggered: tour.start()
     }
 
@@ -1531,6 +1544,9 @@ Window {
         running: true
         repeat: false
         onTriggered: {
+            // First launch: the tour goes first, the setup dialog right after
+            // it (it used to pop up on top of the tour's welcome card).
+            if (!App.tourSeen || tour.running) { interval = 1500; restart(); return }
             Deno.refresh()
             if (!Deno.ready)
                 denoDialog.open()

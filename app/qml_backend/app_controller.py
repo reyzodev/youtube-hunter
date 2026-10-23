@@ -71,6 +71,10 @@ def resolved_donate_url() -> str:
     return url if url.lower().startswith(("http://", "https://")) else ""
 
 
+
+# Bump when the onboarding tour changes enough to be worth showing again.
+TOUR_VERSION = 2
+
 class AppController(QObject):
     """Application shell state for the QML UI."""
 
@@ -135,7 +139,10 @@ class AppController(QObject):
         self._quota_capacity = 0
         # Whether the onboarding tour has been completed/skipped. Persisted, so
         # the tour opens itself exactly once — on the very first run.
-        self._tour_seen = bool(cfg.get("tour_seen", False))
+        # v1.0.1: versioned. A redesigned tour bumps TOUR_VERSION and shows
+        # itself once more — also for installs whose config (kept in %APPDATA%
+        # across reinstalls) already said "seen" for the old one.
+        self._tour_seen = int(cfg.get("tour_version", 0) or 0) >= TOUR_VERSION
         self.refresh_quota()
 
         # Live quota card. Every billed API call (any page, any thread) pings
@@ -254,6 +261,7 @@ class AppController(QObject):
         self.tourSeenChanged.emit()
         cfg = load_app_config()
         cfg["tour_seen"] = True
+        cfg["tour_version"] = TOUR_VERSION
         save_app_config(cfg)
 
     @Slot()
@@ -266,6 +274,7 @@ class AppController(QObject):
         self.tourSeenChanged.emit()
         cfg = load_app_config()
         cfg["tour_seen"] = False
+        cfg["tour_version"] = 0
         save_app_config(cfg)
 
     # ── navigation ─────────────────────────────────────────────────────

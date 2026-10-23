@@ -280,6 +280,11 @@ def _install_exe_from(src_path_or_zip):
                     os.remove(staged)
                 except OSError:
                     pass
+    try:
+        from app.core.runtime_deps import invalidate_js_runtime_cache
+        invalidate_js_runtime_cache()
+    except Exception:      # noqa: BLE001 — cache is best-effort
+        pass
     return target
 
 

@@ -167,8 +167,8 @@ Item {
           sub: I18n.tr("Runtime & downloader"), tracked: true,
           keys: "download engine runtime deno node javascript yt-dlp ytdlp update install " + I18n.tr("download runtime update") },
         { icon: "tune",        title: I18n.tr("Output & Scraping"),
-          sub: I18n.tr("Format, threads, folder"), tracked: true,
-          keys: "output scrape export format csv autosave checkpoint worker threads cookies browser transcripts folder save video videos thumbnail thumbnails location path " + I18n.tr("output export threads folder cookies transcripts") },
+          sub: I18n.tr("Format, threads, folder, clips"), tracked: true,
+          keys: "output scrape export format csv autosave checkpoint worker threads cookies browser transcripts folder save video videos thumbnail thumbnails location path cut cuts cutter clip clips quality size high balanced small encode crf " + I18n.tr("output export threads folder cookies transcripts clip quality") },
         // v3.43: always reachable, also after "Skip for now"
         { icon: "extension",   title: I18n.tr("Browser extension"),
           sub: I18n.tr("Download button on YouTube"), tracked: true,
@@ -2761,6 +2761,37 @@ Item {
                                     glyph: index === 0 ? "cancel" : "public"
                                     active: Settings.cookieIndex === index
                                     onClicked: Settings.cookieIndex = index
+                                }
+                            }
+                        }
+
+                        // clip cutting: the re-encode level app.core.cutter reads
+                        // from config.json (`cut_quality`) on every cut — Cutter
+                        // page and the extension's Cut panel alike.
+                        BlockHead {
+                            Layout.topMargin: Tokens.space3
+                            icon: "scissors"
+                            title: I18n.tr("Clip Cutting")
+                            detail: I18n.tr("Applies to the next cut, from the Cutter and the browser extension.")
+                        }
+                        RowGroup {
+                            SettingRow {
+                                icon: "movie"
+                                label: I18n.tr("Cut Quality")
+                                description: Settings.cutQualityIndex === 0
+                                             ? I18n.tr("Most headroom over the source, biggest files. For editing and archiving.")
+                                             : Settings.cutQualityIndex === 2
+                                             ? I18n.tr("About half the size of High, a little softer on fine detail and fast motion.")
+                                             : I18n.tr("Looks like the source for sharing and most edits, about 30% smaller than High.")
+                                Segmented {
+                                    current: Settings.cutQualityIndex
+                                    minItemWidth: 72
+                                    options: [
+                                        { label: I18n.tr("High"),     value: 0, icon: "hd" },
+                                        { label: I18n.tr("Balanced"), value: 1, icon: "tune" },
+                                        { label: I18n.tr("Small"),    value: 2, icon: "sd" }
+                                    ]
+                                    onPicked: (value, btn) => Settings.cutQualityIndex = value
                                 }
                             }
                         }

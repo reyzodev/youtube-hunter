@@ -277,7 +277,37 @@ def _known_install_paths(key):
     return [p for p in table.get(key, []) if os.path.isfile(p)]
 
 
+_JS_RT_CACHE = {"ts": 0.0, "value": None}
+_JS_RT_TTL_S = 60.0
+
+
+def invalidate_js_runtime_cache():
+    """Forget the cached runtime search — call after installing/removing deno."""
+    _JS_RT_CACHE["ts"] = 0.0
+    _JS_RT_CACHE["value"] = None
+
+
 def find_js_runtimes():
+    """Cached front door for _find_js_runtimes_uncached (v1.0.1).
+
+    Every yt-dlp call site builds its options through js_runtime_opts(), so the
+    search ran once per probe, per ladder rung and per cut: a `shutil.which`
+    PATH scan for four runtimes plus a dozen isfile() checks each time. The
+    answer only changes when a runtime is installed, so it is kept for a
+    minute (and dropped explicitly by the installers)."""
+    import time as _t
+    now = _t.monotonic()
+    val = _JS_RT_CACHE["value"]
+    if val is not None and now - _JS_RT_CACHE["ts"] < _JS_RT_TTL_S:
+        return dict(val)
+    val = _find_js_runtimes_uncached()
+    # an empty answer is not cached: the user may be installing deno right now
+    if val:
+        _JS_RT_CACHE["value"], _JS_RT_CACHE["ts"] = dict(val), now
+    return val
+
+
+def _find_js_runtimes_uncached():
     """Every usable JS runtime, best first, shaped for yt-dlp's `js_runtimes`
     option: e.g. {"deno": {"path": ...}, "node": {"path": ...}}.
 

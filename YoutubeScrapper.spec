@@ -289,6 +289,34 @@ print("trimmed dead Qt modules: {} entries dropped ({} -> {})".format(
     _before - sum(len(t) for t in (a.binaries, a.datas)),
     _before, sum(len(t) for t in (a.binaries, a.datas))))
 
+# ── trim: Chromium's debug packs + the 52 locales we never speak ───────
+# The web view exists for one page (the Support window). Chromium still ships
+# its DevTools resource packs — including a 73 MB `*.debug.pak` that only ever
+# loads when a debugger is attached — and 53 locale packs. None of that can
+# ever be reached from this app, and together they are ~130 MB of the
+# customer's download.
+_DEAD_WEBENGINE_DATA = (
+    "devtools_resources.debug.pak",
+    "qtwebengine_resources.debug.pak",
+    "qtwebengine_resources_200p.debug.pak",
+    "v8_context_snapshot.debug.bin",
+    "qtwebengine_devtools_resources.pak",   # DevTools are never opened
+)
+def _is_dead_webengine_data(entry):
+    low = str(entry[1]).replace("\\", "/").lower()
+    if any(low.endswith(d) for d in _DEAD_WEBENGINE_DATA):
+        return True
+    # qtwebengine_locales/<lang>.pak — keep English only (the UI is English;
+    # the page's own language is content, not a Chromium locale).
+    if "/qtwebengine_locales/" in low and not low.endswith("/en-us.pak"):
+        return True
+    return False
+
+_web_before = len(a.datas)
+a.datas = [d for d in a.datas if not _is_dead_webengine_data(d)]
+print("trimmed Chromium debug/locale data: {} files dropped".format(
+    _web_before - len(a.datas)))
+
 # Windows version resource: Explorer -> Properties -> Details, and one of the
 # signals SmartScreen/antivirus weigh. See version_info.txt.
 _version_file = "version_info.txt" if os.path.exists("version_info.txt") else None

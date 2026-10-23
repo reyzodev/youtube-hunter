@@ -106,7 +106,7 @@ Item {
     // never leave the reader on a page that no longer exists.
     Connections {
         target: Archive
-        function onGroupsChanged() {
+        function onChanged() {          // `groups` notifies through `changed`
             if (page._sectPage > page._sectPages - 1)
                 page._sectPage = page._sectPages - 1
         }

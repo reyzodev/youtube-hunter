@@ -917,6 +917,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         af = af if af in akeys else prefs.get("audio", "mp3")
         lang = re.sub(r"[^\w-]", "", str(lang or ""))[:16]
         rows, probed, err, tracks = None, False, "", []
+        cut_rates, cut_level = {}, ""
         try:
             info, err = fetch_probe_info(
                 f"https://www.youtube.com/watch?v={vid}",
@@ -930,6 +931,18 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 if lang and not any(t.get("key") == lang for t in tracks):
                     lang = ""                # that dub isn't (or no longer) there
                 ok, opts, err = qualities_from_info(info, vf, af, audio_lang=lang)
+                # v1.0.3: the Cut tab's sizes — bytes per second of clip for
+                # each tier and output, from the same numbers the cutter
+                # encodes with (app.core.cutter.cut_video_kbps)
+                try:
+                    from app.core.cutter import _cut_quality, cut_size_rates
+                    cut_level = _cut_quality()
+                    cut_rates = cut_size_rates(info.get("formats") or [],
+                                               info.get("duration") or 0,
+                                               audio_lang=lang, level=cut_level)
+                except Exception as exc:     # noqa: BLE001 — panel falls back
+                    log_crash("web bridge: cut rates: " + repr(exc))
+                    cut_rates = {}
                 if ok and opts:
                     rows = [_row(p, p.get("size"), p.get("size_exact")) for p in opts]
                     probed = True
@@ -955,6 +968,8 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                           for c in AUDIO_CODECS]},
             "tracks": tracks,
             "lang": lang,
+            "cutRates": cut_rates,
+            "cutQuality": cut_level,
             "saved": sorted(saved.keys()),
             "note": "" if probed else tr(
                 "Couldn't read this video's formats — showing the standard options."),

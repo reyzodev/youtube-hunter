@@ -7,6 +7,51 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Cutter: the clip size you see is the clip you get
+
+A 1080p cut used to come out at ~12 Mbit/s against a 2–5 Mbit/s source, so the
+"≈ 44 MB" the Cut panel showed for a 2½-minute clip landed as 166 MB.
+
+- **Cuts are bitrate-targeted now** (ABR with a peak cap, the same approach the
+  downloader's H.264 conversion uses) instead of a fixed CRF. The target is
+  derived from the source stream's own bitrate, the codec it is in (VP9/AV1/HEVC
+  need more bits than H.264 for the same picture) and the chosen level, and the
+  estimate in the Cut panel is computed from those exact numbers — so the size
+  shown before cutting is the size you get.
+- **Three levels**, `"cut_quality"` in config.json: **High** (editing/archiving),
+  **Balanced** (default — visually the same for sharing, roughly half the size),
+  **Small** (a little softer on fine detail). The CRF table stays as the fallback
+  when a source bitrate is unknown. Exposed in Settings → Cutter.
+- **Hardware H.264** (NVENC / Quick Sync / AMF) is picked once per process by a
+  3-frame test encode, with libx264 as the guaranteed fallback — a long 1440p/4K
+  cut no longer pins the CPU.
+- **Up to 2 s of dead time removed from every cut**: the stall watchdog naps on an
+  Event instead of `sleep(2)`, so it wakes the moment ffmpeg exits.
+- **The extension's Cut tab** shows the same estimate, from the same numbers.
+
+## Unreleased — Downloads: a shorter ladder, fewer dead ends
+
+- The client ladder is down from 12 rungs to 5. With a JS runtime and PO tokens
+  required before any download, `android`/`ios` (DroidGuard), `visionos` and the
+  duplicates could only fail — each one a 2–6 s round trip on the failure path.
+- Cookie browsers trimmed to the stores that actually decrypt on Windows
+  (Firefox, Edge, Chrome, Brave); Chrome 127+ App-Bound Encryption refuses
+  yt-dlp outright, so walking the forks only added failing rungs.
+- The JS-runtime search is cached for 60 s and invalidated when deno is
+  installed or removed, so the first download after setup no longer re-scans.
+
+## Unreleased — smaller things
+
+- The onboarding tour is versioned (`TOUR_VERSION`): a redesigned tour shows
+  itself once more, even for installs whose config already said "seen". It also
+  gained a Downloads step and the arrow/Esc hint.
+- Search Archive: the groups listener uses the signal that actually fires
+  (`changed`), so the list refreshes after a rescrape.
+- Packaging: Chromium's debug resource packs and 52 of its 53 locale packs are
+  trimmed from the build (~130 MB). Installer is now ~235 MB.
+
+---
+
 ## Unreleased — "Part of this app has been blocked"
 
 Windows 11 Smart App Control refuses to run `bgutil-pot.exe`, the bundled PO Token helper,

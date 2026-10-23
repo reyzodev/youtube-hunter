@@ -431,25 +431,31 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # rung that is really a duplicate (`tv_embedded` was exactly that; it is NOT a
 # client in this yt-dlp build).
 #
-# Order: richest format list first (yt-dlp's multi-client default sees the most
-# streams), then the clients that bypass a web-side block, then the narrow
-# ones. Callers that must not trade away a picked resolution still gate every
-# rung on the formats it can actually see, so this order costs speed at worst,
-# never quality.
+# v1.0.1 — SLIMMED. The app now REQUIRES a JS runtime (deno) and the PO Token
+# helper (bgutil-pot) before any download starts (download_engine_missing), so
+# the web-family clients get real BotGuard tokens and the JS challenge is
+# solved. That makes most of the old 12-rung ladder dead weight: `android` and
+# `ios` need DroidGuard / iOSGuard tokens the helper cannot mint (they 403 on
+# the CDN now), `web` / `tv_simply` are already inside yt-dlp's default set,
+# and `visionos` never answered anywhere. Every dead rung was a full player-
+# response + JS-challenge round trip (2-6 s) on the failure path — a blocked
+# video walked ~20 of them before giving up.
+#
+# What is left, in order: the default multi-client set (richest list), then
+# the token-free / token-backed clients that each sit on a DIFFERENT block
+# list. Callers still gate every rung on the formats it can actually see, so
+# this order costs speed at worst, never quality.
 CLIENT_LADDER = (
-    [],                              # yt-dlp defaults (tv, web, mweb, android, ios)
-    ["ios", "mweb", "web_safari"],   # broad non-web set
-    ["android"],                     # classic bypass client
-    ["android_vr"],                  # separate key/quota from `android`
-    ["tv"],                          # TV key — a different block list again
-    ["ios"],
-    ["web_safari"],
-    ["mweb"],
-    ["web"],
-    ["tv_simply"],
-    ["web_embedded"],
-    ["visionos"],
+    [],                              # yt-dlp defaults (+ PO tokens via bgutil)
+    ["tv"],                          # TV key — needs no PO token
+    ["web_safari"],                  # HLS-capable web client, token-backed
+    ["android_vr"],                  # separate key, no PO token needed
+    ["mweb"],                        # mobile web, token-backed
 )
+
+# Clients that keep answering when the web side is blocked — used by the
+# non-fragmented and progressive fallback rungs. Both need no PO token.
+BYPASS_CLIENTS = (["android_vr"], ["tv"])
 
 # ── "thin" format lists + the sticky client (v3.41.2) ───────────────────────
 # On some networks (seen on Belgian and other VPN/datacenter exits) YouTube
@@ -514,8 +520,10 @@ def client_ladder():
 # (browser running) or undecryptable (App-Bound Encryption on Chrome 127+), so
 # the ladder tries all of them and Firefox — whose store has neither problem —
 # is the one most likely to succeed.
-_COOKIE_BROWSERS = ("firefox", "chrome", "edge", "brave", "vivaldi",
-                    "chromium", "opera")
+# v1.0.1: trimmed to the stores that actually decrypt on Windows. Chrome 127+
+# (and every Chromium fork that adopted App-Bound Encryption) refuses yt-dlp
+# outright, so walking vivaldi/chromium/opera only added failing rungs.
+_COOKIE_BROWSERS = ("firefox", "edge", "chrome", "brave")
 
 
 def friendly_extract_error(err_text):
@@ -938,6 +946,7 @@ def _probe_attempts(cookies_browser):
 _PROBE_CACHE_TTL_S = 15 * 60
 _PROBE_CACHE_MAX = 12
 _probe_cache = {}               # key -> (monotonic_ts, info)
+_PROBE_TAG = "_yth_probe"       # {clients, cookies, dashy} of a cached answer
 _probe_cache_lock = threading.Lock()
 
 
@@ -1084,6 +1093,11 @@ def fetch_probe_info(url, proxy_url="", cookies_browser="", use_cache=True):
             if fallback is not None:
                 log_crash(f"quality probe: thin list ({fallback[0]}p) upgraded to "
                           f"{best_px}p by client {attempt['clients'] or 'default'}")
+            # How this answer was obtained, so the download can reuse it as
+            # its first rung's pre-flight instead of asking YouTube again.
+            info[_PROBE_TAG] = {"clients": attempt["clients"],
+                                "cookies": attempt["cookies"],
+                                "dashy": bool(attempt["dashy"])}
             _probe_cache_put(ckey, info)
             return info, ""
         # Thin: keep it in hand, keep looking.
@@ -1643,7 +1657,7 @@ def channel_meta_from_info(info):
     }
 
 
-def _rung_preflight(yt_dlp, url, base_opts, attempt):
+def _rung_preflight(yt_dlp, url, base_opts, attempt, cached_info=None):
     """One metadata call that answers everything the rung needs to know up front.
 
     Returns a dict:
@@ -1701,7 +1715,17 @@ def _rung_preflight(yt_dlp, url, base_opts, attempt):
         probe_opts["cookiesfrombrowser"] = (attempt["cookies"],)
     try:
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            if cached_info is not None:
+                # v1.0.1: the quality picker (or "Best available"'s height
+                # check) already extracted this video with this very client
+                # moments ago. Re-run only the local format SELECTION on that
+                # answer — no network, no JS challenge, no PO token — instead
+                # of a second full extraction before the first byte.
+                for k in _STALE_PICK_KEYS:
+                    cached_info.pop(k, None)
+                info = ydl.process_ie_result(cached_info, download=False)
+            else:
+                info = ydl.extract_info(url, download=False)
     except Exception:   # noqa: BLE001 — a failed probe must never block a rung
         return blank
     if not info:
@@ -2293,6 +2317,64 @@ def _needs_editor_conversion(vcodec):
     return bool(v) and v != _EDITOR_VCODEC and v in _EDITOR_UNREADABLE
 
 
+def _run_editor_encode(ffmpeg, src, out_path, v_args, a_args, dur,
+                       on_progress, should_cancel):
+    """One ffmpeg pass of the editor conversion. Returns the exit code, or
+    DOWNLOAD_CANCELLED when the user stopped it."""
+    args = [ffmpeg, "-hide_banner", "-y", "-i", src, *v_args, *a_args,
+            "-movflags", "+faststart",
+            "-progress", "pipe:1", "-nostats", "-v", "error", out_path]
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True,
+                                encoding="utf-8", errors="replace", bufsize=1,
+                                creationflags=flags)
+    except Exception:                 # noqa: BLE001
+        return 1
+    last_emit = 0.0
+    try:
+        for line in proc.stdout or []:
+            line = (line or "").strip()
+            if should_cancel is not None and should_cancel():
+                proc.kill()
+                # reap it first: on Windows the half-written file stays locked
+                # until ffmpeg has really exited
+                try:
+                    proc.wait(timeout=5)
+                except Exception:     # noqa: BLE001
+                    pass
+                _remove_quietly(out_path)
+                return DOWNLOAD_CANCELLED
+            if not line.startswith("out_time_ms="):
+                continue
+            try:
+                done_us = int(line.split("=", 1)[1])
+            except ValueError:
+                continue
+            if dur > 0 and on_progress:
+                now = time.monotonic()
+                if now - last_emit > 0.25:      # ~4/sec, like the cutter
+                    last_emit = now
+                    on_progress(max(0, min(99, int(done_us / 1e6 / dur * 100))))
+        # a generous multiple of the clip's length, not a fixed hour: a hung
+        # ffmpeg used to hold the row open and read as "stuck on Merging"
+        proc.wait(timeout=max(180.0, float(dur or 0.0) * 10.0))
+    except Exception:                 # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:             # noqa: BLE001
+            pass
+        return 1
+    finally:
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except Exception:             # noqa: BLE001
+            pass
+    return proc.returncode
+
+
 def _convert_for_editors(ffmpeg_dir, filepath, quality, _status, on_progress,
                          should_cancel, src_vkbps=0, src_acodec=""):
     """Re-encode a freshly downloaded file to H.264/AAC MP4.
@@ -2347,84 +2429,52 @@ def _convert_for_editors(ffmpeg_dir, filepath, quality, _status, on_progress,
     # the size shown before the download is the size after it, within a few %.
     # CRF stays as the fallback when the source bitrate is unknown.
     target = _editor_target_kbps(src_vkbps, vcodec)
-    if target:
-        v_args = ["-c:v", "libx264", "-preset", "veryfast",
-                  "-b:v", f"{target}k", "-maxrate", f"{int(target * 1.5)}k",
-                  "-bufsize", f"{target * 2}k"]
-    else:
-        v_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
     # AAC is already what an editor wants — copy it instead of re-encoding
     # (no generation loss, and its size is known exactly).
     if _acodec_family(src_acodec) == "aac":
         a_args = ["-c:a", "copy"]
     else:
         a_args = ["-c:a", "aac", "-b:a", f"{_EDITOR_AUDIO_KBPS}k"]
-    args = [ffmpeg, "-hide_banner", "-y",
-            "-i", filepath,
-            *v_args,
-            "-pix_fmt", "yuv420p",
-            *a_args,
-            "-movflags", "+faststart",
-            "-progress", "pipe:1", "-nostats", "-v", "error",
-            out_path]
-    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    # v1.0.1: the GPU's H.264 encoder (NVENC / Quick Sync / AMF) when this PC
+    # has a working one — the same once-per-process probe the cutter uses —
+    # with libx264 as the guaranteed second try. A 4K VP9 → H.264 conversion
+    # was the single slowest step of an MP4 download.
     try:
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                errors="replace", bufsize=1,
-                                creationflags=flags)
-    except Exception as exc:          # noqa: BLE001
-        return filepath, False, str(exc)
-
-    last_emit = 0.0
-    try:
-        import time as _time
-        for line in proc.stdout or []:
-            line = (line or "").strip()
-            if not line.startswith("out_time_ms="):
-                continue
-            try:
-                done_us = int(line.split("=", 1)[1])
-            except ValueError:
-                continue
-            if dur > 0 and on_progress:
-                pct = max(0, min(99, int(done_us / 1e6 / dur * 100)))
-                now = _time.monotonic()
-                if now - last_emit > 0.25:      # ~4/sec, like the cutter
-                    last_emit = now
-                    on_progress(pct)
-            if should_cancel is not None and should_cancel():
-                proc.kill()
-                # reap it first: on Windows the half-written file stays locked
-                # until ffmpeg has really exited, so remove() used to fail and
-                # leave a broken partial file behind
-                try:
-                    proc.wait(timeout=5)
-                except Exception:
-                    pass
-                try:
-                    os.remove(out_path)
-                except OSError:
-                    pass
-                return filepath, False, DOWNLOAD_CANCELLED
-        # A generous multiple of the clip's length (a veryfast encode runs
-        # ~5-8x real time), not a fixed hour: a hung ffmpeg used to hold the
-        # row open for an hour and read as "stuck on Merging".
-        budget = max(180.0, float(dur or 0.0) * 10.0)
-        proc.wait(timeout=budget)
-    except Exception as exc:          # noqa: BLE001
-        proc.kill()
-        return filepath, False, str(exc)
-    finally:
+        from app.core.cutter import video_encoders
+        encoders = video_encoders(ffmpeg)
+    except Exception:                 # noqa: BLE001
+        encoders = [("libx264", [])]
+    rc_final = 1
+    for enc_name, enc_args in encoders:
+        if enc_name == "libx264":
+            if target:
+                v_args = ["-c:v", "libx264", "-preset", "veryfast",
+                          "-b:v", f"{target}k", "-maxrate", f"{int(target * 1.5)}k",
+                          "-bufsize", f"{target * 2}k", "-pix_fmt", "yuv420p"]
+            else:
+                v_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                          "-pix_fmt", "yuv420p"]
+        elif target:
+            # bitrate-targeted like the CPU path, so the picker's size holds
+            pix = enc_args[enc_args.index("-pix_fmt") + 1] if "-pix_fmt" in enc_args else "yuv420p"
+            v_args = ["-c:v", enc_name, "-b:v", f"{target}k",
+                      "-maxrate", f"{int(target * 1.5)}k",
+                      "-bufsize", f"{target * 2}k", "-pix_fmt", pix]
+        else:
+            v_args = list(enc_args)
+        rc = _run_editor_encode(ffmpeg, filepath, out_path, v_args, a_args,
+                                dur, on_progress, should_cancel)
+        if rc == DOWNLOAD_CANCELLED:
+            return filepath, False, DOWNLOAD_CANCELLED
+        rc_final = rc
+        if rc == 0 and os.path.isfile(out_path):
+            break
         try:
-            if proc.stdout:
-                proc.stdout.close()
-            if proc.stderr:
-                proc.stderr.close()
-        except Exception:             # noqa: BLE001
+            if os.path.isfile(out_path):
+                os.remove(out_path)
+        except OSError:
             pass
-
-    if proc.returncode != 0 or not os.path.isfile(out_path):
+    if rc_final != 0 or not os.path.isfile(out_path):
         try:
             if os.path.isfile(out_path):
                 os.remove(out_path)
@@ -2490,6 +2540,31 @@ def _download_from_preflight(ydl, url, pre_info, bytes_seen, should_cancel):
             log_crash("download: reusing the pre-flight info failed, "
                       "re-extracting: " + str(exc)[:300])
     return ydl.extract_info(url, download=True)
+
+
+_ENGINE_REFRESH = {"done": False, "module": None}
+_ENGINE_REFRESH_LOCK = threading.Lock()
+
+
+def _refresh_engine_once(_status=None):
+    """Fetch the newest yt-dlp wheel into the runtime dir and load it — at most
+    once per process. Returns the fresh module, or None when nothing newer
+    could be loaded. Concurrent callers wait for the one refresh in flight
+    instead of starting their own."""
+    with _ENGINE_REFRESH_LOCK:
+        if _ENGINE_REFRESH["done"]:
+            return _ENGINE_REFRESH["module"]
+        _ENGINE_REFRESH["done"] = True
+        if _status:
+            _status(tr("Updating downloader…"))
+        try:
+            from app.core.runtime_deps import update_yt_dlp, reload_yt_dlp
+            ok, _ver = update_yt_dlp()
+            if ok:
+                _ENGINE_REFRESH["module"] = reload_yt_dlp()
+        except Exception as exc:      # noqa: BLE001 — refresh is best-effort
+            log_crash("engine refresh failed: " + str(exc)[:300])
+        return _ENGINE_REFRESH["module"]
 
 
 def download_video(url, target_dir, quality, on_status=None, on_progress=None,
@@ -2746,7 +2821,7 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
         # old ["ios", "mweb", "web_safari"] pair: a fallback pass is only reached
         # when the web-side clients already failed, so pinning those again made
         # the pass a guaranteed no-op.
-        bypass_clients = (["android"], ["android_vr"], ["tv"])
+        bypass_clients = BYPASS_CLIENTS
         if not quality["audio_only"]:
             attempts.append({"cookies": cookies_browser or None,
                              "clients": None, "loose": False, "dashy": False})
@@ -2766,6 +2841,24 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                 attempts.append({"cookies": None, "clients": clients,
                                  "loose": True, "dashy": False})
 
+        # v1.0.1: the picker's extraction is reused as the first rung's
+        # pre-flight when it is still fresh (see _rung_preflight), and the
+        # identical uncached rung is dropped so a stale answer can't cost the
+        # same client twice — a reuse that fails re-extracts that client
+        # fresh anyway (_download_from_preflight).
+        cached_probe = _probe_cache_get(
+            _probe_cache_key(url, proxy_url, cookies_browser))
+        tag = (cached_probe or {}).get(_PROBE_TAG) or {}
+        if cached_probe and tag.get("dashy"):
+            want_c = tag.get("clients")
+            want_k = tag.get("cookies") or None
+            attempts = [a for a in attempts
+                        if not (a.get("dashy") and not a.get("loose")
+                                and (a.get("cookies") or None) == want_k
+                                and (a.get("clients") or []) == (want_c or []))]
+            attempts.insert(0, {"cookies": want_k, "clients": want_c,
+                                "loose": False, "dashy": True,
+                                "cached": cached_probe})
         last_err = ""
         refreshed = False
         cookie_db_locked = False   # browser was open and locked its cookie DB
@@ -2827,7 +2920,8 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
             # never has to guess mid-transfer. A rung whose client can only see,
             # say, 360p is skipped outright instead of downloading a 360p file,
             # measuring it, deleting it and moving on.
-            pf = _rung_preflight(yt_dlp, url, opts, attempt)
+            pf = _rung_preflight(yt_dlp, url, opts, attempt,
+                                 cached_info=attempt.pop("cached", None))
             best_px = pf["best_px"]
             # The probe already fetched the video's metadata, so it knows the
             # channel. Hand it over now rather than at the end of the transfer,
@@ -2966,46 +3060,17 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                         continue
                 if not _is_retryable(last_err) or is_last:
                     break
-                # bot/403 specifically: refresh yt-dlp once, then keep going
-                # down the ladder with the fresher extractor code.
+                # bot/403 specifically: refresh yt-dlp, then keep going down
+                # the ladder with the fresher extractor code. v1.0.1: ONCE PER
+                # PROCESS (was once per download — on a flagged network every
+                # blocked download re-fetched the PyPI wheel), and always via
+                # the runtime-dir wheel instead of a `pip install` subprocess
+                # that silently rewrote the developer's environment.
                 if _is_bot_or_403(last_err) and not refreshed:
                     refreshed = True
-                    _status(tr("Updating downloader…"))
-                    if not getattr(sys, "frozen", False):
-                        try:
-                            # bounded + windowless: a stalled PyPI used to
-                            # freeze the download row forever
-                            subprocess.run(
-                                [sys.executable, "-m", "pip", "install",
-                                 "--upgrade", "yt-dlp"],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                check=True, timeout=120,
-                                creationflags=(subprocess.CREATE_NO_WINDOW
-                                               if sys.platform == "win32" else 0))
-                        except Exception:
-                            pass
-                    else:
-                        # Frozen build: `pip install --upgrade` can't run
-                        # (sys.executable is the app exe). Fetch the newest
-                        # wheel into the user-data runtime dir instead.
-                        try:
-                            from app.core.runtime_deps import update_yt_dlp
-                            update_yt_dlp()
-                        except Exception:
-                            pass
-                    # …and USE it in THIS run. The update used to be picked up
-                    # on the next launch only, so the very download that
-                    # triggered it still failed with the stale extractor — which
-                    # is why a machine could stay broken for a whole session and
-                    # then "magically" start working after a restart.
-                    try:
-                        from app.core.runtime_deps import reload_yt_dlp
-                        fresh = reload_yt_dlp()
-                        if fresh is not None:
-                            yt_dlp = fresh
-                    except Exception:      # noqa: BLE001 — refresh is best-effort
-                        pass
+                    fresh = _refresh_engine_once(_status)
+                    if fresh is not None:
+                        yt_dlp = fresh
                 # Browser cookies are the ONLY thing that gets past a real bot
                 # check or a CDN 403, so they are appended to the ladder here —
                 # on demand, once YouTube has actually blocked us — rather than
@@ -3026,7 +3091,9 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                     # download with the misleading "close your browser" message.
                     # These no-cookie client rungs run after them, so the ladder
                     # always ends on a rung that can actually succeed.
-                    for clients in ([], ["android"], ["android_vr"], ["tv"]):
+                    # (only the rungs that may answer differently after
+                    # the engine refresh above — not the whole ladder again)
+                    for clients in ([], ["tv"]):
                         attempts.append({"cookies": None, "clients": clients,
                                          "loose": False, "dashy": True})
                 nxt = attempts[i + 1] if i + 1 < len(attempts) else None

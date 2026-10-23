@@ -80,6 +80,12 @@ _AUTOSAVE_LABELS = ["Every 100 videos", "Every 500 videos", "Every 1000 videos",
 # Browser cookie sources for yt-dlp (index 0 = none).
 _COOKIE_VALUES = ["", "chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi"]
 _COOKIE_LABELS = ["None", "Chrome", "Edge", "Firefox", "Brave", "Chromium", "Opera", "Vivaldi"]
+# Re-encode level for clips made by the Cutter (and the extension's Cut panel).
+# Index-aligned; the strings are the `cut_quality` values app.core.cutter reads
+# straight from config.json on every cut, so a change applies to the next cut
+# with no restart. "balanced" is the default there too.
+_CUT_QUALITY_VALUES = ["high", "balanced", "small"]
+_CUT_QUALITY_DEFAULT = "balanced"
 # NOTE: there is no "watch videos" setting any more. Video watching used to be an
 # opt-in count here (0 / 10 / 15) and defaulted to OFF, which meant almost every
 # CSV report was written from numbers alone — the weaker of the two kinds of
@@ -135,6 +141,8 @@ class SettingsVM(QObject):
         self._thumb_folder = cfg.get("thumb_save_folder", "") or ""
         self._filename = cfg.get("output_filename", "youtube_data") or "youtube_data"
         self._cookies_browser = cfg.get("yt_cookies_browser", "") or ""
+        cq = str(cfg.get("cut_quality", _CUT_QUALITY_DEFAULT) or "").lower()
+        self._cut_quality = cq if cq in _CUT_QUALITY_VALUES else _CUT_QUALITY_DEFAULT
 
         # ── AI providers ──
         # A LIST of saved provider profiles plus per-feature routing (which
@@ -200,6 +208,7 @@ class SettingsVM(QObject):
             "thread_count": self._thread_count,
             "transcripts": self._transcripts_enabled,
             "cookies": self._cookies_browser,
+            "cut_quality": self._cut_quality,
             "ai": self._ai_sig(),
         }
 
@@ -287,6 +296,7 @@ class SettingsVM(QObject):
         self._thread_count = c["thread_count"]
         self._transcripts_enabled = c["transcripts"]
         self._cookies_browser = c["cookies"]
+        self._cut_quality = c["cut_quality"]
         self._ai = copy.deepcopy(self._ai_clean)
         if self._ai_open and not self._prof(self._ai_open):
             self._ai_open = ""
@@ -427,6 +437,22 @@ class SettingsVM(QObject):
         i = max(0, min(len(_COOKIE_VALUES) - 1, int(i)))
         self._cookies_browser = _COOKIE_VALUES[i]
         self.changed.emit()
+
+    @Property(int, notify=changed)
+    def cutQualityIndex(self):
+        """0 = high, 1 = balanced (default), 2 = small."""
+        try:
+            return _CUT_QUALITY_VALUES.index(self._cut_quality)
+        except ValueError:
+            return _CUT_QUALITY_VALUES.index(_CUT_QUALITY_DEFAULT)
+
+    @cutQualityIndex.setter
+    def cutQualityIndex(self, i):
+        i = max(0, min(len(_CUT_QUALITY_VALUES) - 1, int(i)))
+        v = _CUT_QUALITY_VALUES[i]
+        if v != self._cut_quality:
+            self._cut_quality = v
+            self.changed.emit()
 
     # ═════════════════════════════════════════════════════════════════
     #  AI providers — profiles, the default, and per-feature routing
@@ -1195,6 +1221,7 @@ class SettingsVM(QObject):
             "thread_count": self._thread_count,
             "transcripts_enabled": self._transcripts_enabled,
             "yt_cookies_browser": self._cookies_browser,
+            "cut_quality": self._cut_quality,
         })
         # the AI block saves itself, but a Save writes it too (cheap, and it
         # means one Save is always a complete snapshot of the page)

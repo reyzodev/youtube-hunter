@@ -566,6 +566,8 @@ Item {
             C.AppText {
                 text: root.shownStep ? root.shownStep.body : ""
                 color: Theme.on_surface_var
+                maximumLineCount: 6
+                elide: Text.ElideRight
                 font.pixelSize: Tokens.fontBody
                 lineHeight: 1.5
                 wrapMode: Text.Wrap
@@ -583,7 +585,8 @@ Item {
                 Repeater {
                     model: [
                         { icon: "route", text: I18n.tr("{n} stops").replace("{n}", Math.max(0, root.count - 1)) },
-                        { icon: "hourglass_empty", text: I18n.tr("about a minute") }
+                        { icon: "hourglass_empty", text: I18n.tr("about a minute") },
+                        { icon: "command", text: I18n.tr("← → Esc") }
                     ]
                     Rectangle {
                         required property var modelData
