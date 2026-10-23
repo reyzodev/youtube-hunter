@@ -32,7 +32,7 @@ It is a native Windows application (Python + Qt Quick/QML). Everything runs on y
 2. Run it. It installs **per user** in `%LOCALAPPDATA%\Programs\YouTube Hunter` — no administrator prompt, no UAC, nothing written to `Program Files`.
 3. Launch **YouTube Hunter** from the Start menu or the desktop shortcut.
 
-No Python, no pip, no Visual C++ redistributable and no internet connection is needed to install or start the app: the whole runtime ships inside the installer (~170 MB), including the JavaScript runtime and the PO Token helper that YouTube downloads need.
+No Python, no pip, no Visual C++ redistributable and no internet connection is needed to install or start the app: the whole runtime ships inside the installer (~235 MB), including the JavaScript runtime, the PO Token helper and the embedded browser the Support window uses.
 
 > **SmartScreen:** the installer is not code-signed, so Windows may show *"Windows protected your PC"* the first time. Choose **More info → Run anyway**. A code-signing certificate is the only way to remove that prompt.
 

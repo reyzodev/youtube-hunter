@@ -6,7 +6,7 @@
 | | |
 |---|---|
 | **OS** | Windows 10 **version 1809 (build 17763)** or newer, or Windows 11 — **64-bit only** |
-| **Disk** | ~600 MB after install (the installer itself is ~170 MB) |
+| **Disk** | ~780 MB after install (the installer itself is ~235 MB) |
 | **RAM** | 4 GB minimum, 8 GB recommended for downloads + cutting at the same time |
 | **Admin rights** | **not required** — the default install is per-user |
 | **Python / pip / Visual C++** | **not required** — everything ships inside |
