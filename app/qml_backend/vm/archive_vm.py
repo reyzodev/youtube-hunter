@@ -39,15 +39,19 @@ from app.core.download import (
     is_cancelled, quality_by_key, quality_display_label,
     quality_storage_key, request_cancel, with_audio_lang, with_container)
 from app.core.exports import write_export
-from app.core.niche.config import NICHE_PAGE_SIZE, NICHE_SORTS_UI, NICHE_TIMEFRAMES
+from app.core.niche.config import (
+    NICHE_CHANNEL_AGES, NICHE_CHANNEL_UPLOADS, NICHE_DURATIONS, NICHE_PAGE_SIZE,
+    NICHE_PER_CHANNEL, NICHE_SORTS_UI, NICHE_TIMEFRAMES)
 from app.core.niche.helpers import (
     fmt_duration, format_multiplier, is_gem_row, parse_human_number)
-from app.core.niche.search import apply_niche_filters, compute_niche_metrics
+from app.core.niche.search import (apply_niche_filters, cap_per_channel,
+                                   compute_niche_metrics)
 from app.core.niche.live_stats import (LiveStatsError, STALE_AFTER_S,
                                        is_stale, refresh_rows_live,
                                        stats_age_s, youtube_api_keys)
 from app.core.youtube_api import ScrapeCancelled
-from app.core.niche.sorting import sort_archive_quick, sort_niche_rows
+from app.core.niche.sorting import (parse_human_float, sort_archive_quick,
+                                    sort_niche_rows)
 from app.core.utils import (
     days_ago_str, video_download_dir, humanize_count, local_path_from_url,
     open_external_url)
@@ -66,6 +70,39 @@ from app.qml_backend.desktop_notifier import announce, announce_download
 # "Best Finds · Views ÷ Subs" ladder rather than the old five-item list. Each
 # entry is (label, local_sort_key); sort_niche_rows knows every key.
 _SORTS = NICHE_SORTS_UI
+
+# Everything the "Filters" side sheet can set on an open section. The first
+# block are typed bounds (stored parsed, handed back humanized), the second
+# are picks stored as an index into the matching NICHE_* table, so a saved
+# section cuts exactly like the Niche Finder's own "Refine current results".
+_RANGE_NUM_KEYS = ("subs_min", "subs_max", "views_min", "views_max")
+_RANGE_FLOAT_KEYS = ("mult_min", "outlier_min", "vel_min", "eng_min")
+_RANGE_PICK_KEYS = {           # key → (table, ignored inside a channel section)
+    "duration":    (NICHE_DURATIONS, False),
+    "channel_age": (NICHE_CHANNEL_AGES, True),
+    "uploads":     (NICHE_CHANNEL_UPLOADS, True),
+    "per_channel": (NICHE_PER_CHANNEL, True),
+}
+# One channel = one subscriber count, one age, one upload total: these cuts
+# mean nothing there (the sheet hides them; this keeps stale values out).
+_CHANNEL_ONLY_KEYS = ("subs_min", "subs_max", "sort_subs", "mult_min")
+
+
+def _fmt_bound(v):
+    """1000 → '1K' · 2.5 → '2.5' · 4.0 → '4' — what the sheet shows back."""
+    if v is None:
+        return ""
+    if v >= 1000:
+        return humanize_count(v).replace(".0", "")
+    return f"{v:g}"
+
+
+def _pick_index(table, value):
+    try:
+        i = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return i if 0 <= i < len(table) else 0
 
 # v3.43c: a CHANNEL section is one channel's uploads, so every row shares the
 # same subscriber count — "Smallest Channel First" and "Smallest Channel ·
@@ -150,7 +187,7 @@ class ArchiveVM(QObject):
         # subscriber/view/format range set from the "Filter by range" flyout.
         self._detail_text = ""
         self._timeframe = len(NICHE_TIMEFRAMES) - 1   # default "All Time"
-        self._range = {}             # subs_min/max, views_min/max, format, sort_*
+        self._range = {}             # see _RANGE_KEYS below
 
         # per-row download state (video_id → {state, pct, text})
         self._downloads = {}
@@ -409,45 +446,62 @@ class ArchiveVM(QObject):
 
     @Property(bool, notify=detailChanged)
     def detailRangeActive(self):
-        """Whether the range flyout has any bound set — drives the filter
+        """Whether the Filters sheet has anything set — drives the filter
         button's active tint, same idea as the legacy _refresh_archive_range_btn."""
         f = self._range
-        return any(f.get(k) is not None for k in (
-            "subs_min", "subs_max", "views_min", "views_max",
-            "format", "sort_views", "sort_subs"))
+        if any(f.get(k) is not None for k in _RANGE_NUM_KEYS + _RANGE_FLOAT_KEYS
+               + ("format", "sort_views", "sort_subs")):
+            return True
+        return any(f.get(k) for k in _RANGE_PICK_KEYS)
 
     @Property("QVariantMap", notify=detailChanged)
     def detailRange(self):
-        """Current range values, so the flyout can prefill its fields when it
-        reopens (humanized numbers for the min/max boxes)."""
+        """Current sheet values, so it can prefill when it reopens (humanized
+        numbers for the min/max boxes, plain indices for the chip rows)."""
         f = self._range
         out = {}
-        for k in ("subs_min", "subs_max", "views_min", "views_max"):
+        for k in _RANGE_NUM_KEYS:
             v = f.get(k)
             out[k] = humanize_count(v) if v is not None else ""
+        for k in _RANGE_FLOAT_KEYS:
+            out[k] = _fmt_bound(f.get(k))
+        for k in _RANGE_PICK_KEYS:
+            out[k] = int(f.get(k) or 0)
         out["format"] = f.get("format") or "all"
         out["sort_views"] = f.get("sort_views") or ""
         out["sort_subs"] = f.get("sort_subs") or ""
         return out
 
-    @Slot(str, str, str, str, str, str, str)
-    def applyDetailRange(self, subs_min, subs_max, views_min, views_max,
-                         fmt, sort_views, sort_subs):
-        """Store the parsed range/format/sort choice from the flyout and
-        re-render. Empty strings clear that axis. `fmt` is all|long|short;
-        sort_* are ''|asc|desc."""
-        self._range = {
-            "subs_min": parse_human_number(subs_min),
-            "subs_max": parse_human_number(subs_max),
-            "views_min": parse_human_number(views_min),
-            "views_max": parse_human_number(views_max),
-            "format": None if (fmt or "all") == "all" else fmt,
-            "sort_views": sort_views or None,
-            "sort_subs": sort_subs or None,
-        }
+    @Slot("QVariantMap")
+    def applyDetailFilters(self, m):
+        """Store everything the Filters sheet sends in one go and re-render.
+        Missing / empty values clear that cut. Text bounds accept 1K, 2.5M …;
+        eng_min is typed as a percentage ("4" = 4 %)."""
+        m = dict(m or {})
+        fmt = str(m.get("format") or "all")
+        r = {k: parse_human_number(str(m.get(k) or "")) for k in _RANGE_NUM_KEYS}
+        for k in _RANGE_FLOAT_KEYS:
+            r[k] = parse_human_float(str(m.get(k) or "").replace("%", "").replace("×", "").replace("x", ""))
+        for k, (table, _ch) in _RANGE_PICK_KEYS.items():
+            r[k] = _pick_index(table, m.get(k))
+        r["format"] = None if fmt == "all" else fmt
+        r["sort_views"] = m.get("sort_views") or None
+        r["sort_subs"] = m.get("sort_subs") or None
+        self._range = r
         self._render_detail()
         # the toolbar's pills / segments / badge bind to detailRange & co.
         self.detailChanged.emit()
+
+    @Slot(str, str, str, str, str, str, str)
+    def applyDetailRange(self, subs_min, subs_max, views_min, views_max,
+                         fmt, sort_views, sort_subs):
+        """Legacy 7-argument entry point (subs/views/format/order only). Keeps
+        whatever else the Filters sheet has set."""
+        m = self.detailRange
+        m.update({"subs_min": subs_min, "subs_max": subs_max,
+                  "views_min": views_min, "views_max": views_max,
+                  "format": fmt, "sort_views": sort_views, "sort_subs": sort_subs})
+        self.applyDetailFilters(m)
 
     @Slot()
     def clearDetailRange(self):
@@ -1410,7 +1464,20 @@ class ArchiveVM(QObject):
             rows = [r for r in rows if r.get("_is_favorite")]
 
         # range + text + timeframe, all in one in-memory pass
-        filters = dict(self._range)
+        rng = self._range
+        filters = {k: rng.get(k) for k in _RANGE_NUM_KEYS
+                   + ("mult_min", "outlier_min", "vel_min", "format",
+                      "sort_views", "sort_subs")}
+        eng = rng.get("eng_min")
+        filters["eng_min"] = eng / 100.0 if eng is not None else None
+        dur = NICHE_DURATIONS[_pick_index(NICHE_DURATIONS, rng.get("duration"))]
+        filters["dur_min_s"], filters["dur_max_s"] = dur[1], dur[2]
+        filters["channel_max_age_days"] = NICHE_CHANNEL_AGES[
+            _pick_index(NICHE_CHANNEL_AGES, rng.get("channel_age"))][1]
+        filters["ch_videos_max"] = NICHE_CHANNEL_UPLOADS[
+            _pick_index(NICHE_CHANNEL_UPLOADS, rng.get("uploads"))][1]
+        per_channel = NICHE_PER_CHANNEL[
+            _pick_index(NICHE_PER_CHANNEL, rng.get("per_channel"))][1]
         filters["text"] = self._detail_text
         tf = NICHE_TIMEFRAMES[self._timeframe][1] if 0 <= self._timeframe < len(NICHE_TIMEFRAMES) else None
         filters["days"] = tf
@@ -1422,8 +1489,9 @@ class ArchiveVM(QObject):
         if is_channel:
             # one channel → subscriber bounds/sorts mean nothing (the flyout
             # hides them; this keeps a stale value from leaking through)
-            for k in ("subs_min", "subs_max", "sort_subs"):
+            for k in _CHANNEL_ONLY_KEYS + ("channel_max_age_days", "ch_videos_max"):
                 filters.pop(k, None)
+            per_channel = 0
         rows = apply_niche_filters(rows, filters)
 
         sort_views = filters.get("sort_views")
@@ -1434,6 +1502,10 @@ class ArchiveVM(QObject):
             sort_i = self._sort if self._sort in self._visible_sorts() else 0
             key = _SORTS[sort_i][1]
             rows = sort_niche_rows(rows, key)
+        # after the sort, so each channel keeps its BEST rows — a keyword
+        # section merged over many runs piles up one prolific channel
+        if per_channel:
+            rows = cap_per_channel(rows, per_channel)
 
         self._detail_filtered = rows
         if not keep_page:

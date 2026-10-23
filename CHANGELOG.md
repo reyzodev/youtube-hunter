@@ -7,6 +7,28 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Search Archive: filters on a saved section
+
+A saved section used to be read-only: the only knobs were the quick text box and
+the timeframe, and anything sharper meant going back to Niche Finder.
+
+- **A Filters sheet on any open section**, with the same vocabulary as Niche
+  Finder's "Refine current results": subscriber and view ranges, duration /
+  channel age / upload-count / sort picks, and minimum outlier, velocity and
+  engagement. The pipeline is the same code path (`apply_niche_filters` →
+  `sort_niche_rows`), so a saved section cuts exactly like the search it came
+  from — and the bounds that mean nothing for a single channel (subscriber
+  ranges, subscriber sorts) are hidden there instead of pretending to work.
+- **The active count is on the button**, so a section never looks empty because
+  of a filter you forgot about.
+- **Dialog backdrops fade instead of snapping.** The modal scrim had no
+  `Behavior on opacity`, so it appeared instantly and vanished in a single frame
+  while the card was still animating out — a stutter on every close. It now
+  fades both ways, and re-captures the frozen app behind it on each open, so the
+  second dialog does not show the app as it looked the first time.
+
+---
+
 ## Unreleased — Niche Finder: a country means that country's content
 
 Picking **Germany** used to return Indian uploads. `regionCode` only says "can be

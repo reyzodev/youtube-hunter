@@ -204,12 +204,26 @@ Item {
     readonly property int _tfLast: Math.max(0, (Archive.timeframeOptions || []).length - 1)
     readonly property var _range: Archive.detailRange || ({})
     readonly property string _format: page._range.format || "all"
+    // Short chip labels for the Filters sheet's pick rows. Index 0 of each
+    // NICHE_* table is "any", so these start at index 1.
+    readonly property var _durLabels: ["< 1 min", "1–3 min", "3–8 min", "8–20 min", "20–60 min", "1 h+"]
+    readonly property var _ageLabels: ["< 3 mo", "< 6 mo", "< 1 yr", "< 2 yr"]
+    readonly property var _upLabels: ["< 10", "< 30", "< 100", "< 300"]
+    readonly property bool _isChan: Archive.detailIsChannel
     readonly property int _rangeCount: {
         var r = page._range, n = 0
-        if ((r.subs_min || "") !== "" || (r.subs_max || "") !== "") n++
+        if (!page._isChan && ((r.subs_min || "") !== "" || (r.subs_max || "") !== "")) n++
         if ((r.views_min || "") !== "" || (r.views_max || "") !== "") n++
         if ((r.sort_views || "") !== "") n++
-        if ((r.sort_subs || "") !== "") n++
+        if (!page._isChan && (r.sort_subs || "") !== "") n++
+        if (!page._isChan && (r.mult_min || "") !== "") n++
+        if ((r.outlier_min || "") !== "") n++
+        if ((r.vel_min || "") !== "") n++
+        if ((r.eng_min || "") !== "") n++
+        if ((r.duration || 0) > 0) n++
+        if (!page._isChan && (r.channel_age || 0) > 0) n++
+        if (!page._isChan && (r.uploads || 0) > 0) n++
+        if (!page._isChan && (r.per_channel || 0) > 0) n++
         return n
     }
     readonly property var _activeFilters: {
@@ -232,17 +246,32 @@ Item {
             out.push({ k: "sv", icon: "sort", label: I18n.tr("Views") + (r.sort_views === "asc" ? "  ↑" : "  ↓") })
         if ((r.sort_subs || "") !== "")
             out.push({ k: "ss", icon: "sort", label: I18n.tr("Subs") + (r.sort_subs === "asc" ? "  ↑" : "  ↓") })
+        if ((r.outlier_min || "") !== "")
+            out.push({ k: "outlier_min", icon: "bolt", label: "≥ " + r.outlier_min + "× " + I18n.tr("channel avg") })
+        if (!page._isChan && (r.mult_min || "") !== "")
+            out.push({ k: "mult_min", icon: "trending_up", label: I18n.tr("Views ÷ subs") + " ≥ " + r.mult_min })
+        if ((r.vel_min || "") !== "")
+            out.push({ k: "vel_min", icon: "speed", label: "≥ " + r.vel_min + " " + I18n.tr("views/h") })
+        if ((r.eng_min || "") !== "")
+            out.push({ k: "eng_min", icon: "favorite", label: I18n.tr("Engagement") + " ≥ " + r.eng_min + "%" })
+        if ((r.duration || 0) > 0)
+            out.push({ k: "duration", icon: "schedule", label: page._durLabels[r.duration - 1] || "" })
+        if (!page._isChan && (r.channel_age || 0) > 0)
+            out.push({ k: "channel_age", icon: "user", label: I18n.tr("Channel") + " " + (page._ageLabels[r.channel_age - 1] || "") })
+        if (!page._isChan && (r.uploads || 0) > 0)
+            out.push({ k: "uploads", icon: "video", label: (page._upLabels[r.uploads - 1] || "") + " " + I18n.tr("uploads") })
+        if (!page._isChan && (r.per_channel || 0) > 0)
+            out.push({ k: "per_channel", icon: "filter_alt", label: r.per_channel === 1 ? I18n.tr("Best 1 per channel") : I18n.tr("Best 3 per channel") })
         return out
     }
 
     // Re-apply the range with some keys changed; everything else is kept.
     function applyRange(patch) {
-        var r = page._range
-        function pick(k) { return (patch[k] !== undefined) ? patch[k] : (r[k] || "") }
-        Archive.applyDetailRange(pick("subs_min"), pick("subs_max"),
-                                 pick("views_min"), pick("views_max"),
-                                 pick("format") || "all",
-                                 pick("sort_views"), pick("sort_subs"))
+        var r = page._range, m = {}
+        for (var k in r) m[k] = r[k]
+        for (var p in patch) m[p] = patch[p]
+        if (!m.format) m.format = "all"
+        Archive.applyDetailFilters(m)
     }
     function clearFilter(k) {
         if (k === "text") { detailSearch.text = ""; Archive.detailFilterText = "" }
@@ -253,6 +282,12 @@ Item {
         else if (k === "views") page.applyRange({ views_min: "", views_max: "" })
         else if (k === "sv") page.applyRange({ sort_views: "" })
         else if (k === "ss") page.applyRange({ sort_subs: "" })
+        else if (k === "outlier_min" || k === "mult_min" || k === "vel_min" || k === "eng_min") {
+            var p = {}; p[k] = ""; page.applyRange(p)
+        }
+        else if (k === "duration" || k === "channel_age" || k === "uploads" || k === "per_channel") {
+            var q = {}; q[k] = 0; page.applyRange(q)
+        }
     }
     function resetFilters() {
         detailSearch.text = ""
@@ -528,7 +563,7 @@ Item {
         }
     }
 
-    // "Ranges" trigger with a count badge.
+    // "Filters" trigger with a count badge.
     component RangeButton: AbstractButton {
         id: rb
         property int count: 0
@@ -541,7 +576,7 @@ Item {
         C.AppTooltip {
             visible: rbHover.hovered
             delay: 350
-            text: I18n.tr("Filter by subscriber and view range")
+            text: I18n.tr("Filters: ranges, outlier signals, length, channel")
         }
         background: Rectangle {
             radius: Tokens.radiusMd
@@ -565,7 +600,7 @@ Item {
                 }
                 C.AppText {
                     visible: !rb.compact
-                    text: I18n.tr("Ranges")
+                    text: I18n.tr("Filters")
                     weight: Tokens.weightDemiBold
                     font.pixelSize: Tokens.fontBody
                     color: rb.count > 0 ? Theme.primary : Theme.on_surface
@@ -2480,46 +2515,157 @@ Item {
 
     // ═══════════════════════ dialogs & overlays ═══════════════════════
 
-    // Ranges — a side sheet that slides in from the trailing edge.
+    // Filters — a side sheet that glides in from the trailing edge.
+    //
+    // Grew from "subs + views" into the archive's full refine set,
+    // the same cuts the Niche Finder's "Refine current results" offers, minus
+    // the ones that make no sense on a saved library (Category / Country were
+    // already decided by the search itself). Sections a channel section can't
+    // use (subscribers, views ÷ subs, channel age / uploads / per channel) hide.
+    //
+    // Motion (the old one stuttered):
+    //   • the sheet moves through a Translate on its root item, NOT through the
+    //     popup's x — animating Popup.x re-runs the positioner every frame and
+    //     broke the x binding (a resized window left the sheet stranded);
+    //   • while it moves, the whole card is one cached layer, so each frame is
+    //     a single textured quad instead of re-batching ~80 text/rect nodes
+    //     under a changing opacity;
+    //   • the backdrop is a frozen snapshot (re-captured on every open) — the
+    //     live, blurred, full-window capture was re-rendered every frame of the
+    //     slide because the archive grid behind it never sits still;
+    //   • Apply / Clear wait for the exit to finish before re-filtering, so the
+    //     grid rebuild (Python filter + 24 new cards) never lands mid-animation.
     Dialog {
         id: rangeSheet
         modal: true
         parent: Overlay.overlay
         padding: 0
-        width: Math.min(420, (parent ? parent.width : 800) - 24)
+        width: Math.min(440, (parent ? parent.width : 800) - 24)
         height: (parent ? parent.height : 600) - 24
         y: 12
-        readonly property real _restX: I18n.rtl ? 12 : ((parent ? parent.width : 800) - width - 12)
-        readonly property real _offX: I18n.rtl ? -width : (parent ? parent.width : 800)
-        x: _restX
+        x: I18n.rtl ? 12 : ((parent ? parent.width : 800) - width - 12)
 
+        // slide distance: a short, confident glide reads smoother than a full
+        // edge-to-edge run and hides nothing (the scrim fades in alongside)
+        readonly property real _travel: (I18n.rtl ? -1 : 1) * 72
+        property var _pending: null      // filters to apply once the exit ends
+
+        // sheet-local state (committed on Apply)
         property string sortViews: ""
         property string sortSubs: ""
+        property int durIdx: 0
+        property int ageIdx: 0
+        property int upIdx: 0
+        property int perCh: 0
+
+        readonly property bool _isChannel: Archive.detailIsChannel
+
+        // the slide offset, attached to the popup's root item (background's
+        // parent) once, so every part of the card — header, body, footer —
+        // moves as one
+        property Translate _shift: Translate { }
+        Component.onCompleted: {
+            var root = rangeSheet.background ? rangeSheet.background.parent : null
+            if (root) root.transform = [rangeSheet._shift]
+        }
+        function _layer(on) {
+            var root = rangeSheet.background ? rangeSheet.background.parent : null
+            if (!root) return
+            root.layer.smooth = true
+            root.layer.enabled = on
+        }
 
         function openSheet() {
-            var r = Archive.detailRange
+            var r = Archive.detailRange || ({})
             subsMin.text = r.subs_min || ""
             subsMax.text = r.subs_max || ""
             viewsMin.text = r.views_min || ""
             viewsMax.text = r.views_max || ""
+            multMin.text = r.mult_min || ""
+            outlierMin.text = r.outlier_min || ""
+            velMin.text = r.vel_min || ""
+            engMin.text = r.eng_min || ""
             sortViews = r.sort_views || ""
             sortSubs = r.sort_subs || ""
+            durIdx = r.duration || 0
+            ageIdx = r.channel_age || 0
+            upIdx = r.uploads || 0
+            perCh = r.per_channel || 0
+            sheetFlick.contentY = 0
+            _pending = null
             open()
         }
-        function apply() {
-            Archive.applyDetailRange(subsMin.text, subsMax.text, viewsMin.text, viewsMax.text,
-                                     page._format, rangeSheet.sortViews, rangeSheet.sortSubs)
-            rangeSheet.close()
+        function _collect() {
+            return {
+                subs_min: subsMin.text, subs_max: subsMax.text,
+                views_min: viewsMin.text, views_max: viewsMax.text,
+                mult_min: multMin.text, outlier_min: outlierMin.text,
+                vel_min: velMin.text, eng_min: engMin.text,
+                duration: durIdx, channel_age: ageIdx, uploads: upIdx, per_channel: perCh,
+                format: page._format, sort_views: sortViews, sort_subs: sortSubs
+            }
         }
+        function _clearFields() {
+            subsMin.text = ""; subsMax.text = ""; viewsMin.text = ""; viewsMax.text = ""
+            multMin.text = ""; outlierMin.text = ""; velMin.text = ""; engMin.text = ""
+            sortViews = ""; sortSubs = ""
+            durIdx = 0; ageIdx = 0; upIdx = 0; perCh = 0
+        }
+        // how many cuts are set in the sheet right now (live, before Apply)
+        readonly property int draftCount: {
+            var n = 0
+            if (!_isChannel && (subsMin.text !== "" || subsMax.text !== "")) n++
+            if (viewsMin.text !== "" || viewsMax.text !== "") n++
+            if (!_isChannel && multMin.text !== "") n++
+            if (outlierMin.text !== "") n++
+            if (velMin.text !== "") n++
+            if (engMin.text !== "") n++
+            if (durIdx > 0) n++
+            if (!_isChannel && ageIdx > 0) n++
+            if (!_isChannel && upIdx > 0) n++
+            if (!_isChannel && perCh > 0) n++
+            if (sortViews !== "") n++
+            if (!_isChannel && sortSubs !== "") n++
+            return n
+        }
+        function apply() {
+            _pending = _collect()
+            close()
+        }
+        function clearAll() {
+            _clearFields()
+            _pending = _collect()
+            close()
+        }
+        onClosed: {
+            _layer(false)
+            rangeSheet._shift.x = 0
+            if (_pending !== null) {
+                var m = _pending
+                _pending = null
+                Archive.applyDetailFilters(m)
+            }
+        }
+        onOpened: _layer(false)
 
-        Overlay.modal: C.DialogScrim { }
+        Overlay.modal: C.DialogScrim { frozen: true }
         enter: Transition {
-            NumberAnimation { property: "x"; from: rangeSheet._offX; to: rangeSheet._restX; duration: Tokens.durSlow; easing.type: Easing.OutCubic }
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Tokens.durMed }
+            SequentialAnimation {
+                ScriptAction { script: rangeSheet._layer(true) }
+                ParallelAnimation {
+                    NumberAnimation { target: rangeSheet._shift; property: "x"; from: rangeSheet._travel; to: 0; duration: 280; easing.type: Easing.OutQuint }
+                    NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200; easing.type: Easing.OutCubic }
+                }
+            }
         }
         exit: Transition {
-            NumberAnimation { property: "x"; from: rangeSheet._restX; to: rangeSheet._offX; duration: Tokens.durMed; easing.type: Easing.InCubic }
-            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Tokens.durMed }
+            SequentialAnimation {
+                ScriptAction { script: rangeSheet._layer(true) }
+                ParallelAnimation {
+                    NumberAnimation { target: rangeSheet._shift; property: "x"; from: 0; to: rangeSheet._travel * 0.6; duration: 170; easing.type: Easing.InCubic }
+                    NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 170; easing.type: Easing.InQuad }
+                }
+            }
         }
 
         background: Rectangle {
@@ -2547,7 +2693,7 @@ Item {
                     spacing: 0
                     Layout.fillWidth: true
                     C.AppText {
-                        text: I18n.tr("Filter by range")
+                        text: I18n.tr("Filters")
                         weight: Tokens.weightBold
                         font.pixelSize: Tokens.fontSubtitle
                         color: Theme.text_strong
@@ -2594,29 +2740,76 @@ Item {
                 verticalAlignment: Text.AlignVCenter
             }
         }
+        // one-of-many chip row; tapping the lit chip turns the cut off (0)
+        component PickChips: Flow {
+            id: pc
+            property var labels: []      // index 0 of the table ("Any") is implied
+            property int current: 0
+            signal picked(int index)
+            spacing: Tokens.space2
+            Repeater {
+                model: pc.labels
+                Preset {
+                    label: modelData
+                    on: pc.current === index + 1
+                    onClicked: pc.picked(on ? 0 : index + 1)
+                }
+            }
+        }
+        // section heading: glyph + title, with an optional one-line caption
+        component SheetHead: ColumnLayout {
+            id: sh
+            property string glyph: ""
+            property string title: ""
+            property string caption: ""
+            spacing: 2
+            Layout.fillWidth: true
+            Row {
+                spacing: Tokens.space2
+                C.IconGlyph { name: sh.glyph; size: 15; glyphColor: Theme.primary; anchors.verticalCenter: parent.verticalCenter }
+                C.AppText { text: sh.title; weight: Tokens.weightBold; font.pixelSize: Tokens.fontBody; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
+            }
+            C.AppText {
+                visible: sh.caption !== ""
+                text: sh.caption
+                font.pixelSize: Tokens.fontCaption
+                color: Theme.outline
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+        }
+        component SubLabel: C.AppText {
+            font.pixelSize: Tokens.fontCaption
+            weight: Tokens.weightDemiBold
+            color: Theme.on_surface_var
+        }
+        component SheetRule: Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 1
+            color: Theme.divider_h
+        }
 
         contentItem: Flickable {
             id: sheetFlick
             clip: true
             contentHeight: sheetCol.implicitHeight + Tokens.space5
             boundsBehavior: Flickable.StopAtBounds
+            C.SmoothWheel { flick: sheetFlick; step: 90 }
+            ScrollIndicator.vertical: ScrollIndicator { }
 
             ColumnLayout {
                 id: sheetCol
                 x: Tokens.space5
                 width: sheetFlick.width - Tokens.space5 * 2
-                spacing: Tokens.space6
+                spacing: Tokens.space5
 
+                // ── Audience ─────────────────────────────────────────
                 // subscribers (hidden for channel sections — one channel)
                 ColumnLayout {
-                    visible: !Archive.detailIsChannel
+                    visible: !rangeSheet._isChannel
                     Layout.fillWidth: true
                     spacing: Tokens.space3
-                    Row {
-                        spacing: Tokens.space2
-                        C.IconGlyph { name: "user"; size: 15; glyphColor: Theme.primary; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText { text: I18n.tr("Subscribers"); weight: Tokens.weightBold; font.pixelSize: Tokens.fontBody; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
-                    }
+                    SheetHead { glyph: "user"; title: I18n.tr("Subscribers") }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Tokens.space2
@@ -2647,7 +2840,7 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Tokens.space2
-                        C.AppText { text: I18n.tr("Order"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var; Layout.fillWidth: true }
+                        SubLabel { text: I18n.tr("Order"); Layout.fillWidth: true }
                         SegBar {
                             segHeight: 30
                             options: [ { label: I18n.tr("Off") }, { label: I18n.tr("Low → High") }, { label: I18n.tr("High → Low") } ]
@@ -2661,11 +2854,7 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Tokens.space3
-                    Row {
-                        spacing: Tokens.space2
-                        C.IconGlyph { name: "visibility"; size: 15; glyphColor: Theme.primary; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText { text: I18n.tr("Views"); weight: Tokens.weightBold; font.pixelSize: Tokens.fontBody; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
-                    }
+                    SheetHead { glyph: "visibility"; title: I18n.tr("Views") }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Tokens.space2
@@ -2691,7 +2880,7 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Tokens.space2
-                        C.AppText { text: I18n.tr("Order"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var; Layout.fillWidth: true }
+                        SubLabel { text: I18n.tr("Order"); Layout.fillWidth: true }
                         SegBar {
                             segHeight: 30
                             options: [ { label: I18n.tr("Off") }, { label: I18n.tr("Low → High") }, { label: I18n.tr("High → Low") } ]
@@ -2699,14 +2888,127 @@ Item {
                             onPicked: (i) => rangeSheet.sortViews = ["", "asc", "desc"][i]
                         }
                     }
+                    C.AppText {
+                        Layout.fillWidth: true
+                        text: I18n.tr("An order set here overrides the Sort menu until you turn it off.")
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.outline
+                        wrapMode: Text.Wrap
+                    }
                 }
 
-                C.AppText {
+                SheetRule { }
+
+                // ── Outlier signals — the reason anyone opens the archive ──
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: I18n.tr("An order set here overrides the Sort menu until you turn it off.")
-                    font.pixelSize: Tokens.fontCaption
-                    color: Theme.outline
-                    wrapMode: Text.Wrap
+                    spacing: Tokens.space3
+                    SheetHead {
+                        glyph: "bolt"
+                        title: I18n.tr("Outlier signals")
+                        caption: I18n.tr("Minimums. Leave a box empty to skip it.")
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: Tokens.space3
+                        rowSpacing: Tokens.space3
+                        C.LineField {
+                            id: outlierMin
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                            label: I18n.tr("× channel average")
+                            labelIcon: "bolt"
+                            hint: I18n.tr("Views against the channel's own typical video. The cleanest outlier signal: 5 = five times its usual.")
+                            placeholder: "5"
+                        }
+                        C.LineField {
+                            id: multMin
+                            visible: !rangeSheet._isChannel
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                            label: I18n.tr("Views ÷ subscribers")
+                            labelIcon: "trending_up"
+                            hint: I18n.tr("A small channel beating its own audience size. 10 = ten views per subscriber.")
+                            placeholder: "10"
+                        }
+                        C.LineField {
+                            id: velMin
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                            label: I18n.tr("Views / hour")
+                            labelIcon: "speed"
+                            hint: I18n.tr("Average views per hour since upload, as of the last refresh.")
+                            placeholder: "1K"
+                        }
+                        C.LineField {
+                            id: engMin
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                            label: I18n.tr("Engagement %")
+                            labelIcon: "favorite"
+                            hint: I18n.tr("(likes + comments) ÷ views. Videos under 1K views are skipped, their rate is noise.")
+                            placeholder: "4"
+                        }
+                    }
+                }
+
+                SheetRule { }
+
+                // ── Video length ──
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Tokens.space3
+                    SheetHead {
+                        glyph: "schedule"
+                        title: I18n.tr("Video length")
+                        caption: I18n.tr("8–20 min is where mid-roll ads start paying.")
+                    }
+                    // indices mirror NICHE_DURATIONS (0 = any length)
+                    PickChips {
+                        Layout.fillWidth: true
+                        labels: ["< 1 min", "1–3 min", "3–8 min", "8–20 min", "20–60 min", "1 h+"]
+                        current: rangeSheet.durIdx
+                        onPicked: (i) => rangeSheet.durIdx = i
+                    }
+                }
+
+                // ── Channel (keyword sections only) ──
+                SheetRule { visible: !rangeSheet._isChannel }
+                ColumnLayout {
+                    visible: !rangeSheet._isChannel
+                    Layout.fillWidth: true
+                    spacing: Tokens.space3
+                    SheetHead {
+                        glyph: "user"
+                        title: I18n.tr("Channel")
+                        caption: I18n.tr("A young channel with few uploads and a hit means the idea won, not the audience.")
+                    }
+                    SubLabel { text: I18n.tr("Channel age") }
+                    // indices mirror NICHE_CHANNEL_AGES (0 = any age)
+                    PickChips {
+                        Layout.fillWidth: true
+                        labels: ["< 3 mo", "< 6 mo", "< 1 yr", "< 2 yr"]
+                        current: rangeSheet.ageIdx
+                        onPicked: (i) => rangeSheet.ageIdx = i
+                    }
+                    SubLabel { text: I18n.tr("Total uploads"); Layout.topMargin: Tokens.space1 }
+                    // indices mirror NICHE_CHANNEL_UPLOADS (0 = any count)
+                    PickChips {
+                        Layout.fillWidth: true
+                        labels: ["< 10", "< 30", "< 100", "< 300"]
+                        current: rangeSheet.upIdx
+                        onPicked: (i) => rangeSheet.upIdx = i
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Tokens.space1
+                        spacing: Tokens.space2
+                        SubLabel { text: I18n.tr("Per channel"); Layout.fillWidth: true }
+                        // indices mirror NICHE_PER_CHANNEL
+                        SegBar {
+                            segHeight: 30
+                            options: [ { label: I18n.tr("All") }, { label: I18n.tr("Best 1") }, { label: I18n.tr("Best 3") } ]
+                            current: rangeSheet.perCh
+                            onPicked: (i) => rangeSheet.perCh = i
+                        }
+                    }
                 }
             }
         }
@@ -2728,15 +3030,14 @@ Item {
                     variant: "ghost"
                     iconName: "restart_alt"
                     text: I18n.tr("Clear")
-                    onClicked: {
-                        page.applyRange({ subs_min: "", subs_max: "", views_min: "", views_max: "", sort_views: "", sort_subs: "" })
-                        rangeSheet.close()
-                    }
+                    onClicked: rangeSheet.clearAll()
                 }
                 Item { Layout.fillWidth: true }
                 C.PrimaryButton {
                     iconName: "check"
-                    text: I18n.tr("Apply")
+                    text: rangeSheet.draftCount > 0
+                          ? I18n.tr("Apply · {n}").replace("{n}", rangeSheet.draftCount)
+                          : I18n.tr("Apply")
                     onClicked: rangeSheet.apply()
                 }
             }

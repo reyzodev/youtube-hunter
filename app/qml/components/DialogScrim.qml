@@ -69,6 +69,18 @@ Item {
     // keys off opacity.
     readonly property bool onScreen: opacity > 0.01
 
+    // Qt shows/hides a modal overlay by WRITING opacity 1 / 0 through
+    // QQmlProperty precisely so a QML Behavior can animate it — without one
+    // the backdrop snapped on and, worse, vanished in a single frame while the
+    // dialog was still animating out, which read as a stutter on every close.
+    Behavior on opacity {
+        NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic }
+    }
+
+    // A frozen backdrop is still re-captured once per open, otherwise the
+    // second open would show the app as it looked the first time.
+    onOnScreenChanged: if (onScreen && frozen) snapshot.scheduleUpdate()
+
     // The item to blur. Main.qml publishes its rounded shell as `blurSource`;
     // if that is ever missing this degrades to the plain dim layer alone.
     readonly property Item _src: {
