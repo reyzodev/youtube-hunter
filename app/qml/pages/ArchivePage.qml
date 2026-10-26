@@ -2360,6 +2360,16 @@ Item {
                     readonly property real cardW:
                         (App.railAnimating && _frozenW > 0) ? _frozenW
                         : (availW - columnSpacing * (columns - 1)) / columns
+                    // v3.55 perf: only the cards within one row of the
+                    // viewport are painted. All 24 stay alive for paging, but
+                    // compositing the ones far outside the scroll view was
+                    // the entire GPU cost of scrolling a section — each card
+                    // carries a layered thumbnail, a mask, a MultiEffect and
+                    // a 9-slice shadow. Opacity (not `visible`) is the off
+                    // switch so the Layout keeps its geometry and the grid
+                    // never reflows mid-scroll; a 0-opacity item is skipped
+                    // by the renderer entirely.
+                    readonly property real _paintPad: cardW * 9 / 16 + 320
                     Connections {
                         target: App
                         function onRailAnimatingChanged() {
@@ -2441,6 +2451,28 @@ Item {
                                 id: vcard
                                 width: parent.width
                                 height: parent.height
+                                // v3.55 perf: painted only while within one
+                                // card-row of the viewport. All 24 stay alive
+                                // for paging, but the ones far outside the
+                                // scroll view are skipped by the renderer.
+                                // Coordinates must come from the flickable's
+                                // contentItem (content space): mapping into the
+                                // flickable itself is viewport space, and
+                                // mixing the two hid every visible card.
+                                // Reading contentY keeps this bound to the
+                                // scroll position — mapToItem alone does not
+                                // register that dependency. Opacity, not
+                                // `visible`, so the Layout keeps its geometry.
+                                opacity: {
+                                    const fl = detailScroll.contentItem
+                                    const vh = detailScroll.height
+                                    if (!fl || vh <= 0) return 1
+                                    const pad = grid._paintPad
+                                    const viewY = fl.contentY
+                                    const top = cell.mapToItem(fl.contentItem, 0, 0).y
+                                    return (top + cell.height > viewY - pad
+                                            && top < viewY + vh + pad) ? 1 : 0
+                                }
                                 // v3.52: no hover effects while the grid is
                                 // scrolling — see ArchiveVideoCard.scrollIdle.
                                 scrollIdle: !detailScroll.gliding

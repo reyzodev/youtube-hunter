@@ -64,23 +64,25 @@ C.GlassPanel {
     implicitWidth: cardWidth
     implicitHeight: col.implicitHeight
     radius: Tokens.radiusXl
-    elevation: hovered ? 1.25 : 0.4
+    elevation: (hovered && scrollIdle) ? 1.25 : 0.4
     // v3.52 — the page drops this to false while its scroller is moving.
     // Scrolling a grid slides a new card under a pointer that is standing
-    // still, and every one of them used to light up: the cover zoomed over
-    // 720 ms (re-rendering this card's layered thumbnail + mask on every
-    // frame), the panel's 9-slice shadow re-tiled while its elevation
-    // animated, and the card lifted 4 px — all while it was already moving.
-    // That is what read as "the scroll is stiff". A card you merely scroll
-    // past was never a hover you meant; the state comes back the moment the
-    // view settles.
+    // still, and every one of them used to light up: the cover zoomed (re-
+    // rendering this card's layered thumbnail + mask on every frame), the
+    // panel's 9-slice shadow re-tiled while its elevation animated, and the
+    // card lifted 4 px — all while it was already moving. That is what read
+    // as "the scroll is stiff". A card you merely scroll past was never a
+    // hover you meant; the state comes back the moment the view settles.
+    // v3.55: the lift, cover zoom, elevation and quick actions now actually
+    // honour scrollIdle too — only the play disc / dim / glow did before, so
+    // the heaviest three kept firing mid-scroll.
     property bool scrollIdle: true
     hoverGlow: scrollIdle
     Behavior on elevation { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
 
     readonly property bool _motion: App.ambientMotion !== undefined ? App.ambientMotion : true
     transform: Translate {
-        y: (card.hovered && card._motion) ? -4 : 0
+        y: (card.hovered && card._motion && card.scrollIdle) ? -4 : 0
         Behavior on y { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
     }
 
@@ -257,7 +259,7 @@ C.GlassPanel {
                     cache: true
                     sourceSize.width: _bucketW
                     sourceSize.height: Math.round(_bucketW * 9 / 16)
-                    scale: (card.hovered && card._motion) ? 1.06 : 1.0
+                    scale: (card.hovered && card._motion && card.scrollIdle) ? 1.06 : 1.0
                     // v3.53: 720 ms was a slow "breathing" zoom that kept this
                     // card's layered thumbnail + mask re-rendering for most of a
                     // second on every hover — the single heaviest thing a grid of
@@ -419,7 +421,7 @@ C.GlassPanel {
                 anchors.top: parent.top
                 anchors.margins: Tokens.space2 + 2
                 spacing: Tokens.space1 + 2
-                readonly property bool shown: card.hovered
+                readonly property bool shown: card.hovered && card.scrollIdle
                 opacity: shown ? 1 : 0
                 visible: opacity > 0.01
                 transform: Translate {
@@ -655,7 +657,7 @@ C.GlassPanel {
                     }
                     Connections {
                         target: card
-                        function onHoveredChanged() { if (card.hovered && card._bars >= 4 && card._motion) sheenRun.restart() }
+                        function onHoveredChanged() { if (card.hovered && card.scrollIdle && card._bars >= 4 && card._motion) sheenRun.restart() }
                     }
                 }
             }

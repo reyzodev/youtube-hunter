@@ -7,6 +7,20 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased: Search Archive — viewport-only card painting
+
+- Scrolling a section with 1,200+ videos painted all 24 cards every frame.
+  Each card carries a layered thumbnail, a clip mask, a MultiEffect and a
+  9-slice shadow, so the cards far outside the viewport were the whole GPU
+  cost of the scroll. Cards now paint only within one card-row of the
+  viewport; all 24 stay alive for paging, and `opacity` (not `visible`) is
+  the off switch so the Layout keeps its geometry and never reflows. On the
+  1,397-row group at 1280×820: 55 → 66 fps, p95 frame 36 → 26 ms, frames
+  over 33 ms 13 → 4 per 3 s.
+- Hover lift, cover zoom, elevation and quick actions now honour `scrollIdle`
+  too — only the play disc / dim / glow did before, so the three heaviest
+  hover effects kept firing under the cursor mid-scroll.
+
 ## Unreleased: Launch speed — QML precompile
 
 - Main.qml and every page compile on Qt's QML loader thread while Python sets
