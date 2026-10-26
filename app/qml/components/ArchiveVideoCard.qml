@@ -119,10 +119,20 @@ C.GlassPanel {
     readonly property string _multNum: String(row.multiplier || "").replace(/[x×]\s*$/i, "")
 
     readonly property real _engNum: parseFloat(String(row.engagement || "").replace("%", ""))
-    readonly property var _stats: row.isChannel
-        ? [ { l: I18n.tr("views"),    v: row.views || "0",      m: -1 },
-            { l: I18n.tr("videos"),   v: row.videoCount || "0", m: -1 },
-            { l: I18n.tr("latest"),   v: row.ageShort || "—",   m: -1 } ]
+    readonly property bool _isChan: row.isChannel === true
+    // A channel card's download/open actions always belong to its hero upload,
+    // so the filename must be the video's title, not the channel's.
+    readonly property string _dlTitle: _isChan ? (row.bestTitle || row.title || "")
+                                               : (row.title || "")
+    // Channel cards answer the questions a creator actually asks of a channel
+    // they just discovered: how much does it publish, how strong is a normal
+    // upload, how many of its videos cleared MY filters, and how much attention
+    // those hits pulled. Its best video's outlier is the hero above.
+    readonly property var _stats: _isChan
+        ? [ { l: I18n.tr("uploads"),     v: row.uploadsText || "—", m: -1 },
+            { l: I18n.tr("avg / upload"), v: row.avgViewsText || "—", m: -1 },
+            { l: I18n.tr("hits here"),   v: row.hitsText || "0",   m: -1 },
+            { l: I18n.tr("hit views"),   v: row.views || "0",      m: -1 } ]
         : (row.chOutlier || "") !== ""
         // v1.0.2: "× its channel's average video" — the cleanest outlier read.
         // Only Niche Finder rows carry it; Archive cards keep three columns.
@@ -141,6 +151,17 @@ C.GlassPanel {
         if (row.isChannel === true || !(row.ageShort) || row.ageShort === "—")
             return subs
         return subs + "  ·  " + row.ageShort
+    }
+
+    // Channel identity line: size · how old the channel is · where it is
+    // registered. Country is YouTube's declared channel country, not the
+    // audience's — it is a hint, so it sits quietly in the meta line.
+    readonly property string _chanMeta: {
+        const bits = []
+        bits.push(I18n.tr("{s} subs").replace("{s}", row.subsText || "—"))
+        if ((row.channelAgeShort || "") !== "") bits.push(row.channelAgeShort)
+        if ((row.channelCountry || "") !== "") bits.push(row.channelCountry)
+        return bits.join("  ·  ")
     }
 
     readonly property real _inset: 6
@@ -201,6 +222,10 @@ C.GlassPanel {
             C.ThumbSkeleton {
                 anchors.fill: parent
                 active: (row.thumbId || "") !== "" && thumbImg.status !== Image.Ready
+                        && thumbImg.status !== Image.Error
+                // a skeleton that keeps sweeping while its card slides past is
+                // pure motion for the eye and pure work for the renderer
+                animate: card.scrollIdle
                 topLeftRadius: card._r
                 topRightRadius: card._r
                 bottomLeftRadius: card._r
@@ -233,7 +258,12 @@ C.GlassPanel {
                     sourceSize.width: _bucketW
                     sourceSize.height: Math.round(_bucketW * 9 / 16)
                     scale: (card.hovered && card._motion) ? 1.06 : 1.0
-                    Behavior on scale { NumberAnimation { duration: Tokens.durGlow * 2; easing.type: Easing.OutCubic } }
+                    // v3.53: 720 ms was a slow "breathing" zoom that kept this
+                    // card's layered thumbnail + mask re-rendering for most of a
+                    // second on every hover — the single heaviest thing a grid of
+                    // these did. 300 ms still glides, and it is over before the
+                    // pointer has moved on.
+                    Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
                     onStatusChanged: {
                         if (status === Image.Ready || status === Image.Error)
                             card.announceThumbnailReady()
@@ -289,7 +319,11 @@ C.GlassPanel {
                 maskEnabled: true
                 maskSource: mediaMask
                 opacity: thumbImg.status === Image.Ready ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
+                // v3.53: the picture lands in 180 ms instead of 320. Paging a
+                // grid means 24 of these cross-fades at once — at durSlow the
+                // page spent a third of a second looking half-loaded, which
+                // reads as "heavy" even at 60 fps.
+                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
             }
             // inner hairline: the tile reads as a lit glass object, not a pasted image
             Rectangle {
@@ -305,12 +339,15 @@ C.GlassPanel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: card.target.openUrl(card._targetUrl)
+                // On a channel card the cover IS its best video, so the image
+                // opens that video; the channel itself is one click away on
+                // the identity row and the "Open channel" action.
+                onClicked: card.target.openUrl(row.videoUrl || card._targetUrl)
             }
 
             // play disc
             Rectangle {
-                visible: row.isChannel !== true
+                visible: (row.videoUrl || "") !== ""
                 anchors.centerIn: parent
                 width: 52; height: 52; radius: 26
                 color: Qt.rgba(1, 1, 1, 0.16)
@@ -423,6 +460,18 @@ C.GlassPanel {
                 }
             }
 
+            // The channel card's cover is a specific upload; name it, or the
+            // thumbnail reads as generic channel art.
+            MediaChip {
+                visible: card._isChan
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: Tokens.space2 + 2
+                anchors.bottomMargin: Tokens.space2 + 2
+                icon: "play_arrow"
+                label: I18n.tr("Best video")
+            }
+
             // duration
             Rectangle {
                 visible: !!row.duration && row.duration !== "—"
@@ -501,14 +550,18 @@ C.GlassPanel {
             Item {
                 id: headline
                 Layout.fillWidth: true
-                visible: row.isChannel !== true
+                // A channel with no measurable multiplier has no hero number;
+                // hiding it keeps the card honest instead of showing a "—".
+                visible: !card._isChan || card._hasMult
                 clip: true
                 implicitHeight: heroCol.implicitHeight
                 HoverHandler { id: meterHover }
                 C.AppTooltip {
                     visible: meterHover.hovered
                     delay: 300
-                    text: I18n.tr("Views ÷ subscribers — how far this video outran its channel")
+                    text: card._isChan
+                          ? I18n.tr("The best of this channel's matched videos — views ÷ subscribers")
+                          : I18n.tr("Views ÷ subscribers — how far this video outran its channel")
                 }
 
                 Column {
@@ -538,7 +591,8 @@ C.GlassPanel {
                         }
                     }
                     C.AppText {
-                        text: I18n.tr("outlier")
+                        text: card._isChan ? I18n.tr("best video outlier")
+                                           : I18n.tr("outlier")
                         weight: Tokens.weightMedium
                         font.pixelSize: Tokens.fontCaption
                         color: Theme.outline
@@ -606,9 +660,11 @@ C.GlassPanel {
                 }
             }
 
-            // ── title ──
+            // ── title ── (the channel identity block below is the title on
+            // a channel card; repeating the channel name here said nothing)
             C.AppText {
                 id: titleText
+                visible: !card._isChan
                 text: row.title || ""
                 weight: Tokens.weightDemiBold
                 font.pixelSize: Tokens.fontLabel
@@ -636,6 +692,10 @@ C.GlassPanel {
             }
 
             // ── channel ── (one hit target over avatar + name)
+            // On a channel card this block IS the card's title, so the avatar
+            // and name step up a size and the meta line carries the facts that
+            // decide whether the channel is worth studying: subscribers,
+            // channel age, declared country.
             Item {
                 Layout.fillWidth: true
                 implicitHeight: chanRow.implicitHeight
@@ -648,9 +708,10 @@ C.GlassPanel {
                     spacing: Tokens.space2 + 2
 
                     Item {
-                        width: 30; height: 30
-                        Layout.preferredWidth: 30
-                        Layout.preferredHeight: 30
+                        width: card._isChan ? 42 : 30
+                        height: width
+                        Layout.preferredWidth: width
+                        Layout.preferredHeight: width
                         Rectangle {
                             anchors.fill: parent
                             radius: width / 2
@@ -663,8 +724,8 @@ C.GlassPanel {
                             source: (row.channelThumbId && row.channelThumbId.length) ? "image://thumbs/" + row.channelThumbId : ""
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            sourceSize.width: 30
-                            sourceSize.height: 30
+                            sourceSize.width: card._isChan ? 42 : 30
+                            sourceSize.height: card._isChan ? 42 : 30
                         }
                         Item {
                             id: avatarMask
@@ -678,7 +739,7 @@ C.GlassPanel {
                             visible: avatar.status !== Image.Ready
                             text: (row.channelTitle || "?").charAt(0).toUpperCase()
                             weight: Tokens.weightBold
-                            font.pixelSize: Tokens.fontBody
+                            font.pixelSize: card._isChan ? Tokens.fontLabel : Tokens.fontBody
                             color: Theme.primary
                         }
                         MultiEffect {
@@ -703,24 +764,34 @@ C.GlassPanel {
                     }
 
                     ColumnLayout {
-                        spacing: 0
+                        spacing: card._isChan ? 1 : 0
                         Layout.fillWidth: true
                         C.AppText {
                             text: row.channelTitle || "—"
                             weight: Tokens.weightDemiBold
-                            font.pixelSize: Tokens.fontBody
+                            font.pixelSize: card._isChan ? Tokens.fontLabel : Tokens.fontBody
                             color: chanArea.containsMouse ? Theme.primary : Theme.text_strong
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
                         }
                         C.AppText {
-                            text: card._subLine
+                            text: card._isChan ? card._chanMeta : card._subLine
                             font.pixelSize: Tokens.fontCaption
                             color: Theme.on_surface_var
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
+                    }
+
+                    // A quiet affordance that the identity row leaves the app
+                    // for the channel page — the media opens the video instead.
+                    C.IconGlyph {
+                        visible: card._isChan
+                        name: I18n.rtl ? "chevron_left" : "chevron_right"
+                        size: 16
+                        glyphColor: chanArea.containsMouse ? Theme.primary : Theme.outline
+                        Layout.alignment: Qt.AlignVCenter
                     }
                 }
                 MouseArea {
@@ -729,6 +800,103 @@ C.GlassPanel {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: card.target.openUrl(row.channelUrl || card._targetUrl)
+                }
+            }
+
+            // ── best video ── the cover above is a specific upload, not
+            // channel art. Naming it turns the thumbnail into evidence and
+            // gives the bookmark / download actions an explicit target.
+            Rectangle {
+                id: bestBlock
+                visible: card._isChan
+                Layout.fillWidth: true
+                implicitHeight: bestRow.implicitHeight + Tokens.space2 * 2
+                radius: Tokens.radiusSm
+                color: bestArea.containsMouse
+                       ? U.withAlpha(Theme.primary, Theme.isDark ? 0.11 : 0.07)
+                       : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.035 : 0.03)
+                border.width: 1
+                border.color: bestArea.containsMouse
+                              ? U.withAlpha(Theme.primary, 0.34) : Theme.border
+                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+
+                RowLayout {
+                    id: bestRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Tokens.space3
+                    anchors.rightMargin: Tokens.space3
+                    spacing: Tokens.space2 + 2
+
+                    Rectangle {
+                        width: 28; height: 28; radius: 14
+                        Layout.preferredWidth: 28
+                        Layout.preferredHeight: 28
+                        color: U.withAlpha(Theme.primary, bestArea.containsMouse ? 0.24 : 0.15)
+                        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                        C.IconGlyph {
+                            anchors.centerIn: parent
+                            name: "play_arrow"; fill: true; size: 17
+                            glyphColor: Theme.primary
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: 0
+                        Layout.fillWidth: true
+                        C.AppText {
+                            text: I18n.tr("BEST VIDEO")
+                            mono: true
+                            weight: Tokens.weightBold
+                            font.pixelSize: Tokens.fontMicro
+                            font.letterSpacing: I18n.rtl ? 0 : Tokens.trackingLabel
+                            color: Theme.outline
+                        }
+                        C.AppText {
+                            text: row.bestTitle || "—"
+                            weight: Tokens.weightDemiBold
+                            font.pixelSize: Tokens.fontBody
+                            color: bestArea.containsMouse ? Theme.primary : Theme.text_strong
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: 0
+                        Layout.alignment: Qt.AlignVCenter
+                        C.AppText {
+                            text: row.bestViews || "0"
+                            mono: true
+                            weight: Tokens.weightBold
+                            font.pixelSize: Tokens.fontBody
+                            color: Theme.text_strong
+                            LayoutMirroring.enabled: false
+                        }
+                        C.AppText {
+                            text: I18n.tr("views") + ((row.bestAgeShort || "") !== ""
+                                                      ? "  ·  " + row.bestAgeShort : "")
+                            font.pixelSize: Tokens.fontMicro
+                            color: Theme.outline
+                            LayoutMirroring.enabled: false
+                        }
+                    }
+                }
+                MouseArea {
+                    id: bestArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    enabled: (row.videoUrl || "") !== ""
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: card.target.openUrl(row.videoUrl || "")
+                    C.AppTooltip {
+                        visible: bestArea.containsMouse
+                        delay: 600
+                        text: row.bestTitle || ""
+                    }
                 }
             }
 
@@ -748,11 +916,20 @@ C.GlassPanel {
                     Layout.fillWidth: true
                     spacing: 0
                     Repeater {
-                        model: card._stats
+                        // Fixed slots, not the row-derived array: with
+                        // `model: card._stats` every page flip / filter /
+                        // star toggle destroyed and rebuilt 3–4 delegate
+                        // trees per card inside the rowsChanged emit (~130 ms
+                        // for the 24-card grid). The count only ever varies
+                        // between 3 and 4, so four permanent delegates whose
+                        // text rebinds is the same picture with no churn.
+                        model: 4
                         delegate: RowLayout {
                             Layout.fillWidth: true
                             Layout.preferredWidth: 1
                             spacing: 0
+                            readonly property var stat: card._stats[index] || null
+                            visible: stat !== null
                             Rectangle {
                                 visible: index > 0
                                 Layout.preferredWidth: 1
@@ -765,7 +942,7 @@ C.GlassPanel {
                                 Layout.leftMargin: index > 0 ? Tokens.space3 : 0
                                 spacing: 1
                                 C.AppText {
-                                    text: modelData.v
+                                    text: stat ? stat.v : ""
                                     weight: Tokens.weightBold
                                     font.pixelSize: Tokens.fontLabel
                                     font.letterSpacing: -0.2
@@ -776,7 +953,7 @@ C.GlassPanel {
                                     horizontalAlignment: I18n.rtl ? Text.AlignRight : Text.AlignLeft
                                 }
                                 C.AppText {
-                                    text: modelData.l
+                                    text: stat ? stat.l : ""
                                     weight: Tokens.weightMedium
                                     font.pixelSize: Tokens.fontCaption
                                     color: Theme.outline
@@ -797,7 +974,6 @@ C.GlassPanel {
                 C.PrimaryButton {
                     Layout.fillWidth: true
                     implicitHeight: 40
-                    visible: row.isChannel !== true
                     variant: card._openable ? "ghost" : "primary"
                     enabled: !card._downloading && (row.videoId || "") !== ""
                     iconName: card._downloading ? "downloading"
@@ -816,7 +992,7 @@ C.GlassPanel {
                         if (card._openable)
                             card.target.openDownloaded(row.videoId || "")
                         else
-                            card.downloadRequested(row.videoId || "", row.title || "", row.thumbId || "")
+                            card.downloadRequested(row.videoId || "", card._dlTitle, row.thumbId || "")
                     }
                 }
                 C.IconButton {
@@ -836,13 +1012,15 @@ C.GlassPanel {
                     tip: I18n.tr("Resume at the same quality")
                     onClicked: card.target.resumeDownload(row.videoId || "")
                 }
-                C.PrimaryButton {
-                    Layout.fillWidth: true
-                    implicitHeight: 40
-                    visible: row.isChannel === true
-                    variant: "ghost"
+                // A channel card's primary action is the same Download as a
+                // video card, scoped to its hero upload. The channel itself
+                // stays one click away here (and on the identity row above).
+                C.IconButton {
+                    visible: card._isChan && !card._downloading && !card._stopped
+                    implicitWidth: 42; implicitHeight: 40
                     iconName: "open_in_new"
-                    text: I18n.tr("Open channel")
+                    enabled: (row.channelUrl || "") !== ""
+                    tip: I18n.tr("Open channel")
                     onClicked: card.target.openUrl(row.channelUrl || "")
                 }
                 // bookmark, wrapped so the pop can scale it without fighting
@@ -859,7 +1037,10 @@ C.GlassPanel {
                         accent: Theme.primary
                         active: card.saved
                         enabled: (row.videoId || "") !== ""
-                        tip: card.saved ? I18n.tr("Remove from favourites") : I18n.tr("Save to favourites")
+                        tip: card.saved
+                             ? I18n.tr("Remove from favourites")
+                             : (card._isChan ? I18n.tr("Save its best video to favourites")
+                                             : I18n.tr("Save to favourites"))
                         onClicked: card.target.toggleSaved(row.videoId || "")
                     }
                     SequentialAnimation {

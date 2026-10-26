@@ -12,6 +12,8 @@ import "../Utils.js" as U
 // tiny hearts float off it, so the signature answers the pointer.
 Item {
     id: root
+    // Named so a headless bench can stop the beat and time idle CPU.
+    objectName: "heartBeat"
     property int size: 14
     property bool racing: false
     property bool running: true
@@ -82,19 +84,65 @@ Item {
     }
 
     // ── lub-dub ──
-    // a looping animation reads PauseAnimation.duration once per start, so a
-    // tempo change restarts the loop instead of waiting out the old rest
-    onRacingChanged: if (beatAnim.running) beatAnim.restart()
+    // Perf: this used to loop forever whenever the sidebar was visible, which
+    // kept the whole window repainting ~80 times a second even with nothing
+    // happening — the app could never go idle. It now beats once every few
+    // seconds instead, so there is a real rest between beats; hovering still
+    // races it continuously. A looping animation reads `loops` and
+    // PauseAnimation.duration once per start, so the mode is applied before
+    // restart() rather than mid-flight.
+    property bool _burst: false
+    readonly property bool _live: root.running && root.visible
+    // exposed for the headless perf harness
+    readonly property bool beating: beatAnim.running
+    readonly property int beatLoops: beatAnim.loops
+
+    function _retune() {
+        if (!root._live) {
+            beatAnim.stop()
+            return
+        }
+        if (root.racing) {
+            root._burst = false
+            beatAnim.loops = Animation.Infinite
+            beatAnim.restart()
+        } else if (root._burst) {
+            beatAnim.loops = 1
+            beatAnim.restart()
+        } else {
+            beatAnim.stop()
+            root.beat = 1.0
+            echo.k = 0
+        }
+    }
+    onRunningChanged: _retune()
+    onVisibleChanged: _retune()
+    onRacingChanged: _retune()
+    Component.onCompleted: _retune()
+
+    Timer {
+        id: restTimer
+        // one beat, then a long quiet rest: the signature stays alive without
+        // pinning the render loop
+        interval: 4500
+        repeat: true
+        triggeredOnStart: true
+        running: root._live && !root.racing
+        onTriggered: {
+            root._burst = true
+            root._retune()
+        }
+    }
+
     SequentialAnimation {
         id: beatAnim
-        running: root.running && root.visible
-        loops: Animation.Infinite
+        onFinished: root._burst = false
         ScriptAction { script: echoAnim.restart() }
         NumberAnimation { target: root; property: "beat"; to: 1.24; duration: 110; easing.type: Easing.OutQuad }
         NumberAnimation { target: root; property: "beat"; to: 0.96; duration: 120; easing.type: Easing.InOutQuad }
         NumberAnimation { target: root; property: "beat"; to: 1.14; duration: 100; easing.type: Easing.OutQuad }
         NumberAnimation { target: root; property: "beat"; to: 1.0; duration: 240; easing.type: Easing.OutCubic }
-        PauseAnimation { duration: root.racing ? 220 : 1100 }
+        PauseAnimation { duration: root.racing ? 220 : 0 }
     }
 
     // ── tiny hearts floating off it while racing ──

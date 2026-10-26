@@ -592,10 +592,11 @@ class DownloadsVM(QObject):
         self.toast.emit(tr("Resuming download…"), "download")
         self.refresh()
         self._launch_worker(video_id, url, target_dir, quality,
-                            proxy_url, cookies_browser)
+                            proxy_url, cookies_browser,
+                            resume_pct=resumed_at)
 
     def _launch_worker(self, video_id, url, target_dir, quality,
-                       proxy_url, cookies_browser):
+                       proxy_url, cookies_browser, resume_pct=0):
         """Run one download on a daemon thread. Shared by startDownload and
         resumeDownload so both paths report progress and cancellation
         identically."""
@@ -612,7 +613,8 @@ class DownloadsVM(QObject):
                         self._dlResolved.emit(v, px, lbl),
                     on_meta=lambda m, v=video_id: self._dlMeta.emit(v, m),
                     proxy_url=proxy_url, cookies_browser=cookies_browser,
-                    should_cancel=lambda v=video_id: is_cancelled(v))
+                    should_cancel=lambda v=video_id: is_cancelled(v),
+                    resume_pct=resume_pct)
             except Exception as exc:      # noqa: BLE001
                 log_crash("DownloadsVM worker failed:\n" + str(exc))
                 ok, message, filepath = False, str(exc), ""

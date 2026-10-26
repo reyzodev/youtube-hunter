@@ -242,6 +242,46 @@ def content_lab_get_ideas(entry_id):
         return []
 
 
+def content_lab_ideas_by_entry():
+    """Every stored blueprint, grouped by the section it belongs to, in ONE
+    query.
+
+    v3.53 perf: the callers that need the whole library (the Content Lab's
+    library grid and its "combine with my blueprints" picker) used to call
+    content_lab_get_ideas() once per section - a fresh connection, a fresh
+    statement and a fresh WAL attach each time, ~4 ms of pure overhead per
+    section before a single byte of JSON was parsed. One JOIN returns the same
+    rows in the same order (section newest-first, then sort_order/id) and
+    costs one connection for the lot.
+
+    Returns {entry_id: [idea, ...]} with the same idea shape as
+    content_lab_get_ideas(): the JSON blob plus `id`, `is_favorite` and
+    `created_at` read from the row.
+    """
+    out = {}
+    try:
+        conn = db_connect(DATA_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT i.entry_id, i.id, i.idea_json, i.is_favorite, i.created_at "
+            "FROM content_lab_ideas i "
+            "JOIN content_lab_entries e ON e.id = i.entry_id "
+            "ORDER BY e.updated_at DESC, i.sort_order ASC, i.id ASC")
+        for entry_id, iid, blob, is_fav, created_at in cur.fetchall():
+            try:
+                idea = json.loads(blob)
+            except Exception:
+                continue
+            idea["id"] = iid
+            idea["is_favorite"] = bool(is_fav)
+            idea["created_at"] = created_at
+            out.setdefault(entry_id, []).append(idea)
+        conn.close()
+    except Exception:
+        return {}
+    return out
+
+
 def content_lab_all_ideas(search=""):
     """Every stored blueprint across ALL sections, newest-touched section first,
     each tagged with the title of the section it belongs to. Read-only; used by
@@ -250,13 +290,16 @@ def content_lab_all_ideas(search=""):
     keyword/channel it was generated from.
 
     An optional `search` filters by blueprint title (case-insensitive).
-    """
+
+    v3.53 perf: one JOIN instead of one connection per section - see
+    content_lab_ideas_by_entry()."""
     needle = (search or "").strip().lower()
     out = []
     try:
+        grouped = content_lab_ideas_by_entry()
         for entry in content_lab_list_entries():
             section_title = entry.get("title") or tr("Untitled")
-            for idea in content_lab_get_ideas(entry["id"]):
+            for idea in grouped.get(entry["id"], ()):
                 title = idea.get("title") or tr("Untitled idea")
                 if needle and needle not in title.lower():
                     continue

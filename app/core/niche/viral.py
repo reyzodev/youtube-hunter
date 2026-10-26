@@ -205,7 +205,7 @@ def _title_looks_foreign(title, region):
     return not (code in langs or ("zh" if code.startswith("zh") else code) in fams)
 
 
-def _breakout_ids(yt, region, category, hours, pages, stop_check, quota_cb,
+def _breakout_ids(yt, region, category, hours, pages, stop_check,
                   max_pages=None):
     """Most-watched uploads of the window. With a region: steered to the
     country's language and paged on (up to `max_pages`) while fewer than
@@ -244,8 +244,6 @@ def _breakout_ids(yt, region, category, hours, pages, stop_check, quota_cb,
                 break
             raise
         page += 1
-        if quota_cb:
-            quota_cb(1)
         for it in resp.get("items", []) or []:
             vid = (it.get("id") or {}).get("videoId")
             if not vid:
@@ -276,7 +274,7 @@ def estimate_viral_units(source, region_code):
 
 
 def fetch_viral(yt, source="chart", region_code="", category_id="", hours=48,
-                stop_check=None, progress=None, quota_cb=None, stats=None):
+                stop_check=None, progress=None, stats=None):
     """Collect what is viral right now and return Niche Finder rows.
 
     Every row also carries `viral_rank` (its position in the chart / breakout
@@ -305,7 +303,7 @@ def fetch_viral(yt, source="chart", region_code="", category_id="", hours=48,
                      PHASE_DISCOVER, {"found": len(order)})
         if source == "breakout":
             ids = _breakout_ids(yt, market, category_id, hours, _BREAKOUT_PAGES,
-                                stop_check, quota_cb,
+                                stop_check,
                                 max_pages=(_BREAKOUT_PAGES_MAX if region_code
                                            else _BREAKOUT_PAGES))
             got = [(vid, None) for vid in ids]

@@ -95,7 +95,7 @@ PHASE_CHANNELS = "channels"     # channels.list — subscriber counts
 
 def niche_search_api(yt, queries, order, windows, pages, region=None,
                      lang=None, video_duration=None, stop_check=None,
-                     progress=None, quota_cb=None, target=None):
+                     progress=None, target=None):
     """Collect candidate video IDs via search.list. Each page costs 1 call
     from the daily search bucket, so the caller decides `pages`.
 
@@ -145,8 +145,6 @@ def niche_search_api(yt, queries, order, windows, pages, region=None,
             if token:
                 kwargs["pageToken"] = token
             resp = execute_with_retry(yt.search().list(**kwargs), stop_check)
-            if quota_cb:
-                quota_cb(1)
             for it in resp.get("items", []):
                 if slice_cap is not None and slice_got >= slice_cap:
                     break

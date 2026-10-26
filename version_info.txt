@@ -16,8 +16,8 @@
 # app/constants.py (APP_VERSION) and installer.iss (MyAppVersion).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 0, 1, 0),
+    prodvers=(1, 0, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -32,13 +32,13 @@ VSVersionInfo(
           '040904B0',
           [
             StringStruct('CompanyName', 'YouTube Hunter'),
-            StringStruct('FileDescription', 'YouTube Hunter 1.0.0 - Windows 10/11 (64-bit)'),
-            StringStruct('FileVersion', '1.0.0.0'),
+            StringStruct('FileDescription', 'YouTube Hunter 1.0.1 - Windows 10/11 (64-bit)'),
+            StringStruct('FileVersion', '1.0.1.0'),
             StringStruct('InternalName', 'YouTubeHunter'),
             StringStruct('LegalCopyright', 'YouTube Hunter'),
             StringStruct('OriginalFilename', 'YouTubeHunter.exe'),
             StringStruct('ProductName', 'YouTube Hunter'),
-            StringStruct('ProductVersion', '1.0.0.0'),
+            StringStruct('ProductVersion', '1.0.1.0'),
             StringStruct('Comments', '64-bit build. Requires Windows 10 (1809 or newer) or Windows 11 on x64. Not for 32-bit Windows or Windows 7/8.')
           ]
         )

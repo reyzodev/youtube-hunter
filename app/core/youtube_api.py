@@ -28,7 +28,7 @@ _TRANSIENT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded",
 _QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded"}
 
 
-def build_youtube_service(api_key):
+def build_youtube_service(api_key, timeout=None):
     """The one place a YouTube service object is created.
 
     `googleapiclient.discovery` is imported HERE rather than at module scope on
@@ -41,7 +41,18 @@ def build_youtube_service(api_key):
     which cannot resolve a lazily-bound name.)
     """
     from googleapiclient.discovery import build
-    return build("youtube", "v3", developerKey=api_key,
+    if not timeout:
+        return build("youtube", "v3", developerKey=api_key,
+                     cache_discovery=False, static_discovery=True)
+    # v3.52 scraper: a per-request socket timeout. googleapiclient's default
+    # is 60 s, so one stalled connection froze a whole metadata page for a
+    # minute before the retry could even start. build_http() keeps the
+    # library's own defaults (redirect handling, proxy from the environment);
+    # only the timeout changes.
+    from googleapiclient.http import build_http
+    http = build_http()
+    http.timeout = float(timeout)
+    return build("youtube", "v3", developerKey=api_key, http=http,
                  cache_discovery=False, static_discovery=True)
 
 
@@ -64,15 +75,38 @@ def _sleep_interruptible(seconds, stop_check=None):
         time.sleep(0.15)
 
 
-def execute_with_retry(request, stop_check=None, attempts=4):
-    """Run a googleapiclient request with bounded retries + backoff."""
+def _looks_offline(exc):
+    """A network-level failure (no route, DNS, reset, timeout, TLS drop), as
+    opposed to an API answer. These are what an internet cut looks like."""
+    if isinstance(exc, (OSError, TimeoutError)):
+        return True
+    mod = type(exc).__module__ or ""
+    return mod.startswith("httplib2") or mod.startswith("socket") \
+        or mod.startswith("ssl")
+
+
+def execute_with_retry(request, stop_check=None, attempts=4,
+                       offline_wait=0, on_offline=None):
+    """Run a googleapiclient request with bounded retries + backoff.
+
+    offline_wait (seconds, default 0 = old behaviour): when the failure is the
+    NETWORK itself (internet cut, VPN reconnecting), keep waiting up to this
+    long for it to come back instead of failing after ~10 s. The scraper uses
+    it so a Wi-Fi blip pauses a run instead of killing it.
+    on_offline(exc_or_None) is told when the wait starts (exc) and when the
+    request finally went through again (None).
+    """
     delay = 1.5
-    last_exc = None
-    for attempt in range(attempts):
+    failures = 0
+    offline_since = None
+    while True:
         if stop_check and stop_check():
             raise ScrapeCancelled()
         try:
-            return request.execute()
+            result = request.execute()
+            if offline_since is not None and on_offline:
+                on_offline(None)
+            return result
         except HttpError as exc:
             reasons = _http_error_reasons(exc)
             if reasons & _QUOTA_REASONS:
@@ -80,20 +114,30 @@ def execute_with_retry(request, stop_check=None, attempts=4):
             status = getattr(getattr(exc, "resp", None), "status", None)
             transient = (status in (429, 500, 502, 503, 504)
                          or bool(reasons & _TRANSIENT_REASONS))
-            if not transient or attempt == attempts - 1:
+            failures += 1
+            if not transient or failures >= attempts:
                 raise
-            last_exc = exc
         except (ScrapeCancelled, QuotaExceededError):
             raise
         except Exception as exc:
-            # socket resets, SSL hiccups, DNS blips, httplib2 errors …
-            if attempt == attempts - 1:
+            if offline_wait and _looks_offline(exc):
+                now = time.monotonic()
+                if offline_since is None:
+                    offline_since = now
+                    if on_offline:
+                        on_offline(exc)
+                if now - offline_since < offline_wait:
+                    # gentle, capped polling while the link is down
+                    _sleep_interruptible(min(10.0, 2.0 + (now - offline_since) / 6),
+                                         stop_check)
+                    continue
                 raise
-            last_exc = exc
+            # socket resets, SSL hiccups, DNS blips, httplib2 errors …
+            failures += 1
+            if failures >= attempts:
+                raise
         _sleep_interruptible(delay + random.uniform(0, 0.7), stop_check)
         delay *= 2
-    if last_exc:
-        raise last_exc
 
 
 def _row_from_item(video_id, item):

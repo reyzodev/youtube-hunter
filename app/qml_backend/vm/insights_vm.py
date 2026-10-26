@@ -95,6 +95,7 @@ class InsightsVM(QObject):
 
         self._rows = []
         self._snap = None
+        self._open_key = ""     # saved report on screen (strip highlight)
         self._ai = None
         self._busy = False
         self._status = ""
@@ -214,6 +215,7 @@ class InsightsVM(QObject):
             return
         self._rows = rows
         self._snap = build_snapshot(rows, query=query or "", mode=mode or "keyword")
+        self._open_key = ""
         self._ai = None
         self._from_cache = False
         self._generated_at = ""
@@ -301,9 +303,13 @@ class InsightsVM(QObject):
         self._ai = self._rescue(record.get("ai") or None)
         self._from_cache = True
         self._generated_at = record.get("created_at", "")
+        self._open_key = str(snapshot_key)
         self._set_status(tr("Saved report, reopened."), "muted")
         self.snapshotChanged.emit()
         self.aiChanged.emit()
+        # v3.52: the strip's `isOpen` flags were only rebuilt on analyse/delete,
+        # so re-opening a saved scan never showed as selected
+        self.refreshHistory()
 
     @Property("QVariantMap", notify=snapshotChanged)
     def snap(self):
@@ -735,6 +741,15 @@ class InsightsVM(QObject):
                 "high": tr("high")}.get(key, key)
 
     # ── saved reports ────────────────────────────────────────────────────
+    @Property(str, notify=snapshotChanged)
+    def openKey(self):
+        """Key of the saved report on screen, for the strip's selected card.
+        A re-opened report keeps the key it was stored under (its rebuilt
+        snapshot could hash differently); a fresh analysis uses its own."""
+        if not self._snap:
+            return ""
+        return self._open_key or str(self._snap.get("snapshot_key") or "")
+
     @Property("QVariantList", notify=historyChanged)
     def history(self):
         return self._history
@@ -761,7 +776,7 @@ class InsightsVM(QObject):
             "when": _relative(record.get("created_at") or ""),
             "hasBrief": bool(record.get("has_brief")),
             "isOpen": bool(self._snap
-                           and self._snap.get("snapshot_key") == record["snapshot_key"]),
+                           and (self._open_key or self._snap.get("snapshot_key")) == record["snapshot_key"]),
         } for record in insights_list(24)]
         self.historyChanged.emit()
 

@@ -47,13 +47,55 @@ _QT_MUTED_SUBSTRINGS = ("CreateFontFaceFromHDC() failed",)
 # ONLY after shutdown starts, so the identical message during a live session
 # (a genuinely missing context property) still reaches the console.
 _SHUTTING_DOWN = False
-_QT_TEARDOWN_SUBSTRINGS = ("Cannot read propert",)
+# v3.53: the same class of teardown noise comes in three wordings, all of them
+# "a binding re-evaluated after its context property was released":
+#   TypeError: Cannot read property 'x' of null      (the original one)
+#   TypeError: Cannot call method 'tr' of null       (I18n.tr in a label)
+#   TypeError: Value is null and could not be converted to an object
+#                                                  (Theme.some_colour)
+# The last two printed ~1000-7000 lines on exit once a page with 24 cards was
+# alive, burying anything real. All three are muted ONLY after aboutToQuit, so
+# a genuinely missing context property during a live session still shows.
+_QT_TEARDOWN_SUBSTRINGS = ("Cannot read propert",
+                           "Cannot call method",
+                           "Value is null and could not be converted")
 
 
 def note_shutting_down():
     """Arm the teardown filter. Connect to QGuiApplication.aboutToQuit."""
     global _SHUTTING_DOWN
     _SHUTTING_DOWN = True
+
+
+def silence_ffmpeg_logs():
+    """Raise libav's log threshold to FATAL for the in-process media backend.
+
+    Qt's FFmpeg backend prints the whole format dump of every opened file
+    and harmless decoder / Media-Foundation notices straight to stderr,
+    bypassing qInstallMessageHandler — a handful of card hovers was enough to
+    bury the console in lines the user can do nothing about. Playback failures
+    still reach the UI through MediaPlayer.error, so only the raw stderr
+    chatter is dropped.
+
+    Windows only: the DLL has to be the exact copy the multimedia plugin
+    loads, and both live in the PySide6 package there. LoadLibrary returns the
+    already-loaded module, so this level applies to the plugin as well.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import glob
+        import os
+
+        import PySide6
+
+        root = os.path.dirname(getattr(PySide6, "__file__", "") or "")
+        dlls = glob.glob(os.path.join(root, "avutil-*.dll"))
+        if dlls:
+            ctypes.WinDLL(dlls[0]).av_log_set_level(8)   # AV_LOG_FATAL
+    except Exception:      # noqa: BLE001 — logging is best-effort
+        pass
 
 
 def _qt_message_filter(mode, context, message):

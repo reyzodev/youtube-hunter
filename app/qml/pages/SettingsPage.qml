@@ -101,7 +101,10 @@ Item {
     function _syncGuard() { App.setNavGuard(page.visible && Settings.isDirty && !Settings.autoSave) }
     onVisibleChanged: {
         if (!visible) Settings.flushAutosave()
-        else Settings.reloadFolders()   // a thumb folder may have been picked on another page
+        else {
+            Settings.reloadFolders()    // a thumb folder may have been picked on another page
+            _armSections()
+        }
         _syncGuard()
     }
     Connections {
@@ -110,7 +113,16 @@ Item {
         // an auto-save is a save: same key refresh, same "Saved" flash
         function onAutoSaved() { page._afterSave() }
     }
-    Component.onCompleted: _syncGuard()
+    Component.onCompleted: {
+        _syncGuard()
+        // a beat later — see the Loader comment below
+        sectionArm.start()
+    }
+    Timer {
+        id: sectionArm
+        interval: 260
+        onTriggered: page._armSections()
+    }
 
     // ── actions ──
     function save() {
@@ -179,16 +191,48 @@ Item {
              : i === 4 ? page.engineOk : i === 5 ? page.outputOk
              : i === 6 ? ExtensionSetup.connected : true
     }
+    // The seven cards live inside secLoader (see the comment there): find the
+    // one asked for by the name it carries, null until the loader is ready.
     function sectionItem(i) {
-        return [secAppearance, secYoutube, secGuide, secAi, secEngine, secOutput, secExtension][i]
+        const col = secLoader.item
+        if (!col) return null
+        const name = "settingsSection" + i
+        const kids = col.children
+        for (let k = 0; k < kids.length; ++k)
+            if (kids[k].objectName === name)
+                return kids[k]
+        return null
     }
     function sectionFlash(i) {
         const it = page.sectionItem(i)
         if (it && it.flash) it.flash()
     }
+    function _armSections() {
+        if (!secLoader.active)
+            secLoader.active = true
+    }
+    function _sectionsReady() {
+        if (page._pendingGuide !== "") {
+            const g = page.sectionItem(2)
+            if (g && g.show) g.show(page._pendingGuide)
+            page._pendingGuide = ""
+        }
+        if (page._pendingJump >= 0) {
+            pendingJump.jumpIndex = page._pendingJump
+            pendingJump.wantFlash = page._pendingFlash
+            page._pendingJump = -1
+            pendingJump.restart()
+        } else {
+            page._recalcActive()
+        }
+    }
     // Open the key guide on a given track ("youtube" | "gemini").
     function openGuide(track) {
-        secGuide.show(track)
+        const guide = page.sectionItem(2)
+        if (guide && guide.show)
+            guide.show(track)
+        else
+            page._pendingGuide = track    // _sectionsReady() replays it
         page.jumpTo(2, true)
     }
     // file:/// URL for the save folder (Windows "C:\x" and POSIX "/x" alike).
@@ -217,9 +261,19 @@ Item {
     // active section = the last one whose top has scrolled past the reading line
     property int activeSection: 0
     property bool _jumping: false
+    // a rail / search / "add a key" jump that arrived while the cards were
+    // still building; _sectionsReady() replays it
+    property int _pendingJump: -1
+    property bool _pendingFlash: false
+    property string _pendingGuide: ""
     function jumpTo(i, flash) {
         const it = page.sectionItem(i)
-        if (!it) return
+        if (!it) {
+            page._pendingJump = i
+            page._pendingFlash = !!flash
+            page._armSections()
+            return
+        }
         page._jumping = true
         page.activeSection = i
         scroll.scrollToItem(it, Tokens.space5)
@@ -227,15 +281,25 @@ Item {
         if (flash) page.sectionFlash(i)
     }
     Timer { id: jumpLock; interval: Tokens.durSlow + 120; onTriggered: page._jumping = false }
+    Timer {
+        id: pendingJump
+        interval: 60
+        property int jumpIndex: -1
+        property bool wantFlash: false
+        onTriggered: page.jumpTo(pendingJump.jumpIndex, pendingJump.wantFlash)
+    }
     function _recalcActive() {
         if (page._jumping) return
         const fl = scroll.contentItem
         if (!fl) return
         const line = fl.contentY + 160
+        // the cards are one child of a loader now, so their y is relative to
+        // the loader's inner column — add that offset to reach content space
+        const y0 = content.y + secLoader.y
         let idx = 0
         for (let i = 0; i < page.sections.length; i++) {
             const it = page.sectionItem(i)
-            if (it && content.y + it.y <= line) idx = i
+            if (it && y0 + it.y <= line) idx = i
         }
         if (fl.contentY > 0 && fl.contentY >= fl.contentHeight - fl.height - 4)
             idx = page.sections.length - 1
@@ -583,7 +647,7 @@ Item {
                 color: chip.tint
                 anchors.verticalCenter: parent.verticalCenter
                 SequentialAnimation on opacity {
-                    running: chip.pulse && chip.visible
+                    running: chip.pulse && chip.visible && page.visible && Tokens.appActive
                     loops: Animation.Infinite
                     NumberAnimation { from: 1; to: 0.25; duration: 700; easing.type: Easing.InOutSine }
                     NumberAnimation { from: 0.25; to: 1; duration: 700; easing.type: Easing.InOutSine }
@@ -1329,7 +1393,9 @@ Item {
         readonly property string tier: tm.shown <= 2 ? I18n.tr("Gentle")
                                      : tm.shown <= 5 ? I18n.tr("Balanced") : I18n.tr("Turbo")
         // Mirrors app.core.transcripts._TURBO: parallel transcripts per level.
-        readonly property var txPerLevel: [1, 2, 3, 4, 6, 8, 12, 16]
+        // YouTube caps caption downloads per IP, so the top levels add workers
+        // only up to the point where they can still keep the pacer fed.
+        readonly property var txPerLevel: [1, 2, 3, 4, 6, 8, 8, 10]
         readonly property int txShown: tm.txPerLevel[Math.max(0, Math.min(7, tm.shown - 1))]
         implicitWidth: tmRow.implicitWidth
         implicitHeight: 44
@@ -1461,12 +1527,12 @@ Item {
                         visible: mc.busy
                         opacity: 0
                         SequentialAnimation on scale {
-                            running: mcRing.visible
+                            running: mcRing.visible && page.visible && Tokens.appActive
                             loops: Animation.Infinite
                             NumberAnimation { from: 1.0; to: 1.35; duration: 1200; easing.type: Easing.OutCubic }
                         }
                         SequentialAnimation on opacity {
-                            running: mcRing.visible
+                            running: mcRing.visible && page.visible && Tokens.appActive
                             loops: Animation.Infinite
                             NumberAnimation { from: 0.6; to: 0.0; duration: 1200; easing.type: Easing.OutCubic }
                         }
@@ -1581,7 +1647,7 @@ Item {
                     radius: 3
                     color: Theme.primary
                     NumberAnimation on x {
-                        running: mcSweep.visible
+                        running: mcSweep.visible && page.visible && Tokens.appActive
                         loops: Animation.Infinite
                         from: -mcSweep.width
                         to: mcTrack.width
@@ -1980,11 +2046,11 @@ Item {
                             label: I18n.tr("Download Engine")
                             ok: page.engineOk
                             value: Deno.ready ? I18n.tr("Ready")
-                                   : !Deno.available ? I18n.tr("Runtime missing")
-                                   : I18n.tr("PO Token helper missing")
-                            detail: Deno.ready ? (Deno.runtimeName + " " + Deno.runtimeVersion + " · bgutil-pot")
-                                   : !Deno.available ? I18n.tr("One-time install, about 40 MB")
-                                   : I18n.tr("Required, about 44 MB")
+                                              : I18n.tr("Runtime missing")
+                            detail: Deno.ready
+                                    ? (Deno.runtimeName + " " + Deno.runtimeVersion
+                                       + (Deno.potInstalled ? " · bgutil-pot" : ""))
+                                    : I18n.tr("One-time install, about 40 MB")
                             onClicked: page.jumpTo(4, true)
                         }
                         HealthTile {
@@ -1998,426 +2064,366 @@ Item {
                         }
                     }
 
-                    // ═══ APPEARANCE ═══
-                    SettingsSection {
-                        id: secAppearance
-                        icon: "palette"
-                        title: I18n.tr("Appearance")
-                        subtitle: I18n.tr("Make it yours. Everything here applies instantly, no restart.")
-                        dimmed: !page.matches(0)
+                    // ── the seven cards, built AFTER the page shell (v3.55) ──
+                    // Together they are 90% of this page's construction cost
+                    // (~1.2 s of a ~1.4 s first visit). The shell above is the
+                    // part that has to be on screen the moment you click:
+                    // building it alone takes ~180 ms. The sections are dense
+                    // (key vaults, provider cards, folder pickers), so they are
+                    // constructed in the background straight after, instead of
+                    // making the whole page arrive late.
+                    //
+                    // The rail, search, health strip and every "add a key"
+                    // link all go through jumpTo(), which queues the jump until
+                    // the cards exist. When the page is warmed in the
+                    // background they are already here by the time you open it.
+                    Rectangle {
+                        id: secSkeleton
+                        readonly property bool busy: page.visible
+                                                     && secLoader.status !== Loader.Ready
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: busy ? 240 : 0
+                        visible: busy
+                        radius: Tokens.radiusXl
+                        color: Theme.panel_bg
+                        border.width: 1
+                        border.color: Theme.border
 
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: content.width >= 980 ? 2 : 1
-                            columnSpacing: Tokens.space5
-                            rowSpacing: Tokens.space4
-
-                            RowGroup {
-                                Layout.alignment: Qt.AlignTop
-                                SettingRow {
-                                    icon: "contrast"
-                                    label: I18n.tr("Theme")
-                                    description: I18n.tr("Follow Windows, or pin light / dark.")
-                                    Segmented {
-                                        current: App.themePreference !== undefined
-                                                 ? App.themePreference : (Theme.isDark ? "dark" : "light")
-                                        options: [
-                                            { label: I18n.tr("System"), value: "system", icon: "desktop_windows" },
-                                            { label: I18n.tr("Light"),  value: "light",  icon: "light_mode" },
-                                            { label: I18n.tr("Dark"),   value: "dark",   icon: "dark_mode" }
-                                        ]
-                                        onPicked: (value, btn) => {
-                                            const now = Theme.isDark ? "dark" : "light"
-                                            if (App.resolvedThemeName(value) === now) {
-                                                App.applyTheme(value)       // same palette: just remember it
-                                                return
-                                            }
-                                            const p = btn.mapToItem(null, btn.width / 2, btn.height / 2)
-                                            page.themeWipeRequested(p.x, p.y, value)
-                                        }
-                                    }
-                                }
-                                RowSep {}
-                                SettingRow {
-                                    icon: "palette"
-                                    label: I18n.tr("Accent colour")
-                                    description: I18n.tr("Repaints every button, icon tile and glow.")
-                                    Grid {
-                                        columns: 5
-                                        spacing: Tokens.space2 + 2
-                                        Repeater {
-                                            model: App.accents
-                                            delegate: AbstractButton {
-                                                id: sw
-                                                width: 34; height: 34
-                                                hoverEnabled: true
-                                                readonly property bool active: App.accent === modelData.key
-                                                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                                onClicked: App.setAccent(modelData.key)
-                                                scale: sw.pressed ? 0.88 : sw.hovered ? 1.08 : 1.0
-                                                Behavior on scale {
-                                                    NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic }
-                                                }
-                                                background: Item {
-                                                    // ring OUTSIDE the disc so the swatch keeps its true colour
-                                                    Rectangle {
-                                                        anchors.centerIn: parent
-                                                        width: parent.width + (sw.active ? 8 : 4)
-                                                        height: width
-                                                        radius: width / 2
-                                                        color: "transparent"
-                                                        border.width: 2
-                                                        border.color: sw.active ? modelData.color
-                                                                      : sw.hovered ? Theme.outline : U.withAlpha(Theme.outline, 0)
-                                                        Behavior on width { NumberAnimation { duration: Tokens.durFast } }
-                                                        Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
-                                                    }
-                                                    Rectangle {
-                                                        anchors.fill: parent
-                                                        radius: width / 2
-                                                        gradient: Gradient {
-                                                            orientation: Gradient.Horizontal
-                                                            GradientStop { position: 0.0; color: modelData.color }
-                                                            GradientStop { position: 1.0; color: modelData.color2 !== undefined ? modelData.color2 : modelData.color }
-                                                        }
-                                                        Rectangle {
-                                                            width: parent.width * 0.5; height: parent.height * 0.3
-                                                            radius: height / 2
-                                                            x: parent.width * 0.18; y: parent.height * 0.12
-                                                            color: Qt.rgba(1, 1, 1, 0.22)
-                                                        }
-                                                    }
-                                                }
-                                                C.IconGlyph {
-                                                    anchors.centerIn: parent
-                                                    visible: sw.active
-                                                    name: "check"; fill: true; size: 16
-                                                    glyphColor: "#ffffff"
-                                                }
-                                                C.AppTooltip { visible: sw.hovered; text: I18n.tr(modelData.name) }
-                                            }
-                                        }
-                                    }
-                                }
-                                RowSep {}
-                                SettingRow {
-                                    icon: "sparkling"
-                                    label: I18n.tr("Ambient motion")
-                                    description: I18n.tr("Drifting page light and breathing glows. Turn off for a perfectly still interface.")
-                                    C.AppSwitch {
-                                        checked: App.ambientMotion
-                                        onToggled: App.setAmbientMotion(checked)
-                                    }
-                                }
-                                // v3.40: away notices (desktop toasts)
-                                RowSep {}
-                                SettingRow {
-                                    icon: "notifications"
-                                    label: I18n.tr("Desktop notifications")
-                                    description: I18n.tr("When a scrape, download or AI job finishes while you're in another app, a notice slides into the corner of your screen.")
-                                    C.ActionButton {
-                                        compact: true
-                                        variant: "ghost"
-                                        iconName: "visibility"
-                                        text: I18n.tr("Preview")
-                                        enabled: DesktopNotify.enabled
-                                        onClicked: DesktopNotify.preview()
-                                    }
-                                    C.AppSwitch {
-                                        checked: DesktopNotify.enabled
-                                        onToggled: DesktopNotify.setEnabled(checked)
-                                    }
-                                }
-                                // v3.41: live activity card for jobs still running
-                                RowSep {}
-                                SettingRow {
-                                    icon: "downloading"
-                                    label: I18n.tr("Live progress while away")
-                                    description: I18n.tr("A download or cut still running when you switch apps follows you as a live card in the corner. Close it and you'll still get a notice when it's done.")
-                                    C.ActionButton {
-                                        compact: true
-                                        variant: "ghost"
-                                        iconName: "visibility"
-                                        text: I18n.tr("Preview")
-                                        enabled: DesktopNotify.enabled && DesktopNotify.liveEnabled
-                                        onClicked: DesktopNotify.previewLive()
-                                    }
-                                    C.AppSwitch {
-                                        checked: DesktopNotify.liveEnabled
-                                        enabled: DesktopNotify.enabled
-                                        onToggled: DesktopNotify.setLiveEnabled(checked)
-                                    }
-                                }
-                                RowSep { visible: Qt.platform.os === "windows" }
-                                SettingRow {
-                                    visible: Qt.platform.os === "windows"
-                                    icon: "volume_up"
-                                    label: I18n.tr("Notification sound")
-                                    description: I18n.tr("Play your Windows notification sound with each notice.")
-                                    C.AppSwitch {
-                                        checked: DesktopNotify.sound
-                                        enabled: DesktopNotify.enabled
-                                        onToggled: DesktopNotify.setSound(checked)
-                                    }
-                                }
+                        RowLayout {
+                            anchors.centerIn: parent
+                            spacing: Tokens.space2
+                            C.SpinnerGlyph {
+                                name: "autorenew"; size: 16
+                                glyphColor: Theme.primary
+                                spinning: secSkeleton.busy && Tokens.appActive
                             }
+                            C.AppText {
+                                text: I18n.tr("Loading settings…")
+                                font.pixelSize: Tokens.fontBody
+                                color: Theme.outline
+                            }
+                        }
+                    }
 
-                            // live preview — a tiny YouTube Hunter window painted with
-                            // the live palette, so every choice on the left is
-                            // visible the moment it is made.
-                            Rectangle {
-                                id: preview
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 380
-                                Layout.maximumWidth: content.width >= 980 ? 420 : 100000
-                                Layout.alignment: Qt.AlignTop
-                                implicitHeight: 300
-                                radius: Tokens.radiusLg
-                                color: Theme.background
-                                border.width: 1
-                                border.color: Theme.border
-                                clip: true
+                    Loader {
+                        id: secLoader
+                        objectName: "settingsSections"
+                        Layout.fillWidth: true
+                        asynchronous: true
+                        // armed a beat after the page exists: starting it in the
+                        // same pass would build it synchronously inside the
+                        // page's own async incubation, which is exactly the
+                        // delay this split removes.
+                        active: false
+                        sourceComponent: secComp
+                        onLoaded: page._sectionsReady()
+                    }
 
-                                // accent wash (rounded: clip: true only cuts square)
-                                Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.top: parent.top
-                                    height: parent.height * 0.6
-                                    radius: parent.radius
-                                    gradient: Gradient {
-                                        GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.20 : 0.12) }
-                                        GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.0) }
-                                    }
-                                }
-                                // title bar dots
-                                Row {
-                                    x: Tokens.space3; y: Tokens.space3
-                                    spacing: 6
-                                    Repeater {
-                                        model: 3
-                                        Rectangle { width: 8; height: 8; radius: 4; color: U.withAlpha(Theme.on_surface, 0.18) }
-                                    }
-                                }
-                                C.AppText {
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: Tokens.space3
-                                    y: Tokens.space2 + 1
-                                    text: I18n.tr("Live preview")
-                                    font.pixelSize: Tokens.fontMicro
-                                    weight: Tokens.weightDemiBold
-                                    color: Theme.outline
-                                }
-                                // mini rail
-                                Rectangle {
-                                    x: Tokens.space3; y: 34
-                                    width: 52; height: parent.height - 34 - Tokens.space3
-                                    radius: Tokens.radiusMd
-                                    color: Theme.surface_low
-                                    border.width: 1; border.color: Theme.border
-                                    Column {
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        y: Tokens.space3
-                                        spacing: Tokens.space2
-                                        Repeater {
-                                            model: ["nav_niche", "nav_ideas", "nav_downloads", "nav_settings"]
-                                            Rectangle {
-                                                width: 32; height: 32; radius: Tokens.radiusSm
-                                                color: index === 1 ? Theme.primary : "transparent"
-                                                C.IconGlyph {
-                                                    anchors.centerIn: parent
-                                                    name: modelData; size: 15; fill: index === 1
-                                                    glyphColor: index === 1 ? Theme.on_primary : Theme.on_surface_var
+                    Component {
+                        id: secComp
+                        ColumnLayout {
+                            width: secLoader.width
+                            spacing: Tokens.space5
+                            // ═══ APPEARANCE ═══
+                            SettingsSection {
+                                id: secAppearance
+                                objectName: "settingsSection0"
+                                icon: "palette"
+                                title: I18n.tr("Appearance")
+                                subtitle: I18n.tr("Make it yours. Everything here applies instantly, no restart.")
+                                dimmed: !page.matches(0)
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: content.width >= 980 ? 2 : 1
+                                    columnSpacing: Tokens.space5
+                                    rowSpacing: Tokens.space4
+
+                                    RowGroup {
+                                        Layout.alignment: Qt.AlignTop
+                                        SettingRow {
+                                            icon: "contrast"
+                                            label: I18n.tr("Theme")
+                                            description: I18n.tr("Follow Windows, or pin light / dark.")
+                                            Segmented {
+                                                current: App.themePreference !== undefined
+                                                         ? App.themePreference : (Theme.isDark ? "dark" : "light")
+                                                options: [
+                                                    { label: I18n.tr("System"), value: "system", icon: "desktop_windows" },
+                                                    { label: I18n.tr("Light"),  value: "light",  icon: "light_mode" },
+                                                    { label: I18n.tr("Dark"),   value: "dark",   icon: "dark_mode" }
+                                                ]
+                                                onPicked: (value, btn) => {
+                                                    const now = Theme.isDark ? "dark" : "light"
+                                                    if (App.resolvedThemeName(value) === now) {
+                                                        App.applyTheme(value)       // same palette: just remember it
+                                                        return
+                                                    }
+                                                    const p = btn.mapToItem(null, btn.width / 2, btn.height / 2)
+                                                    page.themeWipeRequested(p.x, p.y, value)
                                                 }
                                             }
                                         }
-                                    }
-                                }
-                                // mini card
-                                Rectangle {
-                                    x: 52 + Tokens.space3 * 2; y: 34
-                                    width: parent.width - x - Tokens.space3
-                                    height: parent.height - 34 - Tokens.space3
-                                    radius: Tokens.radiusMd
-                                    color: Theme.panel_bg
-                                    border.width: 1; border.color: Theme.border
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: Tokens.space4
-                                        spacing: Tokens.space3
-                                        RowLayout {
-                                            spacing: Tokens.space2
-                                            C.IconTile { iconName: "lightbulb"; size: 30; solid: true; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
-                                            ColumnLayout {
-                                                spacing: 0
-                                                C.AppText { text: I18n.tr("AI Ideas"); weight: Tokens.weightBold; color: Theme.text_strong }
-                                                C.AppText { text: I18n.tr("3 blueprints ready"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
+                                        RowSep {}
+                                        SettingRow {
+                                            icon: "palette"
+                                            label: I18n.tr("Accent colour")
+                                            description: I18n.tr("Repaints every button, icon tile and glow.")
+                                            Grid {
+                                                columns: 5
+                                                spacing: Tokens.space2 + 2
+                                                Repeater {
+                                                    model: App.accents
+                                                    delegate: AbstractButton {
+                                                        id: sw
+                                                        width: 34; height: 34
+                                                        hoverEnabled: true
+                                                        readonly property bool active: App.accent === modelData.key
+                                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                                        onClicked: App.setAccent(modelData.key)
+                                                        scale: sw.pressed ? 0.88 : sw.hovered ? 1.08 : 1.0
+                                                        Behavior on scale {
+                                                            NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic }
+                                                        }
+                                                        background: Item {
+                                                            // ring OUTSIDE the disc so the swatch keeps its true colour
+                                                            Rectangle {
+                                                                anchors.centerIn: parent
+                                                                width: parent.width + (sw.active ? 8 : 4)
+                                                                height: width
+                                                                radius: width / 2
+                                                                color: "transparent"
+                                                                border.width: 2
+                                                                border.color: sw.active ? modelData.color
+                                                                              : sw.hovered ? Theme.outline : U.withAlpha(Theme.outline, 0)
+                                                                Behavior on width { NumberAnimation { duration: Tokens.durFast } }
+                                                                Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                                            }
+                                                            Rectangle {
+                                                                anchors.fill: parent
+                                                                radius: width / 2
+                                                                gradient: Gradient {
+                                                                    orientation: Gradient.Horizontal
+                                                                    GradientStop { position: 0.0; color: modelData.color }
+                                                                    GradientStop { position: 1.0; color: modelData.color2 !== undefined ? modelData.color2 : modelData.color }
+                                                                }
+                                                                Rectangle {
+                                                                    width: parent.width * 0.5; height: parent.height * 0.3
+                                                                    radius: height / 2
+                                                                    x: parent.width * 0.18; y: parent.height * 0.12
+                                                                    color: Qt.rgba(1, 1, 1, 0.22)
+                                                                }
+                                                            }
+                                                        }
+                                                        C.IconGlyph {
+                                                            anchors.centerIn: parent
+                                                            visible: sw.active
+                                                            name: "check"; fill: true; size: 16
+                                                            glyphColor: "#ffffff"
+                                                        }
+                                                        C.AppTooltip { visible: sw.hovered; text: I18n.tr(modelData.name) }
+                                                    }
+                                                }
                                             }
                                         }
-                                        // chart bars
+                                        RowSep {}
+                                        SettingRow {
+                                            icon: "sparkling"
+                                            label: I18n.tr("Ambient motion")
+                                            description: I18n.tr("Drifting page light and breathing glows. Turn off for a perfectly still interface.")
+                                            C.AppSwitch {
+                                                checked: App.ambientMotion
+                                                onToggled: App.setAmbientMotion(checked)
+                                            }
+                                        }
+                                        // v3.40: away notices (desktop toasts)
+                                        RowSep {}
+                                        SettingRow {
+                                            icon: "notifications"
+                                            label: I18n.tr("Desktop notifications")
+                                            description: I18n.tr("When a scrape, download or AI job finishes while you're in another app, a notice slides into the corner of your screen.")
+                                            C.ActionButton {
+                                                compact: true
+                                                variant: "ghost"
+                                                iconName: "visibility"
+                                                text: I18n.tr("Preview")
+                                                enabled: DesktopNotify.enabled
+                                                onClicked: DesktopNotify.preview()
+                                            }
+                                            C.AppSwitch {
+                                                checked: DesktopNotify.enabled
+                                                onToggled: DesktopNotify.setEnabled(checked)
+                                            }
+                                        }
+                                        // v3.41: live activity card for jobs still running
+                                        RowSep {}
+                                        SettingRow {
+                                            icon: "downloading"
+                                            label: I18n.tr("Live progress while away")
+                                            description: I18n.tr("A download or cut still running when you switch apps follows you as a live card in the corner. Close it and you'll still get a notice when it's done.")
+                                            C.ActionButton {
+                                                compact: true
+                                                variant: "ghost"
+                                                iconName: "visibility"
+                                                text: I18n.tr("Preview")
+                                                enabled: DesktopNotify.enabled && DesktopNotify.liveEnabled
+                                                onClicked: DesktopNotify.previewLive()
+                                            }
+                                            C.AppSwitch {
+                                                checked: DesktopNotify.liveEnabled
+                                                enabled: DesktopNotify.enabled
+                                                onToggled: DesktopNotify.setLiveEnabled(checked)
+                                            }
+                                        }
+                                        RowSep { visible: Qt.platform.os === "windows" }
+                                        SettingRow {
+                                            visible: Qt.platform.os === "windows"
+                                            icon: "volume_up"
+                                            label: I18n.tr("Notification sound")
+                                            description: I18n.tr("Play your Windows notification sound with each notice.")
+                                            C.AppSwitch {
+                                                checked: DesktopNotify.sound
+                                                enabled: DesktopNotify.enabled
+                                                onToggled: DesktopNotify.setSound(checked)
+                                            }
+                                        }
+                                    }
+
+                                    // live preview — a tiny YouTube Hunter window painted with
+                                    // the live palette, so every choice on the left is
+                                    // visible the moment it is made.
+                                    Rectangle {
+                                        id: preview
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 380
+                                        Layout.maximumWidth: content.width >= 980 ? 420 : 100000
+                                        Layout.alignment: Qt.AlignTop
+                                        implicitHeight: 300
+                                        radius: Tokens.radiusLg
+                                        color: Theme.background
+                                        border.width: 1
+                                        border.color: Theme.border
+                                        clip: true
+
+                                        // accent wash (rounded: clip: true only cuts square)
+                                        Rectangle {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            height: parent.height * 0.6
+                                            radius: parent.radius
+                                            gradient: Gradient {
+                                                GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.20 : 0.12) }
+                                                GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.0) }
+                                            }
+                                        }
+                                        // title bar dots
                                         Row {
-                                            Layout.fillWidth: true
-                                            Layout.preferredHeight: 56
+                                            x: Tokens.space3; y: Tokens.space3
                                             spacing: 6
                                             Repeater {
-                                                model: [0.35, 0.6, 0.45, 0.85, 0.55, 1.0, 0.7]
-                                                Rectangle {
-                                                    width: 14
-                                                    height: 56 * modelData
-                                                    y: 56 - height
-                                                    radius: 4
-                                                    color: index === 5 ? Theme.primary : U.withAlpha(Theme.primary, 0.28)
-                                                }
+                                                model: 3
+                                                Rectangle { width: 8; height: 8; radius: 4; color: U.withAlpha(Theme.on_surface, 0.18) }
                                             }
                                         }
-                                        Item { Layout.fillHeight: true }
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Tokens.space2
-                                            Rectangle {
-                                                radius: Tokens.radiusPill
-                                                color: U.withAlpha(Theme.primary, 0.14)
-                                                implicitWidth: chipTxt.implicitWidth + 16
-                                                implicitHeight: 24
-                                                C.AppText { id: chipTxt; anchors.centerIn: parent; text: "4.2x"; mono: true; weight: Tokens.weightBold; font.pixelSize: Tokens.fontCaption; color: Theme.primary }
-                                            }
-                                            Item { Layout.fillWidth: true }
-                                            Rectangle {
-                                                implicitWidth: 40; implicitHeight: 22; radius: 11
-                                                color: Theme.primary
-                                                Rectangle { width: 16; height: 16; radius: 8; x: parent.width - width - 3; y: 3; color: "#ffffff" }
-                                            }
-                                            Rectangle {
-                                                implicitWidth: btnTxt.implicitWidth + 24
-                                                implicitHeight: 30
-                                                radius: Tokens.radiusSm
-                                                gradient: Gradient {
-                                                    orientation: Gradient.Horizontal
-                                                    GradientStop { position: 0.0; color: Theme.primary }
-                                                    GradientStop { position: 1.0; color: U.mix(Theme.primary, Theme.primary_deep, 0.7) }
-                                                }
-                                                C.AppText { id: btnTxt; anchors.centerIn: parent; text: I18n.tr("Generate"); weight: Tokens.weightBold; font.pixelSize: Tokens.fontCaption; color: Theme.on_primary }
-                                            }
+                                        C.AppText {
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: Tokens.space3
+                                            y: Tokens.space2 + 1
+                                            text: I18n.tr("Live preview")
+                                            font.pixelSize: Tokens.fontMicro
+                                            weight: Tokens.weightDemiBold
+                                            color: Theme.outline
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ═══ YOUTUBE API ═══
-                    C.ApiKeysCard {
-                        id: secYoutube
-                        dimmed: !page.matches(1)
-                        onGuideRequested: page.openGuide("youtube")
-                    }
-
-                    // ═══ GOOGLE KEY GUIDE ═══
-                    C.GoogleKeyGuide {
-                        id: secGuide
-                        dimmed: !page.matches(2)
-                        onKeyFieldRequested: page.jumpTo(1, true)
-                        onGeminiRequested: {
-                            if (Settings.providerIndex !== 2) Settings.providerIndex = 2
-                            page.jumpTo(3, true)
-                        }
-                    }
-
-                    // ═══ AI PROVIDERS (v19: saved profiles + routing) ═══
-                    SettingsSection {
-                        id: secAi
-                        icon: "psychology"
-                        title: I18n.tr("AI Providers")
-                        subtitle: Settings.autoSave
-                                  ? I18n.tr("Save as many providers as you like, then choose which one powers each feature. Changes here save automatically.")
-                                  : I18n.tr("Save as many providers as you like, then choose which one powers each feature. Press Save to keep your changes.")
-                        dimmed: !page.matches(3)
-                        trailing: [
-                            StatusChip {
-                                text: Settings.aiReadyCount === 0 ? I18n.tr("No key yet")
-                                     : Settings.aiReadyCount === 1 ? I18n.tr("1 ready")
-                                     : I18n.tr("{n} ready").replace("{n}", Settings.aiReadyCount)
-                                tint: Settings.aiReadyCount > 0 ? Theme.secondary_container : Theme.warn
-                            }
-                        ]
-
-                        // ── the saved providers ──
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Tokens.space3
-                            BlockHead {
-                                icon: "api"
-                                title: I18n.tr("Your providers")
-                                detail: I18n.tr("Each one keeps its own host, key and model. Star one as the default.")
-                            }
-                            C.ActionButton {
-                                id: addProvBtn
-                                Layout.alignment: Qt.AlignVCenter
-                                iconName: "add"
-                                text: I18n.tr("Add provider")
-                                onClicked: addMenu.opened ? addMenu.close() : addMenu.open()
-
-                                Popup {
-                                    id: addMenu
-                                    y: addProvBtn.height + 8
-                                    x: I18n.rtl ? 0 : addProvBtn.width - width
-                                    width: 320
-                                    padding: 8
-                                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-                                    enter: Transition {
-                                        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
-                                        NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
-                                    }
-                                    exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Tokens.durFast } }
-                                    background: Rectangle {
-                                        radius: 18
-                                        color: Theme.isDark ? Theme.surface_high : Theme.surface
-                                        border.width: 1; border.color: Theme.border_med
-                                    }
-                                    contentItem: Column {
-                                        LayoutMirroring.enabled: I18n.rtl
-                                        LayoutMirroring.childrenInherit: true
-                                        spacing: 2
-                                        C.AppText { leftPadding: 10; rightPadding: 10; topPadding: 6; bottomPadding: 6; text: I18n.tr("Start from"); color: Theme.outline; weight: Tokens.weightDemiBold; font.pixelSize: Tokens.fontCaption }
-                                        Repeater {
-                                            model: Settings.aiPresets
-                                            delegate: AbstractButton {
-                                                id: pm
-                                                width: 304
-                                                implicitHeight: 48
-                                                hoverEnabled: true
-                                                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                                leftPadding: 8; rightPadding: 8
-                                                onClicked: { addMenu.close(); Settings.addAiProfile(modelData.id) }
-                                                background: Rectangle { radius: 12; color: pm.hovered ? U.withAlpha(Theme.on_surface, 0.07) : U.withAlpha(Theme.on_surface, 0) }
-                                                contentItem: RowLayout {
-                                                    spacing: 10
+                                        // mini rail
+                                        Rectangle {
+                                            x: Tokens.space3; y: 34
+                                            width: 52; height: parent.height - 34 - Tokens.space3
+                                            radius: Tokens.radiusMd
+                                            color: Theme.surface_low
+                                            border.width: 1; border.color: Theme.border
+                                            Column {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                y: Tokens.space3
+                                                spacing: Tokens.space2
+                                                Repeater {
+                                                    model: ["nav_niche", "nav_ideas", "nav_downloads", "nav_settings"]
                                                     Rectangle {
-                                                        Layout.preferredWidth: 32; Layout.preferredHeight: 32
-                                                        radius: 10
-                                                        color: index === 0 ? U.withAlpha(Theme.primary, 0.14) : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.07 : 0.05)
-                                                        C.IconGlyph { anchors.centerIn: parent; name: modelData.glyph; size: 16; glyphColor: index === 0 ? Theme.primary : Theme.on_surface_var }
-                                                    }
-                                                    Column {
-                                                        Layout.fillWidth: true
-                                                        spacing: 1
-                                                        C.AppText { text: modelData.name; weight: Tokens.weightBold; color: Theme.text_strong }
-                                                        C.AppText {
-                                                            width: 230
-                                                            text: modelData.host !== "" ? modelData.host.replace(/^https?:\/\//, "") : I18n.tr("Any compatible endpoint")
-                                                            mono: modelData.host !== ""
-                                                            font.pixelSize: Tokens.fontMicro + 1
-                                                            color: Theme.on_surface_var
-                                                            elide: Text.ElideRight
+                                                        width: 32; height: 32; radius: Tokens.radiusSm
+                                                        color: index === 1 ? Theme.primary : "transparent"
+                                                        C.IconGlyph {
+                                                            anchors.centerIn: parent
+                                                            name: modelData; size: 15; fill: index === 1
+                                                            glyphColor: index === 1 ? Theme.on_primary : Theme.on_surface_var
                                                         }
                                                     }
+                                                }
+                                            }
+                                        }
+                                        // mini card
+                                        Rectangle {
+                                            x: 52 + Tokens.space3 * 2; y: 34
+                                            width: parent.width - x - Tokens.space3
+                                            height: parent.height - 34 - Tokens.space3
+                                            radius: Tokens.radiusMd
+                                            color: Theme.panel_bg
+                                            border.width: 1; border.color: Theme.border
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: Tokens.space4
+                                                spacing: Tokens.space3
+                                                RowLayout {
+                                                    spacing: Tokens.space2
+                                                    C.IconTile { iconName: "lightbulb"; size: 30; solid: true; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
+                                                    ColumnLayout {
+                                                        spacing: 0
+                                                        C.AppText { text: I18n.tr("AI Ideas"); weight: Tokens.weightBold; color: Theme.text_strong }
+                                                        C.AppText { text: I18n.tr("3 blueprints ready"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
+                                                    }
+                                                }
+                                                // chart bars
+                                                Row {
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 56
+                                                    spacing: 6
+                                                    Repeater {
+                                                        model: [0.35, 0.6, 0.45, 0.85, 0.55, 1.0, 0.7]
+                                                        Rectangle {
+                                                            width: 14
+                                                            height: 56 * modelData
+                                                            y: 56 - height
+                                                            radius: 4
+                                                            color: index === 5 ? Theme.primary : U.withAlpha(Theme.primary, 0.28)
+                                                        }
+                                                    }
+                                                }
+                                                Item { Layout.fillHeight: true }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: Tokens.space2
                                                     Rectangle {
-                                                        visible: modelData.local
                                                         radius: Tokens.radiusPill
-                                                        color: U.withAlpha(Theme.secondary_container, 0.14)
-                                                        implicitWidth: locTxt.implicitWidth + 12
-                                                        implicitHeight: 20
-                                                        C.AppText { id: locTxt; anchors.centerIn: parent; text: I18n.tr("Local"); font.pixelSize: Tokens.fontMicro; weight: Tokens.weightBold; color: Theme.secondary_container }
+                                                        color: U.withAlpha(Theme.primary, 0.14)
+                                                        implicitWidth: chipTxt.implicitWidth + 16
+                                                        implicitHeight: 24
+                                                        C.AppText { id: chipTxt; anchors.centerIn: parent; text: "4.2x"; mono: true; weight: Tokens.weightBold; font.pixelSize: Tokens.fontCaption; color: Theme.primary }
+                                                    }
+                                                    Item { Layout.fillWidth: true }
+                                                    Rectangle {
+                                                        implicitWidth: 40; implicitHeight: 22; radius: 11
+                                                        color: Theme.primary
+                                                        Rectangle { width: 16; height: 16; radius: 8; x: parent.width - width - 3; y: 3; color: "#ffffff" }
+                                                    }
+                                                    Rectangle {
+                                                        implicitWidth: btnTxt.implicitWidth + 24
+                                                        implicitHeight: 30
+                                                        radius: Tokens.radiusSm
+                                                        gradient: Gradient {
+                                                            orientation: Gradient.Horizontal
+                                                            GradientStop { position: 0.0; color: Theme.primary }
+                                                            GradientStop { position: 1.0; color: U.mix(Theme.primary, Theme.primary_deep, 0.7) }
+                                                        }
+                                                        C.AppText { id: btnTxt; anchors.centerIn: parent; text: I18n.tr("Generate"); weight: Tokens.weightBold; font.pixelSize: Tokens.fontCaption; color: Theme.on_primary }
                                                     }
                                                 }
                                             }
@@ -2425,524 +2431,654 @@ Item {
                                     }
                                 }
                             }
-                        }
 
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Tokens.space3
-                            Repeater {
-                                model: Settings.aiProfileIds
-                                delegate: C.AiProfileCard { profileId: modelData }
+                            // ═══ YOUTUBE API ═══
+                            C.ApiKeysCard {
+                                id: secYoutube
+                                objectName: "settingsSection1"
+                                dimmed: !page.matches(1)
+                                onGuideRequested: page.openGuide("youtube")
                             }
-                        }
 
-                        // no Gemini key yet → straight to the guide
-                        AbstractButton {
-                            id: geminiNudge
-                            visible: String((Settings.aiProfileMap["gemini"] || {}).apiKey || "") === ""
-                            Layout.fillWidth: true
-                            implicitHeight: 56
-                            hoverEnabled: true
-                            padding: 0
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            onClicked: page.openGuide("gemini")
-                            background: Rectangle {
-                                radius: 14
-                                color: geminiNudge.hovered ? U.withAlpha(Theme.primary, Theme.isDark ? 0.14 : 0.09)
-                                                           : U.withAlpha(Theme.primary, Theme.isDark ? 0.08 : 0.05)
-                                border.width: 1
-                                border.color: U.withAlpha(Theme.primary, geminiNudge.hovered ? 0.5 : 0.25)
-                                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                            // ═══ GOOGLE KEY GUIDE ═══
+                            C.GoogleKeyGuide {
+                                id: secGuide
+                                objectName: "settingsSection2"
+                                dimmed: !page.matches(2)
+                                onKeyFieldRequested: page.jumpTo(1, true)
+                                onGeminiRequested: {
+                                    if (Settings.providerIndex !== 2) Settings.providerIndex = 2
+                                    page.jumpTo(3, true)
+                                }
                             }
-                            contentItem: Item {
+
+                            // ═══ AI PROVIDERS (v19: saved profiles + routing) ═══
+                            SettingsSection {
+                                id: secAi
+                                objectName: "settingsSection3"
+                                icon: "psychology"
+                                title: I18n.tr("AI Providers")
+                                subtitle: Settings.autoSave
+                                          ? I18n.tr("Save as many providers as you like, then choose which one powers each feature. Changes here save automatically.")
+                                          : I18n.tr("Save as many providers as you like, then choose which one powers each feature. Press Save to keep your changes.")
+                                dimmed: !page.matches(3)
+                                trailing: [
+                                    StatusChip {
+                                        text: Settings.aiReadyCount === 0 ? I18n.tr("No key yet")
+                                             : Settings.aiReadyCount === 1 ? I18n.tr("1 ready")
+                                             : I18n.tr("{n} ready").replace("{n}", Settings.aiReadyCount)
+                                        tint: Settings.aiReadyCount > 0 ? Theme.secondary_container : Theme.warn
+                                    }
+                                ]
+
+                                // ── the saved providers ──
                                 RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: Tokens.space4
-                                    anchors.rightMargin: Tokens.space4
+                                    Layout.fillWidth: true
                                     spacing: Tokens.space3
-                                    C.IconGlyph { name: "provider_gemini"; fill: true; size: 18; glyphColor: Theme.primary }
-                                    C.AppText {
-                                        Layout.fillWidth: true
-                                        text: I18n.tr("No Gemini key yet? It is free from Google AI Studio, four steps.")
-                                        weight: Tokens.weightDemiBold
-                                        color: Theme.text_strong
-                                        elide: Text.ElideRight
+                                    BlockHead {
+                                        icon: "api"
+                                        title: I18n.tr("Your providers")
+                                        detail: I18n.tr("Each one keeps its own host, key and model. Star one as the default.")
                                     }
-                                    C.AppText {
-                                        text: I18n.tr("Open the guide")
-                                        weight: Tokens.weightBold
-                                        font.pixelSize: Tokens.fontCaption + 1
-                                        color: Theme.primary
+                                    C.ActionButton {
+                                        id: addProvBtn
+                                        Layout.alignment: Qt.AlignVCenter
+                                        iconName: "add"
+                                        text: I18n.tr("Add provider")
+                                        onClicked: addMenu.opened ? addMenu.close() : addMenu.open()
+
+                                        Popup {
+                                            id: addMenu
+                                            y: addProvBtn.height + 8
+                                            x: I18n.rtl ? 0 : addProvBtn.width - width
+                                            width: 320
+                                            padding: 8
+                                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                                            enter: Transition {
+                                                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
+                                                NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
+                                            }
+                                            exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Tokens.durFast } }
+                                            background: Rectangle {
+                                                radius: 18
+                                                color: Theme.isDark ? Theme.surface_high : Theme.surface
+                                                border.width: 1; border.color: Theme.border_med
+                                            }
+                                            contentItem: Column {
+                                                LayoutMirroring.enabled: I18n.rtl
+                                                LayoutMirroring.childrenInherit: true
+                                                spacing: 2
+                                                C.AppText { leftPadding: 10; rightPadding: 10; topPadding: 6; bottomPadding: 6; text: I18n.tr("Start from"); color: Theme.outline; weight: Tokens.weightDemiBold; font.pixelSize: Tokens.fontCaption }
+                                                Repeater {
+                                                    model: Settings.aiPresets
+                                                    delegate: AbstractButton {
+                                                        id: pm
+                                                        width: 304
+                                                        implicitHeight: 48
+                                                        hoverEnabled: true
+                                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                                        leftPadding: 8; rightPadding: 8
+                                                        onClicked: { addMenu.close(); Settings.addAiProfile(modelData.id) }
+                                                        background: Rectangle { radius: 12; color: pm.hovered ? U.withAlpha(Theme.on_surface, 0.07) : U.withAlpha(Theme.on_surface, 0) }
+                                                        contentItem: RowLayout {
+                                                            spacing: 10
+                                                            Rectangle {
+                                                                Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                                                                radius: 10
+                                                                color: index === 0 ? U.withAlpha(Theme.primary, 0.14) : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.07 : 0.05)
+                                                                C.IconGlyph { anchors.centerIn: parent; name: modelData.glyph; size: 16; glyphColor: index === 0 ? Theme.primary : Theme.on_surface_var }
+                                                            }
+                                                            Column {
+                                                                Layout.fillWidth: true
+                                                                spacing: 1
+                                                                C.AppText { text: modelData.name; weight: Tokens.weightBold; color: Theme.text_strong }
+                                                                C.AppText {
+                                                                    width: 230
+                                                                    text: modelData.host !== "" ? modelData.host.replace(/^https?:\/\//, "") : I18n.tr("Any compatible endpoint")
+                                                                    mono: modelData.host !== ""
+                                                                    font.pixelSize: Tokens.fontMicro + 1
+                                                                    color: Theme.on_surface_var
+                                                                    elide: Text.ElideRight
+                                                                }
+                                                            }
+                                                            Rectangle {
+                                                                visible: modelData.local
+                                                                radius: Tokens.radiusPill
+                                                                color: U.withAlpha(Theme.secondary_container, 0.14)
+                                                                implicitWidth: locTxt.implicitWidth + 12
+                                                                implicitHeight: 20
+                                                                C.AppText { id: locTxt; anchors.centerIn: parent; text: I18n.tr("Local"); font.pixelSize: Tokens.fontMicro; weight: Tokens.weightBold; color: Theme.secondary_container }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                    C.IconGlyph {
-                                        name: I18n.rtl ? "arrow_back" : "arrow_forward"
-                                        size: 16
-                                        glyphColor: Theme.primary
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.space3
+                                    Repeater {
+                                        model: Settings.aiProfileIds
+                                        delegate: C.AiProfileCard { profileId: modelData }
+                                    }
+                                }
+
+                                // no Gemini key yet → straight to the guide
+                                AbstractButton {
+                                    id: geminiNudge
+                                    visible: String((Settings.aiProfileMap["gemini"] || {}).apiKey || "") === ""
+                                    Layout.fillWidth: true
+                                    implicitHeight: 56
+                                    hoverEnabled: true
+                                    padding: 0
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    onClicked: page.openGuide("gemini")
+                                    background: Rectangle {
+                                        radius: 14
+                                        color: geminiNudge.hovered ? U.withAlpha(Theme.primary, Theme.isDark ? 0.14 : 0.09)
+                                                                   : U.withAlpha(Theme.primary, Theme.isDark ? 0.08 : 0.05)
+                                        border.width: 1
+                                        border.color: U.withAlpha(Theme.primary, geminiNudge.hovered ? 0.5 : 0.25)
+                                        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                    }
+                                    contentItem: Item {
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: Tokens.space4
+                                            anchors.rightMargin: Tokens.space4
+                                            spacing: Tokens.space3
+                                            C.IconGlyph { name: "provider_gemini"; fill: true; size: 18; glyphColor: Theme.primary }
+                                            C.AppText {
+                                                Layout.fillWidth: true
+                                                text: I18n.tr("No Gemini key yet? It is free from Google AI Studio, four steps.")
+                                                weight: Tokens.weightDemiBold
+                                                color: Theme.text_strong
+                                                elide: Text.ElideRight
+                                            }
+                                            C.AppText {
+                                                text: I18n.tr("Open the guide")
+                                                weight: Tokens.weightBold
+                                                font.pixelSize: Tokens.fontCaption + 1
+                                                color: Theme.primary
+                                            }
+                                            C.IconGlyph {
+                                                name: I18n.rtl ? "arrow_back" : "arrow_forward"
+                                                size: 16
+                                                glyphColor: Theme.primary
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ── routing: which AI does what ──
+                                BlockHead {
+                                    Layout.topMargin: Tokens.space3
+                                    icon: "route"
+                                    title: I18n.tr("Which AI does what")
+                                    detail: I18n.tr("Pin idea generation to one provider and model. AI Chat picks its own model and effort in the chat.")
+                                }
+                                C.AiRoutingPanel { Layout.fillWidth: true }
+
+                                // what the default provider can do for the AI features
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    radius: Tokens.radiusLg
+                                    readonly property color tint: Settings.isGeminiProvider ? Theme.secondary_container : Theme.on_surface_var
+                                    color: U.withAlpha(tint, Theme.isDark ? 0.07 : 0.05)
+                                    border.width: 1
+                                    border.color: U.withAlpha(tint, 0.22)
+                                    implicitHeight: aiCapCol.implicitHeight + Tokens.space4 * 2
+                                    ColumnLayout {
+                                        id: aiCapCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: Tokens.space4
+                                        spacing: Tokens.space3
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: Tokens.space2
+                                            CapChip { glyph: "article"; text: I18n.tr("Writes reports & ideas"); ok: true }
+                                            CapChip { glyph: "travel_explore"; text: I18n.tr("Searches the web"); ok: Settings.isGeminiProvider }
+                                            CapChip { glyph: "movie"; text: I18n.tr("Watches the videos"); ok: Settings.isGeminiProvider }
+                                        }
+                                        C.AppText {
+                                            Layout.fillWidth: true
+                                            text: Settings.isGeminiProvider
+                                                  ? I18n.tr("Before writing a CSV report, Gemini watches the channel's best videos — Shorts in full, and the middle minutes of long-form ones. It takes a few minutes and costs quota, and it is what makes the report describe what the videos actually do.")
+                                                  : I18n.tr("Only Google Gemini can search the web and watch videos. Reports still work with this provider, but they are written from the numbers alone.")
+                                            font.pixelSize: Tokens.fontCaption + 1
+                                            lineHeight: 1.35
+                                            color: Theme.on_surface
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+
+                                C.SmartField {
+                                    id: proxyField
+                                    label: I18n.tr("PROXY (optional)")
+                                    icon: "vpn_key"
+                                    mono: true
+                                    placeholder: "http://127.0.0.1:10809"
+                                    helper: I18n.tr("An HTTP proxy for the AI requests only — YouTube calls and downloads don't use it.")
+                                    onEdited: (v) => Settings.aiProxy = v
+                                    Binding { target: proxyField; property: "text"; value: Settings.aiProxy; when: !proxyField.focused; restoreMode: Binding.RestoreNone }
+                                }
+                            }
+
+                            // ═══ DOWNLOAD ENGINE ═══
+                            // yt-dlp 2026+ needs a JS runtime (deno/node/…) to pull YouTube
+                            // streams; ffmpeg/ffprobe are bundled.
+                            SettingsSection {
+                                id: secEngine
+                                objectName: "settingsSection4"
+                                icon: "downloading"
+                                title: I18n.tr("Download Engine")
+                                subtitle: I18n.tr("What the downloader needs to pull streams from YouTube.")
+                                dimmed: !page.matches(4)
+                                trailing: [
+                                    StatusChip {
+                                        text: Deno.setupBusy ? I18n.tr("Installing …")
+                                             : Deno.ready ? I18n.tr("Ready") : I18n.tr("Action needed")
+                                        tint: Deno.ready && !Deno.setupBusy ? Theme.secondary_container : Theme.warn
+                                        pulse: Deno.setupBusy
+                                    }
+                                ]
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: content.width >= 900 ? 2 : 1
+                                    columnSpacing: Tokens.space4
+                                    rowSpacing: Tokens.space4
+
+                                    ModuleCard {
+                                        kicker: I18n.tr("JAVASCRIPT RUNTIME")
+                                        orbIcon: Deno.available ? "check" : "download"
+                                        ok: Deno.available
+                                        busy: Deno.busy
+                                        title: Deno.busy ? I18n.tr("Installing …")
+                                             : Deno.available ? I18n.tr("Ready") : I18n.tr("Not installed")
+                                        detail: Deno.available
+                                                ? I18n.tr("yt-dlp uses it to answer YouTube's player challenge, so streams keep downloading.")
+                                                : I18n.tr("Needed to download from YouTube. About 40 MB, one-time.")
+                                        meta: Deno.available
+                                              ? [Deno.runtimeName + " " + Deno.runtimeVersion,
+                                                 Deno.runtimeSource === "path" ? I18n.tr("found on your system")
+                                                 : Deno.runtimeSource === "bundled" ? I18n.tr("included with the app")
+                                                 : I18n.tr("managed by the app")]
+                                              : []
+                                        progress: Deno.busy && Deno.pct > 0 ? Deno.pct / 100 : -1
+                                        indeterminate: Deno.busy && Deno.pct <= 0
+                                        C.ActionButton {
+                                            compact: true
+                                            variant: Deno.available ? "ghost" : "primary"
+                                            iconName: "download"
+                                            enabled: !Deno.busy && Deno.runtimeSource !== "path"
+                                            status: Deno.busy ? 1 : 0
+                                            busyText: Deno.pct > 0 ? (Deno.pct + "%") : I18n.tr("Installing …")
+                                            text: Deno.available ? I18n.tr("Reinstall") : I18n.tr("Install runtime")
+                                            onClicked: Deno.available ? Deno.forceInstall() : Deno.requestInstall()
+                                        }
+                                    }
+
+                                    ModuleCard {
+                                        kicker: I18n.tr("DOWNLOADER")
+                                        orbIcon: "sync"
+                                        ok: true
+                                        busy: Deno.updating
+                                        title: "yt-dlp"
+                                        detail: I18n.tr("YouTube changes often. If downloads start failing, update first.")
+                                        meta: [I18n.tr("Updates in place, no reinstall")]
+                                        C.ActionButton {
+                                            compact: true
+                                            variant: "ghost"
+                                            iconName: "sync"
+                                            enabled: !Deno.updating
+                                            status: Deno.updating ? 1 : 0
+                                            busyText: I18n.tr("Updating…")
+                                            text: I18n.tr("Update downloader")
+                                            onClicked: Deno.updateYtDlp()
+                                        }
+                                    }
+
+                                    // v1.0.2: PO Token helper (bgutil-pot, Rust) — OPTIONAL
+                                    // and recommended. Downloads work without it; it widens
+                                    // which clients succeed on VPNs, shared IPs and cloud
+                                    // machines. A blocked exe is still worth explaining.
+                                    ModuleCard {
+                                        kicker: I18n.tr("PO TOKEN HELPER")
+                                        // v1.0.1: the file can be present and Windows
+                                        // still refuse to run it (Smart App Control and
+                                        // an unsigned exe). Then "Ready" was a lie and
+                                        // the only symptom was a download failing for
+                                        // an unrelated-looking reason — say what
+                                        // happened, and what to do about it.
+                                        readonly property string _potErr: Deno.potErrorText
+                                        readonly property bool _blocked: _potErr !== ""
+                                        orbIcon: Deno.potInstalled ? (_blocked ? "error" : "verified") : "key"
+                                        ok: !_blocked
+                                        busy: Deno.potBusy
+                                        title: Deno.potBusy ? I18n.tr("Installing …")
+                                             : _blocked ? I18n.tr("Blocked by Windows")
+                                             : !Deno.potInstalled ? I18n.tr("Not installed")
+                                             : Deno.potRunning ? I18n.tr("Active") : I18n.tr("Ready")
+                                        detail: _blocked ? _potErr
+                                                : Deno.potInstalled
+                                                ? I18n.tr("Proves to YouTube that requests come from a real browser, so downloads don't hit 403 or get stuck at 360p.")
+                                                : I18n.tr("Optional but recommended. Helps when YouTube asks for a token — common on VPNs, shared IPs and cloud machines. About 44 MB, one-time.")
+                                        meta: Deno.potInstalled
+                                              ? ["bgutil-pot " + (Deno.potSource === "managed" ? Deno.potVersion : ""),
+                                                 Deno.potSource === "path" ? I18n.tr("found on your system")
+                                                 : Deno.potSource === "bundled" ? I18n.tr("included with the app")
+                                                 : I18n.tr("managed by the app")]
+                                              : [I18n.tr("Optional"), I18n.tr("Recommended")]
+                                        progress: Deno.potBusy && Deno.potPct > 0 ? Deno.potPct / 100 : -1
+                                        indeterminate: Deno.potBusy && Deno.potPct <= 0
+                                        Component.onCompleted: Deno.refreshPot()
+                                        C.ActionButton {
+                                            compact: true
+                                            variant: "ghost"
+                                            iconName: "download"
+                                            enabled: !Deno.potBusy && Deno.potSource !== "path"
+                                            status: Deno.potBusy ? 1 : 0
+                                            busyText: Deno.potPct > 0 ? (Deno.potPct + "%") : I18n.tr("Installing …")
+                                            text: Deno.potInstalled ? I18n.tr("Reinstall") : I18n.tr("Install helper")
+                                            onClicked: Deno.installPot()
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // ── routing: which AI does what ──
-                        BlockHead {
-                            Layout.topMargin: Tokens.space3
-                            icon: "route"
-                            title: I18n.tr("Which AI does what")
-                            detail: I18n.tr("Pin idea generation to one provider and model. AI Chat picks its own model and effort in the chat.")
-                        }
-                        C.AiRoutingPanel { Layout.fillWidth: true }
+                            // ═══ OUTPUT & SCRAPING ═══
+                            SettingsSection {
+                                id: secOutput
+                                objectName: "settingsSection5"
+                                icon: "tune"
+                                title: I18n.tr("Output & Scraping")
+                                subtitle: I18n.tr("How scrapes run, and where their files land.")
+                                dimmed: !page.matches(5)
+                                trailing: [
+                                    StatusChip {
+                                        text: page.outputOk ? I18n.tr("Folder set") : I18n.tr("Pick a save folder")
+                                        tint: page.outputOk ? Theme.secondary_container : Theme.warn
+                                    }
+                                ]
 
-                        // what the default provider can do for the AI features
-                        Rectangle {
-                            Layout.fillWidth: true
-                            radius: Tokens.radiusLg
-                            readonly property color tint: Settings.isGeminiProvider ? Theme.secondary_container : Theme.on_surface_var
-                            color: U.withAlpha(tint, Theme.isDark ? 0.07 : 0.05)
-                            border.width: 1
-                            border.color: U.withAlpha(tint, 0.22)
-                            implicitHeight: aiCapCol.implicitHeight + Tokens.space4 * 2
-                            ColumnLayout {
-                                id: aiCapCol
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.margins: Tokens.space4
-                                spacing: Tokens.space3
+                                // export format: four tiles instead of a dropdown —
+                                // there are only four, and each wants a word of "why".
+                                BlockHead {
+                                    icon: "description"
+                                    title: I18n.tr("Export Format")
+                                    detail: I18n.tr("File type written when a scrape finishes.")
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: content.width < 760 ? 2 : 4
+                                    columnSpacing: Tokens.space3
+                                    rowSpacing: Tokens.space3
+                                    Repeater {
+                                        model: Settings.formatLabels
+                                        FormatTile {
+                                            readonly property var parts: String(modelData).match(/^(.*?)\s*\((\.[A-Za-z0-9]+)\)\s*$/)
+                                            active: Settings.formatIndex === index
+                                            glyph: ["description", "data_array", "grid_view", "data"][index] || "description"
+                                            name: parts ? parts[1] : modelData
+                                            ext: parts ? parts[2] : ""
+                                            caption: index === 0 ? I18n.tr("Opens anywhere")
+                                                   : index === 1 ? I18n.tr("One record per line, for code")
+                                                   : index === 2 ? I18n.tr("A ready-made workbook")
+                                                   : I18n.tr("Query it with SQL")
+                                            onClicked: Settings.formatIndex = index
+                                        }
+                                    }
+                                }
+
+                                RowGroup {
+                                    Layout.topMargin: Tokens.space2
+                                    SettingRow {
+                                        icon: "save"
+                                        label: I18n.tr("Autosave Checkpoint")
+                                        description: I18n.tr("Save progress every N videos, so a crash or a quota wall loses nothing.")
+                                        Segmented {
+                                            current: Settings.autosaveIndex
+                                            minItemWidth: 52
+                                            options: [
+                                                { label: "100",  value: 0 },
+                                                { label: "500",  value: 1 },
+                                                { label: "1000", value: 2 },
+                                                { label: I18n.tr("At the end"), value: 3 }
+                                            ]
+                                            onPicked: (value, btn) => Settings.autosaveIndex = value
+                                        }
+                                    }
+                                    RowSep {}
+                                    SettingRow {
+                                        icon: "speed"
+                                        label: I18n.tr("Worker Threads")
+                                        description: I18n.tr("Parallel workers while scraping. Past 6, YouTube's caption rate limit — not this setting — is the real ceiling.")
+                                        ThreadMeter {
+                                            value: Settings.threadCount
+                                            onPicked: (v) => Settings.threadCount = v
+                                        }
+                                    }
+                                    RowSep {}
+                                    SettingRow {
+                                        icon: "subject"
+                                        label: I18n.tr("Fetch transcripts while scraping")
+                                        description: I18n.tr("Richer AI reports, slightly slower scrapes.")
+                                        C.AppSwitch {
+                                            checked: Settings.transcriptsEnabled
+                                            onToggled: Settings.transcriptsEnabled = checked
+                                        }
+                                    }
+                                }
+
+                                // browser cookies: chips, every option visible at once
+                                BlockHead {
+                                    Layout.topMargin: Tokens.space3
+                                    icon: "language"
+                                    title: I18n.tr("Browser Cookies (for downloads)")
+                                    detail: I18n.tr("Borrow a signed-in browser session for age-gated or members-only videos.")
+                                }
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: Tokens.space2
-                                    CapChip { glyph: "article"; text: I18n.tr("Writes reports & ideas"); ok: true }
-                                    CapChip { glyph: "travel_explore"; text: I18n.tr("Searches the web"); ok: Settings.isGeminiProvider }
-                                    CapChip { glyph: "movie"; text: I18n.tr("Watches the videos"); ok: Settings.isGeminiProvider }
+                                    Repeater {
+                                        model: Settings.cookieLabels
+                                        ChoiceChip {
+                                            text: modelData
+                                            glyph: index === 0 ? "cancel" : "public"
+                                            active: Settings.cookieIndex === index
+                                            onClicked: Settings.cookieIndex = index
+                                        }
+                                    }
                                 }
-                                C.AppText {
-                                    Layout.fillWidth: true
-                                    text: Settings.isGeminiProvider
-                                          ? I18n.tr("Before writing a CSV report, Gemini watches the channel's best videos — Shorts in full, and the middle minutes of long-form ones. It takes a few minutes and costs quota, and it is what makes the report describe what the videos actually do.")
-                                          : I18n.tr("Only Google Gemini can search the web and watch videos. Reports still work with this provider, but they are written from the numbers alone.")
-                                    font.pixelSize: Tokens.fontCaption + 1
-                                    lineHeight: 1.35
-                                    color: Theme.on_surface
-                                    wrapMode: Text.WordWrap
+
+                                // clip cutting: the re-encode level app.core.cutter reads
+                                // from config.json (`cut_quality`) on every cut — Cutter
+                                // page and the extension's Cut panel alike.
+                                BlockHead {
+                                    Layout.topMargin: Tokens.space3
+                                    icon: "scissors"
+                                    title: I18n.tr("Clip Cutting")
+                                    detail: I18n.tr("Applies to the next cut, from the Cutter and the browser extension.")
                                 }
-                            }
-                        }
-
-                        C.SmartField {
-                            id: proxyField
-                            label: I18n.tr("PROXY (optional)")
-                            icon: "vpn_key"
-                            mono: true
-                            placeholder: "http://127.0.0.1:10809"
-                            helper: I18n.tr("An HTTP proxy for the AI requests only — YouTube calls and downloads don't use it.")
-                            onEdited: (v) => Settings.aiProxy = v
-                            Binding { target: proxyField; property: "text"; value: Settings.aiProxy; when: !proxyField.focused; restoreMode: Binding.RestoreNone }
-                        }
-                    }
-
-                    // ═══ DOWNLOAD ENGINE ═══
-                    // yt-dlp 2026+ needs a JS runtime (deno/node/…) to pull YouTube
-                    // streams; ffmpeg/ffprobe are bundled.
-                    SettingsSection {
-                        id: secEngine
-                        icon: "downloading"
-                        title: I18n.tr("Download Engine")
-                        subtitle: I18n.tr("What the downloader needs to pull streams from YouTube.")
-                        dimmed: !page.matches(4)
-                        trailing: [
-                            StatusChip {
-                                text: Deno.setupBusy ? I18n.tr("Installing …")
-                                     : Deno.ready ? I18n.tr("Ready") : I18n.tr("Action needed")
-                                tint: Deno.ready && !Deno.setupBusy ? Theme.secondary_container : Theme.warn
-                                pulse: Deno.setupBusy
-                            }
-                        ]
-
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: content.width >= 900 ? 2 : 1
-                            columnSpacing: Tokens.space4
-                            rowSpacing: Tokens.space4
-
-                            ModuleCard {
-                                kicker: I18n.tr("JAVASCRIPT RUNTIME")
-                                orbIcon: Deno.available ? "check" : "download"
-                                ok: Deno.available
-                                busy: Deno.busy
-                                title: Deno.busy ? I18n.tr("Installing …")
-                                     : Deno.available ? I18n.tr("Ready") : I18n.tr("Not installed")
-                                detail: Deno.available
-                                        ? I18n.tr("yt-dlp uses it to answer YouTube's player challenge, so streams keep downloading.")
-                                        : I18n.tr("Needed to download from YouTube. About 40 MB, one-time.")
-                                meta: Deno.available
-                                      ? [Deno.runtimeName + " " + Deno.runtimeVersion,
-                                         Deno.runtimeSource === "path" ? I18n.tr("found on your system")
-                                         : Deno.runtimeSource === "bundled" ? I18n.tr("included with the app")
-                                         : I18n.tr("managed by the app")]
-                                      : []
-                                progress: Deno.busy && Deno.pct > 0 ? Deno.pct / 100 : -1
-                                indeterminate: Deno.busy && Deno.pct <= 0
-                                C.ActionButton {
-                                    compact: true
-                                    variant: Deno.available ? "ghost" : "primary"
-                                    iconName: "download"
-                                    enabled: !Deno.busy && Deno.runtimeSource !== "path"
-                                    status: Deno.busy ? 1 : 0
-                                    busyText: Deno.pct > 0 ? (Deno.pct + "%") : I18n.tr("Installing …")
-                                    text: Deno.available ? I18n.tr("Reinstall") : I18n.tr("Install runtime")
-                                    onClicked: Deno.available ? Deno.forceInstall() : Deno.requestInstall()
+                                RowGroup {
+                                    SettingRow {
+                                        icon: "movie"
+                                        label: I18n.tr("Cut Quality")
+                                        description: Settings.cutQualityIndex === 0
+                                                     ? I18n.tr("Most headroom over the source, biggest files. For editing and archiving.")
+                                                     : Settings.cutQualityIndex === 2
+                                                     ? I18n.tr("About half the size of High, a little softer on fine detail and fast motion.")
+                                                     : I18n.tr("Looks like the source for sharing and most edits, about 30% smaller than High.")
+                                        Segmented {
+                                            current: Settings.cutQualityIndex
+                                            minItemWidth: 72
+                                            options: [
+                                                { label: I18n.tr("High"),     value: 0, icon: "hd" },
+                                                { label: I18n.tr("Balanced"), value: 1, icon: "tune" },
+                                                { label: I18n.tr("Small"),    value: 2, icon: "sd" }
+                                            ]
+                                            onPicked: (value, btn) => Settings.cutQualityIndex = value
+                                        }
+                                    }
                                 }
-                            }
 
-                            ModuleCard {
-                                kicker: I18n.tr("DOWNLOADER")
-                                orbIcon: "sync"
-                                ok: true
-                                busy: Deno.updating
-                                title: "yt-dlp"
-                                detail: I18n.tr("YouTube changes often. If downloads start failing, update first.")
-                                meta: [I18n.tr("Updates in place, no reinstall")]
-                                C.ActionButton {
-                                    compact: true
-                                    variant: "ghost"
-                                    iconName: "sync"
-                                    enabled: !Deno.updating
-                                    status: Deno.updating ? 1 : 0
-                                    busyText: I18n.tr("Updating…")
-                                    text: I18n.tr("Update downloader")
-                                    onClicked: Deno.updateYtDlp()
+                                // destination
+                                BlockHead {
+                                    Layout.topMargin: Tokens.space3
+                                    icon: "folder_open"
+                                    title: I18n.tr("Default Save Folder")
+                                    detail: I18n.tr("Where exports and downloads are written.")
                                 }
-                            }
-
-                            // v3.41.5: PO Token helper (bgutil-pot, Rust) — REQUIRED,
-                            // same as the JS runtime: no on/off switch, and a missing
-                            // helper is a warning state that locks downloads.
-                            ModuleCard {
-                                kicker: I18n.tr("PO TOKEN HELPER")
-                                // v1.0.1: the file can be present and Windows
-                                // still refuse to run it (Smart App Control and
-                                // an unsigned exe). Then "Ready" was a lie and
-                                // the only symptom was a download failing for
-                                // an unrelated-looking reason — say what
-                                // happened, and what to do about it.
-                                readonly property string _potErr: Deno.potErrorText
-                                readonly property bool _blocked: _potErr !== ""
-                                orbIcon: Deno.potInstalled ? (_blocked ? "error" : "verified") : "download"
-                                ok: Deno.potInstalled && !_blocked
-                                busy: Deno.potBusy
-                                title: Deno.potBusy ? I18n.tr("Installing …")
-                                     : _blocked ? I18n.tr("Blocked by Windows")
-                                     : !Deno.potInstalled ? I18n.tr("Not installed")
-                                     : Deno.potRunning ? I18n.tr("Active") : I18n.tr("Ready")
-                                detail: _blocked ? _potErr
-                                        : Deno.potInstalled
-                                        ? I18n.tr("Proves to YouTube that requests come from a real browser, so downloads don't hit 403 or get stuck at 360p.")
-                                        : I18n.tr("Required to download from YouTube. About 44 MB, one-time.")
-                                meta: Deno.potInstalled
-                                      ? ["bgutil-pot " + (Deno.potSource === "managed" ? Deno.potVersion : ""),
-                                         Deno.potSource === "path" ? I18n.tr("found on your system")
-                                         : Deno.potSource === "bundled" ? I18n.tr("included with the app")
-                                         : I18n.tr("managed by the app")]
-                                      : [I18n.tr("Required")]
-                                progress: Deno.potBusy && Deno.potPct > 0 ? Deno.potPct / 100 : -1
-                                indeterminate: Deno.potBusy && Deno.potPct <= 0
-                                Component.onCompleted: Deno.refreshPot()
-                                C.ActionButton {
-                                    compact: true
-                                    variant: Deno.potInstalled ? "ghost" : "primary"
-                                    iconName: "download"
-                                    enabled: !Deno.potBusy && Deno.potSource !== "path"
-                                    status: Deno.potBusy ? 1 : 0
-                                    busyText: Deno.potPct > 0 ? (Deno.potPct + "%") : I18n.tr("Installing …")
-                                    text: Deno.potInstalled ? I18n.tr("Reinstall") : I18n.tr("Install helper")
-                                    onClicked: Deno.installPot()
-                                }
-                            }
-                        }
-                    }
-
-                    // ═══ OUTPUT & SCRAPING ═══
-                    SettingsSection {
-                        id: secOutput
-                        icon: "tune"
-                        title: I18n.tr("Output & Scraping")
-                        subtitle: I18n.tr("How scrapes run, and where their files land.")
-                        dimmed: !page.matches(5)
-                        trailing: [
-                            StatusChip {
-                                text: page.outputOk ? I18n.tr("Folder set") : I18n.tr("Pick a save folder")
-                                tint: page.outputOk ? Theme.secondary_container : Theme.warn
-                            }
-                        ]
-
-                        // export format: four tiles instead of a dropdown —
-                        // there are only four, and each wants a word of "why".
-                        BlockHead {
-                            icon: "description"
-                            title: I18n.tr("Export Format")
-                            detail: I18n.tr("File type written when a scrape finishes.")
-                        }
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: content.width < 760 ? 2 : 4
-                            columnSpacing: Tokens.space3
-                            rowSpacing: Tokens.space3
-                            Repeater {
-                                model: Settings.formatLabels
-                                FormatTile {
-                                    readonly property var parts: String(modelData).match(/^(.*?)\s*\((\.[A-Za-z0-9]+)\)\s*$/)
-                                    active: Settings.formatIndex === index
-                                    glyph: ["description", "data_array", "grid_view", "data"][index] || "description"
-                                    name: parts ? parts[1] : modelData
-                                    ext: parts ? parts[2] : ""
-                                    caption: index === 0 ? I18n.tr("Opens anywhere")
-                                           : index === 1 ? I18n.tr("One record per line, for code")
-                                           : index === 2 ? I18n.tr("A ready-made workbook")
-                                           : I18n.tr("Query it with SQL")
-                                    onClicked: Settings.formatIndex = index
-                                }
-                            }
-                        }
-
-                        RowGroup {
-                            Layout.topMargin: Tokens.space2
-                            SettingRow {
-                                icon: "save"
-                                label: I18n.tr("Autosave Checkpoint")
-                                description: I18n.tr("Save progress every N videos, so a crash or a quota wall loses nothing.")
-                                Segmented {
-                                    current: Settings.autosaveIndex
-                                    minItemWidth: 52
-                                    options: [
-                                        { label: "100",  value: 0 },
-                                        { label: "500",  value: 1 },
-                                        { label: "1000", value: 2 },
-                                        { label: I18n.tr("At the end"), value: 3 }
-                                    ]
-                                    onPicked: (value, btn) => Settings.autosaveIndex = value
-                                }
-                            }
-                            RowSep {}
-                            SettingRow {
-                                icon: "speed"
-                                label: I18n.tr("Worker Threads")
-                                description: I18n.tr("Parallel workers while scraping. Higher is faster, and heavier on your connection.")
-                                ThreadMeter {
-                                    value: Settings.threadCount
-                                    onPicked: (v) => Settings.threadCount = v
-                                }
-                            }
-                            RowSep {}
-                            SettingRow {
-                                icon: "subject"
-                                label: I18n.tr("Fetch transcripts while scraping")
-                                description: I18n.tr("Richer AI reports, slightly slower scrapes.")
-                                C.AppSwitch {
-                                    checked: Settings.transcriptsEnabled
-                                    onToggled: Settings.transcriptsEnabled = checked
-                                }
-                            }
-                        }
-
-                        // browser cookies: chips, every option visible at once
-                        BlockHead {
-                            Layout.topMargin: Tokens.space3
-                            icon: "language"
-                            title: I18n.tr("Browser Cookies (for downloads)")
-                            detail: I18n.tr("Borrow a signed-in browser session for age-gated or members-only videos.")
-                        }
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Tokens.space2
-                            Repeater {
-                                model: Settings.cookieLabels
-                                ChoiceChip {
-                                    text: modelData
-                                    glyph: index === 0 ? "cancel" : "public"
-                                    active: Settings.cookieIndex === index
-                                    onClicked: Settings.cookieIndex = index
-                                }
-                            }
-                        }
-
-                        // clip cutting: the re-encode level app.core.cutter reads
-                        // from config.json (`cut_quality`) on every cut — Cutter
-                        // page and the extension's Cut panel alike.
-                        BlockHead {
-                            Layout.topMargin: Tokens.space3
-                            icon: "scissors"
-                            title: I18n.tr("Clip Cutting")
-                            detail: I18n.tr("Applies to the next cut, from the Cutter and the browser extension.")
-                        }
-                        RowGroup {
-                            SettingRow {
-                                icon: "movie"
-                                label: I18n.tr("Cut Quality")
-                                description: Settings.cutQualityIndex === 0
-                                             ? I18n.tr("Most headroom over the source, biggest files. For editing and archiving.")
-                                             : Settings.cutQualityIndex === 2
-                                             ? I18n.tr("About half the size of High, a little softer on fine detail and fast motion.")
-                                             : I18n.tr("Looks like the source for sharing and most edits, about 30% smaller than High.")
-                                Segmented {
-                                    current: Settings.cutQualityIndex
-                                    minItemWidth: 72
-                                    options: [
-                                        { label: I18n.tr("High"),     value: 0, icon: "hd" },
-                                        { label: I18n.tr("Balanced"), value: 1, icon: "tune" },
-                                        { label: I18n.tr("Small"),    value: 2, icon: "sd" }
-                                    ]
-                                    onPicked: (value, btn) => Settings.cutQualityIndex = value
-                                }
-                            }
-                        }
-
-                        // destination
-                        BlockHead {
-                            Layout.topMargin: Tokens.space3
-                            icon: "folder_open"
-                            title: I18n.tr("Default Save Folder")
-                            detail: I18n.tr("Where exports and downloads are written.")
-                        }
-                        Rectangle {
-                            id: folderCard
-                            Layout.fillWidth: true
-                            radius: 16
-                            color: folderHover.hovered ? U.hoverTint(Theme.input_bg, Theme.isDark, 0.03) : Theme.input_bg
-                            border.width: 1
-                            border.color: page.outputOk ? (folderHover.hovered ? Theme.border_med : Theme.border)
-                                                        : U.withAlpha(Theme.warn, 0.5)
-                            implicitHeight: 74
-                            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
-                            HoverHandler { id: folderHover }
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: Tokens.space3
-                                anchors.rightMargin: Tokens.space3
-                                spacing: Tokens.space3
                                 Rectangle {
-                                    Layout.preferredWidth: 48
-                                    Layout.preferredHeight: 48
-                                    radius: 14
-                                    color: page.outputOk ? U.withAlpha(Theme.primary, Theme.isDark ? 0.16 : 0.10)
-                                                         : U.withAlpha(Theme.warn, 0.14)
-                                    C.IconGlyph {
-                                        anchors.centerIn: parent
-                                        name: page.outputOk ? "folder_open" : "folder_off"
-                                        fill: true
-                                        size: 22
-                                        glyphColor: page.outputOk ? Theme.primary : Theme.warn
-                                    }
-                                }
-                                ColumnLayout {
+                                    id: folderCard
                                     Layout.fillWidth: true
-                                    spacing: 2
-                                    C.AppText {
-                                        text: I18n.tr("SAVE TO")
-                                        weight: Tokens.weightExtraBold
-                                        font.pixelSize: Tokens.fontMicro
-                                        font.letterSpacing: I18n.rtl ? 0 : 1.1
-                                        color: Theme.on_surface_var
+                                    radius: 16
+                                    color: folderHover.hovered ? U.hoverTint(Theme.input_bg, Theme.isDark, 0.03) : Theme.input_bg
+                                    border.width: 1
+                                    border.color: page.outputOk ? (folderHover.hovered ? Theme.border_med : Theme.border)
+                                                                : U.withAlpha(Theme.warn, 0.5)
+                                    implicitHeight: 74
+                                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                    HoverHandler { id: folderHover }
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Tokens.space3
+                                        anchors.rightMargin: Tokens.space3
+                                        spacing: Tokens.space3
+                                        Rectangle {
+                                            Layout.preferredWidth: 48
+                                            Layout.preferredHeight: 48
+                                            radius: 14
+                                            color: page.outputOk ? U.withAlpha(Theme.primary, Theme.isDark ? 0.16 : 0.10)
+                                                                 : U.withAlpha(Theme.warn, 0.14)
+                                            C.IconGlyph {
+                                                anchors.centerIn: parent
+                                                name: page.outputOk ? "folder_open" : "folder_off"
+                                                fill: true
+                                                size: 22
+                                                glyphColor: page.outputOk ? Theme.primary : Theme.warn
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            C.AppText {
+                                                text: I18n.tr("SAVE TO")
+                                                weight: Tokens.weightExtraBold
+                                                font.pixelSize: Tokens.fontMicro
+                                                font.letterSpacing: I18n.rtl ? 0 : 1.1
+                                                color: Theme.on_surface_var
+                                            }
+                                            C.AppText {
+                                                Layout.fillWidth: true
+                                                text: page.outputOk ? Settings.saveFolder : I18n.tr("Not chosen yet")
+                                                mono: page.outputOk
+                                                weight: Tokens.weightMedium
+                                                font.pixelSize: Tokens.fontBody
+                                                color: page.outputOk ? Theme.text_strong : Theme.outline
+                                                elide: Text.ElideMiddle
+                                                LayoutMirroring.enabled: page.outputOk ? false : I18n.rtl
+                                            }
+                                        }
+                                        C.IconButton {
+                                            visible: page.outputOk
+                                            iconName: "content_copy"
+                                            implicitWidth: 36; implicitHeight: 36
+                                            glyphSize: 16
+                                            tip: I18n.tr("Copy path")
+                                            onClicked: { Settings.copyToClipboard(Settings.saveFolder); toast.show(I18n.tr("Copied"), "info") }
+                                        }
+                                        C.IconButton {
+                                            visible: page.outputOk
+                                            iconName: "open_in_new"
+                                            implicitWidth: 36; implicitHeight: 36
+                                            glyphSize: 16
+                                            tip: I18n.tr("Open folder")
+                                            onClicked: Qt.openUrlExternally(page.folderUrl())
+                                        }
+                                        C.ActionButton {
+                                            compact: true
+                                            variant: page.outputOk ? "ghost" : "primary"
+                                            iconName: "folder"
+                                            text: page.outputOk ? I18n.tr("Change") : I18n.tr("Browse")
+                                            onClicked: folderDialog.open()
+                                        }
                                     }
-                                    C.AppText {
-                                        Layout.fillWidth: true
-                                        text: page.outputOk ? Settings.saveFolder : I18n.tr("Not chosen yet")
-                                        mono: page.outputOk
-                                        weight: Tokens.weightMedium
-                                        font.pixelSize: Tokens.fontBody
-                                        color: page.outputOk ? Theme.text_strong : Theme.outline
-                                        elide: Text.ElideMiddle
-                                        LayoutMirroring.enabled: page.outputOk ? false : I18n.rtl
-                                    }
+                                    C.AppTooltip { visible: folderHover.hovered && page.outputOk; text: Settings.saveFolder }
                                 }
-                                C.IconButton {
-                                    visible: page.outputOk
-                                    iconName: "content_copy"
-                                    implicitWidth: 36; implicitHeight: 36
-                                    glyphSize: 16
-                                    tip: I18n.tr("Copy path")
-                                    onClicked: { Settings.copyToClipboard(Settings.saveFolder); toast.show(I18n.tr("Copied"), "info") }
+
+                                // per-kind destinations
+                                BlockHead {
+                                    Layout.topMargin: Tokens.space3
+                                    icon: "folder"
+                                    title: I18n.tr("Save Locations")
+                                    detail: I18n.tr("Pick a separate home for downloaded videos and thumbnails.")
                                 }
-                                C.IconButton {
-                                    visible: page.outputOk
-                                    iconName: "open_in_new"
-                                    implicitWidth: 36; implicitHeight: 36
-                                    glyphSize: 16
-                                    tip: I18n.tr("Open folder")
-                                    onClicked: Qt.openUrlExternally(page.folderUrl())
+                                FolderCard {
+                                    label: I18n.tr("VIDEOS")
+                                    glyph: "movie"
+                                    path: Settings.videoFolder
+                                    fallback: Settings.videoFolderDefault
+                                    onPick: videoFolderDialog.open()
+                                    onReset: Settings.setVideoFolder("")
                                 }
-                                C.ActionButton {
-                                    compact: true
-                                    variant: page.outputOk ? "ghost" : "primary"
-                                    iconName: "folder"
-                                    text: page.outputOk ? I18n.tr("Change") : I18n.tr("Browse")
-                                    onClicked: folderDialog.open()
+                                FolderCard {
+                                    label: I18n.tr("THUMBNAILS")
+                                    glyph: "image"
+                                    tint: Theme.secondary_container
+                                    path: Settings.thumbFolder
+                                    fallback: ""
+                                    onPick: thumbFolderDialog.open()
+                                    onReset: Settings.setThumbFolder("")
                                 }
                             }
-                            C.AppTooltip { visible: folderHover.hovered && page.outputOk; text: Settings.saveFolder }
-                        }
 
-                        // per-kind destinations
-                        BlockHead {
-                            Layout.topMargin: Tokens.space3
-                            icon: "folder"
-                            title: I18n.tr("Save Locations")
-                            detail: I18n.tr("Pick a separate home for downloaded videos and thumbnails.")
-                        }
-                        FolderCard {
-                            label: I18n.tr("VIDEOS")
-                            glyph: "movie"
-                            path: Settings.videoFolder
-                            fallback: Settings.videoFolderDefault
-                            onPick: videoFolderDialog.open()
-                            onReset: Settings.setVideoFolder("")
-                        }
-                        FolderCard {
-                            label: I18n.tr("THUMBNAILS")
-                            glyph: "image"
-                            tint: Theme.secondary_container
-                            path: Settings.thumbFolder
-                            fallback: ""
-                            onPick: thumbFolderDialog.open()
-                            onReset: Settings.setThumbFolder("")
-                        }
-                    }
+                            // ═══ BROWSER EXTENSION ═══ (v3.43)
+                            // The download button on YouTube. The full install guide
+                            // lives here, so it is never lost after "Skip for now".
+                            SettingsSection {
+                                id: secExtension
+                                objectName: "settingsSection6"
+                                icon: "extension"
+                                title: I18n.tr("Browser extension")
+                                subtitle: ExtensionSetup.connected
+                                          ? I18n.tr("Installed. Every YouTube video and Short has a Hunter download button.")
+                                          : I18n.tr("Adds a Hunter download button to every YouTube video and Short. One-time setup, about a minute.")
+                                dimmed: !page.matches(6)
+                                trailing: [
+                                    StatusChip {
+                                        text: ExtensionSetup.connected ? I18n.tr("Connected") : I18n.tr("Not installed")
+                                        tint: ExtensionSetup.connected ? Theme.secondary_container : Theme.warn
+                                    }
+                                ]
 
-                    // ═══ BROWSER EXTENSION ═══ (v3.43)
-                    // The download button on YouTube. The full install guide
-                    // lives here, so it is never lost after "Skip for now".
-                    SettingsSection {
-                        id: secExtension
-                        icon: "extension"
-                        title: I18n.tr("Browser extension")
-                        subtitle: ExtensionSetup.connected
-                                  ? I18n.tr("Installed. Every YouTube video and Short has a Hunter download button.")
-                                  : I18n.tr("Adds a Hunter download button to every YouTube video and Short. One-time setup, about a minute.")
-                        dimmed: !page.matches(6)
-                        trailing: [
-                            StatusChip {
-                                text: ExtensionSetup.connected ? I18n.tr("Connected") : I18n.tr("Not installed")
-                                tint: ExtensionSetup.connected ? Theme.secondary_container : Theme.warn
+                                // installed: a short line + the steps folded away
+                                // (reinstall / update after an app update)
+                                property bool showSteps: !ExtensionSetup.connected
+                                Connections {
+                                    target: ExtensionSetup
+                                    function onConnectedNow() { secExtension.showSteps = false }
+                                }
+                                C.PrimaryButton {
+                                    visible: ExtensionSetup.connected
+                                    variant: "ghost"
+                                    iconName: secExtension.showSteps ? "expand_less" : "expand_more"
+                                    text: secExtension.showSteps ? I18n.tr("Hide the steps")
+                                                                 : I18n.tr("Reinstall or update the extension")
+                                    onClicked: secExtension.showSteps = !secExtension.showSteps
+                                }
+                                C.ExtensionGuide {
+                                    visible: secExtension.showSteps
+                                    Layout.fillWidth: true
+                                }
                             }
-                        ]
-
-                        // installed: a short line + the steps folded away
-                        // (reinstall / update after an app update)
-                        property bool showSteps: !ExtensionSetup.connected
-                        Connections {
-                            target: ExtensionSetup
-                            function onConnectedNow() { secExtension.showSteps = false }
-                        }
-                        C.PrimaryButton {
-                            visible: ExtensionSetup.connected
-                            variant: "ghost"
-                            iconName: secExtension.showSteps ? "expand_less" : "expand_more"
-                            text: secExtension.showSteps ? I18n.tr("Hide the steps")
-                                                         : I18n.tr("Reinstall or update the extension")
-                            onClicked: secExtension.showSteps = !secExtension.showSteps
-                        }
-                        C.ExtensionGuide {
-                            visible: secExtension.showSteps
-                            Layout.fillWidth: true
                         }
                     }
                 }

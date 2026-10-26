@@ -7,7 +7,7 @@
 # Single source of truth: the sidebar footer shows it and the build stamps it
 # onto the .exe. installer.iss carries its own copy (Inno Setup cannot read a
 # Python constant) — keep the two in step when bumping.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -37,6 +37,14 @@ UPDATE_CHECK_HOURS = 6
 # in %APPDATA%\YoutubeScrapperCyber\config.json — no rebuild needed.
 # Only http(s) is accepted; anything else is ignored.
 DONATE_URL = "https://donofa.com/youtube_hunter"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  SOCIAL — follow the project
+# ═════════════════════════════════════════════════════════════════════════
+# The title bar's paper-plane button opens this channel in the user's browser.
+# A per-install override still wins: "telegram_url" in config.json.
+TELEGRAM_URL = "https://t.me/youtubehunter"
 
 
 # ═════════════════════════════════════════════════════════════════════════

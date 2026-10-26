@@ -35,6 +35,7 @@ import "../Utils.js" as U
 // selected row, the Deno check, and presetIndex being handed to the VM.
 Dialog {
     id: root
+    objectName: "qualityPicker"
     modal: true
 
     parent: Overlay.overlay
@@ -42,16 +43,22 @@ Dialog {
     width: Math.min(640, parent ? parent.width - 48 : 640)
     padding: 0
 
-    Overlay.modal: C.DialogScrim { }
+    // A still backdrop: the page behind a modal does not change, while a live
+    // full-window capture + blur re-renders the whole app every frame — which
+    // was exactly the hitch felt while this dialog scaled in. One capture at
+    // open is visually identical and leaves the enter animation to the GPU.
+    Overlay.modal: C.DialogScrim { frozen: true }
 
-    // Arrival: rise + settle with a hint of spring — this is a genuine arrival.
+    // Arrival: a quick lift, not a long spring. The old 320 ms scale was long
+    // enough to read as "waiting", and every frame it ran also had to composite
+    // the live backdrop blur. 220 ms settles before the eye finishes moving.
     enter: Transition {
-        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
-        NumberAnimation { property: "scale"; from: 0.95; to: 1; duration: Tokens.durSlow; easing.type: Easing.OutBack; easing.overshoot: 1.1 }
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: 220; easing.type: Easing.OutCubic }
     }
     exit: Transition {
         NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Tokens.durFast }
-        NumberAnimation { property: "scale"; from: 1; to: 0.98; duration: Tokens.durFast }
+        NumberAnimation { property: "scale"; from: 1; to: 0.985; duration: Tokens.durFast }
     }
 
     // The ViewModel that receives startDownload (Niche by default; Downloads and
@@ -193,8 +200,12 @@ Dialog {
                 source: root.thumbId !== "" ? "image://thumbs/" + root.thumbId : ""
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
-                sourceSize.width: 480
-                sourceSize.height: 270
+                // A deliberately tiny decode, stretched smoothly to fill the
+                // header. That IS the soft backdrop — the old 48 px runtime
+                // blur compiled a shader on first open and re-sampled a
+                // half-megapixel texture on every frame of the entrance.
+                sourceSize.width: 220
+                sourceSize.height: 124
             }
             Item {
                 id: heroMask
@@ -211,9 +222,10 @@ Dialog {
             MultiEffect {
                 anchors.fill: parent
                 source: heroImg
-                blurEnabled: true
-                blur: 0.85
-                blurMax: 48
+                // No runtime blur: the 220 px source above already upscales
+                // softly. Saturation + the rounded mask are cheap one-shader
+                // passes, and they keep the muted look the header had.
+                blurEnabled: false
                 saturation: 0.15
                 maskEnabled: true
                 maskSource: heroMask
@@ -275,7 +287,7 @@ Dialog {
                     }
                     C.ThumbSkeleton {
                         anchors.fill: parent
-                        active: heroImg.status !== Image.Ready
+                        active: heroImg.status !== Image.Ready && heroImg.status !== Image.Error
                         topLeftRadius: Tokens.radiusMd
                         topRightRadius: Tokens.radiusMd
                         bottomLeftRadius: Tokens.radiusMd
@@ -347,6 +359,69 @@ Dialog {
                 color: QualityProbe.failed ? Theme.warn : Theme.on_surface_var
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
+            }
+        }
+
+        // A short format list is not always the upload's real ceiling. When
+        // several clients disagree on the low maximum it is usually the IP/VPN
+        // YouTube is throttling, so the picker says what to do about it instead
+        // of silently offering 360p as if that were the video's best.
+        Rectangle {
+            id: limitBanner
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.space5
+            Layout.rightMargin: Tokens.space5
+            Layout.topMargin: Tokens.space3
+            visible: QualityProbe.thinHint && !QualityProbe.busy
+            implicitHeight: limitRow.implicitHeight + Tokens.space3 * 2
+            radius: Tokens.radiusLg
+            color: U.withAlpha(Theme.warn, Theme.isDark ? 0.16 : 0.10)
+            border.width: 1
+            border.color: U.withAlpha(Theme.warn, 0.35)
+
+            RowLayout {
+                id: limitRow
+                anchors.fill: parent
+                anchors.margins: Tokens.space3
+                spacing: Tokens.space3
+
+                C.IconGlyph {
+                    name: "warning"
+                    size: 18
+                    glyphColor: Theme.warn
+                    Layout.alignment: Qt.AlignTop
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    C.AppText {
+                        text: QualityProbe.limitTitle
+                        weight: Tokens.weightBold
+                        font.pixelSize: Tokens.fontBody
+                        color: Theme.text_strong
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    C.AppText {
+                        text: QualityProbe.limitNote
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.on_surface_var
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                }
+                C.PrimaryButton {
+                    variant: "ghost"
+                    iconName: "autorenew"
+                    text: I18n.tr("Check again")
+                    implicitHeight: 36
+                    implicitWidth: 126
+                    Layout.alignment: Qt.AlignVCenter
+                    onClicked: {
+                        root._seeded = false
+                        QualityProbe.refresh()
+                    }
+                }
             }
         }
 
@@ -456,14 +531,11 @@ Dialog {
                             border.color: col.picked ? Theme.primary : Theme.border_med
                             Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
 
-                            // lit halo under the pick
-                            layer.enabled: col.picked
-                            layer.effect: MultiEffect {
-                                shadowEnabled: true
-                                shadowColor: U.withAlpha(Theme.primary, 0.55)
-                                shadowBlur: 0.9
-                                shadowVerticalOffset: 10
-                            }
+                            // The pick reads by its solid primary fill + star.
+                            // It used to carry a blurred shadow layer, but
+                            // that shader compiled exactly when the probe
+                            // landed and turned a content update into a
+                            // visible hitch; the flat fill loses nothing.
 
                             C.IconGlyph {
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -592,13 +664,17 @@ Dialog {
         }
 
         // ═══ container / codec ═══
+        // Kept on screen while the probe runs, not just after it lands: hiding
+        // it made the whole dialog grow ~80 px when the formats arrived, and a
+        // resize mid-open (with its shadow layer re-rendering) read as a hitch.
+        // The row is static — it is the same format switch either way.
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.space5
             Layout.rightMargin: Tokens.space5
             Layout.topMargin: Tokens.space5
             spacing: Tokens.space3
-            visible: !QualityProbe.busy && root.rows.length > 0
+            visible: root.rows.length > 0
             C.AppText {
                 text: root.selectedIsAudio ? I18n.tr("Audio format") : I18n.tr("Video format")
                 weight: Tokens.weightBold
@@ -622,7 +698,7 @@ Dialog {
 
         Rectangle {
             id: fmtSeg
-            visible: !QualityProbe.busy && root.rows.length > 0
+            visible: root.rows.length > 0
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.space5
             Layout.rightMargin: Tokens.space5

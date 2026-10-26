@@ -123,6 +123,7 @@ Item {
             C.ThumbSkeleton {
                 anchors.fill: parent
                 active: (root.row.thumbId || "") !== "" && thumb.status !== Image.Ready
+                        && thumb.status !== Image.Error
                 topLeftRadius: Tokens.radiusMd
                 topRightRadius: Tokens.radiusMd
                 bottomLeftRadius: Tokens.radiusMd

@@ -386,6 +386,9 @@ Window {
                         }
                         Timer {
                             id: warmTimer
+                            // Named so a headless bench can hold the background
+                            // build and time each page's FIRST build on its own.
+                            objectName: "warmTimer"
                             // after the splash has handed over and the shell has
                             // painted (the theme warm-up below runs at 2.5 s)
                             interval: 1200
@@ -1066,6 +1069,11 @@ Window {
         target: Dashboard
         function onPopup(t, m, k) { msgDialog.present(t, m, k) }
         function onDonePopup(t, m, p) { doneDialog.present(t, m, p) }
+        // v3.54: "Deep-scan this channel" on the Scraper results board
+        function onAnalyzeRequested(rows, query, mode) {
+            Insights.analyzeRows(rows, query, mode)
+            App.goto(11)   // PAGE_INSIGHTS
+        }
     }
 
     // "Signal lost" — the connection gate (components/GeoGateDialog).
@@ -1158,6 +1166,12 @@ Window {
     Connections {
         target: Geo
         function onStartupWarning() {
+            // v3.54.1: only a country where YouTube is filtered is certain
+            // enough to interrupt the launch. A failed youtube.com probe
+            // ("unreachable") and a plain outage stay in the title-bar pill —
+            // the probe answers 403/timeouts on many working VPN exits, and
+            // that used to pop a false "IP blocked" dialog on first launch.
+            if (!Geo.restricted) return
             if (tour.running || geoDialog.opened) win._geoStartupPending = true
             else win._presentGateBehindDonate()
         }
@@ -1169,8 +1183,10 @@ Window {
         // cut, VPN off, IP filtered / blocked by YouTube) — show the gate
         // again, not only at launch.
         function onConnectionLost(reason) {
-            if (tour.running || geoDialog.opened) win._geoStartupPending = true
-            else win._presentGateBehindDonate()
+            // v3.52: never a modal mid-session. The title-bar pill turns red,
+            // the tray logs it, a running scrape pauses and resumes by itself,
+            // and the gate only opens when the user starts a scrape/download
+            // (or clicks the pill).
         }
         // …and it came back: the open gate steps aside on its own.
         function onConnectionRestored() {
@@ -1183,7 +1199,7 @@ Window {
         function onRunningChanged() {
             if (!tour.running && win._geoStartupPending) {
                 win._geoStartupPending = false
-                if (Geo.blocked) geoDialog.presentStartup()
+                if (Geo.restricted) geoDialog.presentStartup()
             }
         }
     }
@@ -1193,10 +1209,16 @@ Window {
     // Deno.requestInstall(), which fires installRequested and opens this.
     Dialog {
         id: denoDialog
+        objectName: "denoDialog"
         modal: true
         parent: Overlay.overlay
         anchors.centerIn: parent
-        width: Math.min(460, win.width - 80)
+        // v3.54: 460 was NARROWER than the footer's own minimum. Skip (104) +
+        // From file… (135) + Download and install (207) + the gaps need 470 px,
+        // so the green button hung out of the card's right edge and the "Not
+        // installed" chip was squeezed out of its row. 560 leaves ~50 px of
+        // slack for the widest state ("Try again").
+        width: Math.min(560, win.width - 80)
         padding: 0
         // While downloading, the dialog must not vanish on an outside click —
         // that would silently cancel and leave the user confused later.
@@ -1249,7 +1271,7 @@ Window {
         contentItem: ColumnLayout {
             spacing: Tokens.space3
             C.AppText {
-                text: I18n.tr("YouTube downloads need two required components: a small JavaScript runtime and the PO Token helper. Install them now and your first download will just work.")
+                text: I18n.tr("YouTube downloads need a small JavaScript runtime. Install it now and your first download will just work. The PO Token helper below is optional — add it later if you download over a VPN or a shared network.")
                 color: Theme.on_surface
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
@@ -1309,9 +1331,8 @@ Window {
                     }
                 }
             }
-            // Skip note: dismissing now just defers the same download to the
-            // first video download.
-            // v3.41.5: second required file — the PO Token helper.
+            // Optional extra: the PO Token helper. Never required — the
+            // runtime above is what gates downloads.
             Rectangle {
                 Layout.fillWidth: true
                 Layout.leftMargin: Tokens.space5
@@ -1348,18 +1369,48 @@ Window {
                             color: Theme.text_strong
                         }
                         C.AppText {
-                            text: I18n.tr("PO Token helper for YouTube downloads (~44 MB)")
+                            text: I18n.tr("Optional but recommended — improves reliability on VPNs, shared IPs and cloud machines. About 44 MB, one-time.")
                             font.pixelSize: Tokens.fontCaption
                             color: Theme.on_surface_var
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
                         }
                     }
                     C.AppText {
-                        text: Deno.potInstalled ? I18n.tr("Ready")
-                              : (Deno.potBusy ? (Deno.potPct + "%") : I18n.tr("Not installed"))
+                        visible: Deno.potInstalled
+                        text: I18n.tr("Installed")
                         weight: Tokens.weightDemiBold
                         font.pixelSize: Tokens.fontCaption
-                        color: Deno.potInstalled ? Theme.secondary_container
-                              : (Deno.potBusy ? Theme.primary : Theme.warn)
+                        color: Theme.secondary_container
+                    }
+                    C.AppText {
+                        visible: !Deno.potInstalled && Deno.potBusy
+                        text: Deno.potPct + "%"
+                        weight: Tokens.weightDemiBold
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.primary
+                    }
+                    Rectangle {
+                        visible: !Deno.potInstalled && !Deno.potBusy
+                        implicitWidth: potInstallLabel.implicitWidth + 18
+                        implicitHeight: 28
+                        radius: 8
+                        color: U.withAlpha(Theme.primary, 0.10)
+                        border.width: 1
+                        border.color: U.withAlpha(Theme.primary, 0.30)
+                        C.AppText {
+                            id: potInstallLabel
+                            anchors.centerIn: parent
+                            text: I18n.tr("Install")
+                            weight: Tokens.weightDemiBold
+                            font.pixelSize: Tokens.fontCaption
+                            color: Theme.primary
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Deno.installPot()
+                        }
                     }
                 }
             }
@@ -1417,7 +1468,7 @@ Window {
             }
             C.AppText {
                 visible: !Deno.ready && !Deno.setupBusy && Deno.setupError === ""
-                text: I18n.tr("Both are required. If you skip, downloads stay locked and this setup opens again the first time you download a video.")
+                text: I18n.tr("The runtime is required. If you skip, downloads stay locked and this setup opens again the first time you download a video. The PO Token helper is optional.")
                 font.pixelSize: Tokens.fontCaption
                 color: Theme.on_surface_var
                 wrapMode: Text.WordWrap
@@ -1446,19 +1497,16 @@ Window {
                     }
                 }
                 C.AppText {
-                    text: Deno.potBusy
-                          ? I18n.tr("File 2 of {t} · PO Token helper · {pct}%")
-                              .replace("{t}", Deno.filesTotal)
-                              .replace("{pct}", Deno.potPct)
-                          : (Deno.totalText !== ""
-                           ? I18n.tr("File 1 of {t} · {done} of {total} · {pct}%")
-                             .replace("{t}", Deno.filesTotal)
-                             .replace("{done}", Deno.doneText)
-                             .replace("{total}", Deno.totalText)
-                             .replace("{pct}", Deno.pct)
-                           : I18n.tr("File 1 of {t} · Downloading… {done}")
-                             .replace("{t}", Deno.filesTotal)
-                             .replace("{done}", Deno.doneText))
+                    text: (Deno.potBusy
+                           ? I18n.tr("PO Token helper · {pct}%")
+                             .replace("{pct}", Deno.potPct)
+                           : (Deno.totalText !== ""
+                            ? I18n.tr("{done} of {total} · {pct}%")
+                              .replace("{done}", Deno.doneText)
+                              .replace("{total}", Deno.totalText)
+                              .replace("{pct}", Deno.pct)
+                            : I18n.tr("Downloading… {done}")
+                              .replace("{done}", Deno.doneText)))
                           + (Deno.source !== "" ? "  ·  " + Deno.source : "")
                     elide: Text.ElideRight
                     Layout.fillWidth: true
@@ -1492,23 +1540,23 @@ Window {
                 C.PrimaryButton {
                     variant: "ghost"
                     text: Deno.setupBusy ? I18n.tr("Cancel")
-                          : (Deno.ready ? I18n.tr("Close") : I18n.tr("Skip"))
+                          : (Deno.available ? I18n.tr("Close") : I18n.tr("Skip"))
                     onClicked: { Deno.cancel(); denoDialog.close() }
                 }
                 Item { Layout.fillWidth: true }
                 C.PrimaryButton {
                     variant: "ghost"
-                    visible: !Deno.setupBusy && !Deno.ready
+                    visible: !Deno.setupBusy && !Deno.available
                     iconName: "folder_open"
                     text: I18n.tr("From file…")
                     onClicked: denoFileDialog.open()
                 }
                 C.PrimaryButton {
-                    visible: !Deno.ready
+                    visible: !Deno.available
                     iconName: Deno.setupError !== "" ? "refresh" : "download"
                     text: Deno.setupError !== "" ? I18n.tr("Try again") : I18n.tr("Download and install")
                     enabled: !Deno.setupBusy
-                    onClicked: Deno.installAll()
+                    onClicked: Deno.installRuntime()
                 }
             }
         }
@@ -1518,26 +1566,24 @@ Window {
     // deno-*.zip from disk, for a machine that can't reach either mirror.
     FileDialog {
         id: denoFileDialog
-        title: Deno.available ? I18n.tr("Pick bgutil-pot.exe")
-                              : I18n.tr("Pick deno.exe or the deno zip")
-        nameFilters: Deno.available
-                     ? [I18n.tr("PO Token helper") + " (*.exe bgutil-pot*)", I18n.tr("All files") + " (*)"]
-                     : [I18n.tr("deno runtime") + " (*.exe *.zip deno)", I18n.tr("All files") + " (*)"]
-        onAccepted: Deno.installFromAnyFile(selectedFile.toString())
+        title: I18n.tr("Pick deno.exe or the deno zip")
+        nameFilters: [I18n.tr("deno runtime") + " (*.exe *.zip deno)", I18n.tr("All files") + " (*)"]
+        onAccepted: Deno.installFromFile(selectedFile.toString())
     }
 
     Connections {
         target: Deno
         function onInstallRequested() { denoDialog.open() }
         function onToast(msg, kind) { /* surfaced via tray; dialog shows status */ }
-        // Close only when EVERY required component is in place.
-        function onFinished(ok) { if (ok && Deno.ready) denoDialog.close() }
+        // Close once the required runtime is in place.
+        function onFinished(ok) { if (ok && Deno.available) denoDialog.close() }
     }
 
-    // Startup check: if a REQUIRED download component (JS runtime or, since
-    // v3.41.5, the PO Token helper) is missing, offer it right away instead of
-    // failing the first download. Skipping only defers — every download gate
-    // checks Deno.ready and reopens this dialog.
+    // Startup check: if the REQUIRED download component (a JS runtime) is
+    // missing, offer it right away instead of failing the first download.
+    // The PO Token helper is optional and never opens this dialog on its own.
+    // Skipping only defers — every download gate checks Deno.ready and
+    // reopens this dialog.
     Timer {
         id: startupDepsTimer
         interval: 900
@@ -1548,7 +1594,7 @@ Window {
             // it (it used to pop up on top of the tour's welcome card).
             if (!App.tourSeen || tour.running) { interval = 1500; restart(); return }
             Deno.refresh()
-            if (!Deno.ready)
+            if (!Deno.available)
                 denoDialog.open()
         }
     }

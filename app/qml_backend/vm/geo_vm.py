@@ -419,10 +419,18 @@ class GeoVM(QObject):
 
     @Property(bool, notify=changed)
     def apiBlocked(self):
-        """The scraper's route (YouTube Data API) can't work right now."""
+        """The scraper's route (YouTube Data API) can't work right now.
+
+        Judged only on the country and on a total outage. The scraper talks to
+        youtube.googleapis.com, so a failed www.youtube.com/generate_204 probe
+        is NOT evidence about it: many VPN exits and datacenter IPs get a 403
+        or a timeout from the web frontend while the Data API keeps answering.
+        Using that probe here parked first scrapes behind a false "IP blocked"
+        dialog; the API itself reports a real refusal when there is one.
+        """
         if self._result is None:
             return False
-        return self.apiRestricted or self.offline or self._yt_down("api")
+        return self.apiRestricted or self.offline
 
     @Property(bool, notify=changed)
     def downloadBlocked(self):

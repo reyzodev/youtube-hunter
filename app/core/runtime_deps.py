@@ -373,20 +373,14 @@ def js_runtime_status():
 
 def download_engine_missing():
     """"" when every REQUIRED download component is present, else a short
-    user-facing reason. Required: a JS runtime (deno/node/…) and, since
-    v3.41.5, the PO Token helper (bgutil-pot)."""
+    user-facing reason. Required: a JS runtime (deno/node/…). The PO Token
+    helper (bgutil-pot) is optional and recommended — when installed it is
+    used automatically, but its absence never blocks a download."""
     from app.i18n import tr
     try:
         if find_js_runtime() is None:
             return tr("To download from YouTube, the app needs a small component "
                       "(deno). Open the download again and install it when asked.")
-    except Exception:      # noqa: BLE001
-        pass
-    try:
-        from app.core import pot
-        if not pot.installed():
-            return tr("The PO Token helper is required for YouTube downloads. "
-                      "Install it from the setup dialog or Settings → Download Engine.")
     except Exception:      # noqa: BLE001
         pass
     return ""
@@ -459,17 +453,89 @@ def _runtime_version(path):
 # ════════════════════════════════════════════════════════════════════════
 #  yt-dlp self-update (download newest wheel into runtime dir)
 # ════════════════════════════════════════════════════════════════════════
-def update_yt_dlp(on_status=None):
+def version_tuple(v):
+    """'2025.11.12' / '2025.11.12.1' -> (2025, 11, 12[, 1]) for comparisons.
+    Anything unparsable sorts lowest, so it never blocks an update."""
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or "")))
+
+
+def current_yt_dlp_version():
+    """Version of the yt-dlp this process is using right now, or ""."""
+    try:
+        mod = _YT_DLP or load_yt_dlp()
+        return str(getattr(getattr(mod, "version", None), "__version__", "") or "")
+    except Exception:      # noqa: BLE001
+        return ""
+
+
+def latest_yt_dlp_release(timeout=15):
+    """Newest yt-dlp release on PyPI as {"version", "url", "sha256", "size"}.
+
+    Hard-bounded by `timeout` (connect AND every read), so a filtered or
+    throttled connection to PyPI fails fast instead of hanging the caller.
+    Raises on network failure; callers decide what that means.
+    """
+    import json
+    import urllib.request
+    proxy = configured_proxy()
+    resp = _urlopen(
+        urllib.request.Request("https://pypi.org/pypi/yt-dlp/json",
+                               headers={"User-Agent": "YouTubeHunter"}),
+        timeout, proxy)
+    try:
+        meta = json.loads(resp.read().decode("utf-8", "replace"))
+    finally:
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            pass
+    version = meta["info"]["version"]
+    whl = next(f for f in meta["releases"][version]
+               if f["packagetype"] == "bdist_wheel")
+    return {"version": version, "url": whl["url"],
+            "sha256": whl["digests"]["sha256"], "size": int(whl.get("size") or 0)}
+
+
+class _UpdateAborted(Exception):
+    pass
+
+
+def update_yt_dlp(on_status=None, on_progress=None, deadline_s=180.0,
+                  should_cancel=None, release=None):
     """Fetch the newest yt-dlp wheel from PyPI, verify its SHA256, and unpack it
-    into the runtime dir so load_yt_dlp() picks it up next launch.
+    into the runtime dir so load_yt_dlp() picks it up.
 
     Works in a frozen build (where `pip install --upgrade` cannot run because
     sys.executable is the app exe). Returns (ok, version_or_error).
+
+    v1.0.2 — the "stuck on Updating downloader… 0%" fix:
+      * the WHOLE update now has a hard wall-clock budget (`deadline_s`).
+        Before, `requests.get(timeout=120)` only bounded each socket read, so a
+        connection that trickled a few bytes every couple of minutes (typical
+        on a filtered / throttled network or a half-dead VPN) never finished
+        and the download row sat at 0% forever.
+      * the wheel is STREAMED in chunks, so the budget, a user cancel and a
+        live percentage (`on_progress(pct)`) are all checked between chunks.
+      * the new copy is unpacked next to the old one and swapped in only when
+        complete, so a failed update can never leave a half-deleted engine.
+      * `release` lets a caller that already fetched the PyPI metadata (to
+        compare versions) skip the second metadata request.
     """
     import io
-    import json
-    import urllib.request
+    import time
     import requests
+
+    t0 = time.monotonic()
+
+    def _left():
+        return (deadline_s or 1e9) - (time.monotonic() - t0)
+
+    def _check():
+        if should_cancel is not None and should_cancel():
+            raise _UpdateAborted("cancelled")
+        if _left() <= 0:
+            raise _UpdateAborted("timed out")
 
     def _status(t):
         if on_status:
@@ -477,34 +543,92 @@ def update_yt_dlp(on_status=None):
 
     try:
         _status("Checking for updates…")
-        # Both requests go through the configured proxy: on a proxied setup PyPI
-        # and the wheel CDN are reachable exactly the same way every other
-        # outbound call in the app is, and a direct attempt just times out.
-        proxy = configured_proxy()
-        meta = json.load(_urlopen(
-            urllib.request.Request("https://pypi.org/pypi/yt-dlp/json",
-                                   headers={"User-Agent": "YouTubeHunter"}),
-            30, proxy))
-        version = meta["info"]["version"]
-        whl = next(f for f in meta["releases"][version]
-                   if f["packagetype"] == "bdist_wheel")
+        if release is None:
+            release = latest_yt_dlp_release(timeout=max(5, min(20, _left())))
+        version = release["version"]
+        _check()
 
         _status(f"Downloading yt-dlp {version}…")
+        proxy = configured_proxy()
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        data = requests.get(whl["url"], timeout=120, proxies=proxies).content
-        if hashlib.sha256(data).hexdigest() != whl["digests"]["sha256"]:
+        buf = io.BytesIO()
+        last_pct = -1
+        with requests.get(release["url"], stream=True, proxies=proxies,
+                          timeout=(10, max(5, min(20, _left())))) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length") or release.get("size") or 0)
+            # Watchdog: a read that is blocked waiting for bytes can't check
+            # the budget itself, so closing the connection at the deadline is
+            # what actually unblocks it.
+            watchdog = threading.Timer(max(0.5, _left()), r.close)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                chunks = r.iter_content(chunk_size=16 * 1024)
+            except Exception:  # noqa: BLE001
+                watchdog.cancel()
+                raise
+            try:
+                for chunk in chunks:
+                    _check()
+                    if not chunk:
+                        continue
+                    buf.write(chunk)
+                    if total and on_progress:
+                        pct = min(99, int(buf.tell() * 100 / total))
+                        if pct != last_pct:
+                            last_pct = pct
+                            on_progress(pct)
+            except Exception:  # noqa: BLE001 — closed by the watchdog?
+                _check()       # turns a deadline close into "timed out"
+                raise
+            finally:
+                watchdog.cancel()
+            _check()
+        data = buf.getvalue()
+        if hashlib.sha256(data).hexdigest() != release["sha256"]:
             return False, "Downloader update failed verification (SHA256 mismatch)."
 
         _status("Installing…")
         rt_dir = _runtime_ytdlp_dir()
-        # Fresh unpack: clear any previous copy so a partial extract can't linger.
-        if os.path.isdir(rt_dir):
-            shutil.rmtree(rt_dir, ignore_errors=True)
-        os.makedirs(rt_dir, exist_ok=True)
+        new_dir = rt_dir + ".new"
+        old_dir = rt_dir + ".old"
+        for d in (new_dir, old_dir):
+            if os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(new_dir, exist_ok=True)
         with zipfile.ZipFile(io.BytesIO(data)) as z:
-            z.extractall(rt_dir)
+            z.extractall(new_dir)
+        if not os.path.isdir(os.path.join(new_dir, "yt_dlp")):
+            shutil.rmtree(new_dir, ignore_errors=True)
+            return False, "Downloader update was incomplete."
+        # swap: old -> .old, new -> live, then drop .old
+        if os.path.isdir(rt_dir):
+            try:
+                os.replace(rt_dir, old_dir)
+            except OSError:
+                # a file in the old copy is held open (antivirus scan, a
+                # second app instance): fall back to clearing it in place
+                shutil.rmtree(rt_dir, ignore_errors=True)
+        try:
+            os.replace(new_dir, rt_dir)
+        except OSError as exc:
+            shutil.rmtree(new_dir, ignore_errors=True)
+            # never leave a half-cleared copy that load_yt_dlp() would prefer
+            # over the bundled engine
+            if os.path.isdir(rt_dir) and not os.path.isfile(
+                    os.path.join(rt_dir, "yt_dlp", "__init__.py")):
+                shutil.rmtree(rt_dir, ignore_errors=True)
+            return False, "Couldn't install the downloader update: " + str(exc)[:200]
+        shutil.rmtree(old_dir, ignore_errors=True)
+        if on_progress:
+            on_progress(100)
         _status("Done")
         return True, version
+    except _UpdateAborted as exc:
+        return False, ("Downloader update was cancelled." if str(exc) == "cancelled"
+                       else "Downloader update took too long and was skipped "
+                            "(PyPI is slow or unreachable from this network).")
     except Exception as exc:                 # noqa: BLE001
         # A dropped connection mid-download is the commonest failure here (a
         # multi-megabyte wheel over a proxy), and `str(exc)` for it is the bare
@@ -540,8 +664,8 @@ def prewarm_download_engine():
         import yt_dlp.extractor.youtube  # noqa: F401 — the extractor we use
     except Exception:      # noqa: BLE001 — warm-up only
         pass
-    # Start the (required) PO Token helper so the first video doesn't wait for
-    # its BotGuard spin-up.
+    # Start the optional PO Token helper, when installed, so the first video
+    # doesn't wait for its BotGuard spin-up.
     try:
         from app.core import pot
         if pot.installed():

@@ -39,7 +39,7 @@ from app.core.analysis.deep_report import (forget_deep_report,
 from app.core.db.content_lab import (
     content_lab_all_ideas, content_lab_delete_entry, content_lab_delete_idea,
     content_lab_get_entry, content_lab_get_entry_videos, content_lab_get_ideas,
-    content_lab_ideas_by_ids,
+    content_lab_ideas_by_entry, content_lab_ideas_by_ids,
     content_lab_list_entries, content_lab_toggle_favorite,
     content_lab_update_idea)
 from app.core.db.insights import insights_get, insights_list
@@ -252,32 +252,40 @@ class ContentLabVM(QObject):
     @Slot()
     def refreshEntries(self):
         """Reload the library list. Every "Create with AI" run in AI Ideas
-        appends to a section, so sections appear here with no separate save."""
+        appends to a section, so sections appear here with no separate save.
+
+        v3.53 perf: one query for the whole library (content_lab_ideas_by_entry)
+        instead of one connection + statement per section — the page calls this
+        on every show, and the per-section round trip was the bulk of the
+        ~100 ms hitch when opening Content Lab."""
+        try:
+            grouped = content_lab_ideas_by_entry()
+        except Exception:                    # noqa: BLE001 — never break the page
+            grouped = {}
         self._entries = [
             dict({"id": e["id"],
                   "title": e.get("title") or tr("Untitled"),
                   "ideaCount": int(e.get("idea_count", 0) or 0),
                   "updated": days_ago_str(e.get("updated_at") or ""),
                   "updatedAt": str(e.get("updated_at") or "")},
-                 **self._entry_stats(e["id"]))
+                 **self._entry_stats(grouped.get(e["id"], ())))
             for e in content_lab_list_entries(self._entry_search)
         ]
         self.entriesChanged.emit()
 
     @staticmethod
-    def _entry_stats(entry_id):
+    def _entry_stats(ideas):
         """v12 library cards: a per-section fingerprint so a card can say more
-        than "N ideas". Read-only, cheap (one indexed SELECT per section), and
-        it never raises — a malformed row just leaves the defaults in place.
+        than "N ideas". `ideas` is the already-parsed list for one section (see
+        refreshEntries); it never raises — a malformed row just leaves the
+        defaults in place.
 
         `scores` is newest-first and capped, so the card's score barcode always
         shows the latest batch rather than the first run ever made there."""
         stats = {"shortCount": 0, "longCount": 0, "favCount": 0,
                  "bestScore": 0, "avgScore": 0, "scores": [],
                  "topTitle": "", "topHook": ""}
-        try:
-            ideas = content_lab_get_ideas(entry_id) or []
-        except Exception:
+        if not ideas:
             return stats
         best = None
         total = 0

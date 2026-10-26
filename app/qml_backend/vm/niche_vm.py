@@ -47,8 +47,9 @@ from app.core.thumbs import prefetch_thumbs
 from app.core.niche.config import (
     NICHE_CATEGORIES, NICHE_CHANNEL_AGES, NICHE_CHANNEL_UPLOADS,
     NICHE_DEEP_FROM_DEPTH, NICHE_DEPTH_TARGETS, NICHE_DEPTHS, NICHE_DURATIONS,
-    NICHE_MAX_POOL, NICHE_PAGE_SIZE, NICHE_PER_CHANNEL, NICHE_PRESETS,
-    NICHE_REGIONS, NICHE_SORTS_UI, NICHE_SORTS_VISIBLE, NICHE_TIMEFRAMES)
+    NICHE_MAX_POOL, NICHE_PAGE_SIZE, NICHE_PER_CHANNEL, NICHE_PRESET_HINTS,
+    NICHE_PRESETS, NICHE_REGIONS, NICHE_SIGNAL_STOPS, NICHE_SORTS_UI,
+    NICHE_SORTS_VISIBLE, NICHE_TIMEFRAMES)
 from app.core.niche import audience as _A
 from app.core.niche import translate as _T
 from app.core.niche.helpers import (
@@ -68,8 +69,7 @@ from app.core.niche.viral import (
 from app.core.niche.sorting import (
     aggregate_by_channel, parse_human_float, sort_niche_rows)
 from app.core.niche.gold import apply_gold_scores
-from app.core.quota import (key_quota_remaining, search_quota_bump,
-                            search_quota_remaining)
+from app.core.quota import (key_quota_remaining, search_quota_remaining)
 from app.core.utils import (
     days_ago_str, video_download_dir, humanize_count, local_path_from_url,
     open_external_url)
@@ -176,6 +176,54 @@ def _lang_label(r):
 def _export_lang(r):
     code, src = _A.best_language(r)
     return ("~" + code) if (code and src == "text") else code
+
+
+def _channel_card_fields(r):
+    """The channel-only display block for a card.
+
+    A channel card has to answer different questions than a video card: how
+    big is this channel, how new, how productive, how strong is its normal
+    upload — and which of its videos found here actually beat that norm.
+    Everything below comes from data the search already paid for
+    (channels.list + the matched rows); no extra API call.
+
+    Shared by NicheVM and ArchiveVM so a channel looks identical whether it
+    is being viewed live or in a saved section.
+    """
+    best = r.get("best_video") or {}
+    bm = r.get("best_multiplier")
+    uploads = int(r.get("channel_video_count") or 0)
+    total_views = int(r.get("channel_total_views") or 0)
+    hits = int(r.get("video_count") or 0)
+    avg_views = (total_views / float(uploads)) if uploads else None
+    best_views = int(best.get("view_count") or r.get("best_view_count") or 0)
+    return {
+        "videoId": best.get("video_id", ""),
+        "videoUrl": best.get("video_url", ""),
+        "bestTitle": best.get("title", "") or "—",
+        "bestThumbId": _thumb_id(best.get("thumbnail_url", "")),
+        "bestViews": humanize_count(best_views),
+        "bestViewsRaw": best_views,
+        "bestAgeShort": _age_short(best.get("published_at") or ""),
+        "bestIsShort": bool(best.get("is_short")),
+        # The hero number on a channel card is its best video's outliers,
+        # not the sum of matched views ÷ subs: the cover, the big number and
+        # the "best video" line must all describe the same upload.
+        "bestMultiplier": format_multiplier(bm) if bm is not None else "—",
+        "bestMultiplierValue": float(bm) if bm is not None else 0.0,
+        "multiplier": format_multiplier(bm) if bm is not None else "—",
+        "multiplierValue": float(bm) if bm is not None else 0.0,
+        "duration": fmt_duration(best.get("duration_s", 0)
+                                 or r.get("best_duration_s", 0)),
+        "channelAgeShort": _age_short(r.get("channel_created_at") or ""),
+        "channelCountry": str(r.get("channel_country") or "").upper(),
+        # Lifetime averages — the baseline the hits above should be judged by.
+        "uploadsText": humanize_count(uploads) if uploads else "—",
+        "avgViewsText": humanize_count(int(avg_views)) if avg_views else "—",
+        "hitsText": humanize_count(hits),
+        "latestText": _age_short(r.get("latest_published_at") or ""),
+        "videoCount": str(hits),
+    }
 
 
 class NicheVM(QObject):
@@ -343,6 +391,10 @@ class NicheVM(QObject):
         self._m_best_title = ""
         self._m_best_channel = ""
         self._m_spark = []
+        # tuner histogram: {track: [videos left at each stop]}. Held as a
+        # whole dict and replaced, so QML's `Niche.signalCounts[track]` read
+        # re-evaluates once per filter pass rather than per row.
+        self._sig_counts = {}
 
         # per-card action state
         self._raw_by_key = {}     # video_id / channel_id → full raw pool row
@@ -527,6 +579,44 @@ class NicheVM(QObject):
     def presetOptions(self):
         return [tr(text) for text, _ in NICHE_PRESETS]
 
+    @Property("QStringList", notify=labelsChanged)
+    def presetHints(self):
+        return [tr(h) if h else "" for h in NICHE_PRESET_HINTS]
+
+    @Property(int, notify=changed)
+    def activePreset(self):
+        """Index of the recipe the form currently IS (-1 = none). Lets the
+        tuner light the chip that produced the current cuts, and un-light it
+        the moment any one of them is touched. "Clear filters" is skipped:
+        it is the default state, not a recipe."""
+        for i, (_name, preset) in enumerate(NICHE_PRESETS):
+            if preset and self._is_preset(preset):
+                return i
+        return -1
+
+    def _is_preset(self, preset):
+        for key in ("subs_min", "subs_max", "views_min", "views_max", "mult_min",
+                    "outlier_min", "vel_min", "eng_min"):
+            if (getattr(self, "_" + key) or "").strip() != str(preset.get(key, "")):
+                return False
+        for key in ("format", "duration", "channel_age", "uploads",
+                    "per_channel", "category", "sort"):
+            if getattr(self, "_" + key) != int(preset.get(key, 0)):
+                return False
+        if "timeframe" in preset and self._timeframe != preset["timeframe"]:
+            return False
+        return True
+
+    @Property("QVariantMap", constant=True)
+    def signalStops(self):
+        return {k: list(v) for k, v in NICHE_SIGNAL_STOPS.items()}
+
+    @Property("QVariantMap", notify=resultsChanged)
+    def signalCounts(self):
+        """{track: [videos left for each stop]}, holding every OTHER cut as
+        it is. Empty when there is no pool yet."""
+        return self._sig_counts
+
     @Slot()
     def retranslate(self):
         """UI language changed — re-read every translated label. The status line
@@ -555,11 +645,11 @@ class NicheVM(QObject):
             ("eng_min", tr("Engagement ≥ {v}%")),
         ]
         for key, tmpl in num:
-            # Single Channel Scan has no subscriber range (see _current_filters)
-            # — listing a chip for a cut that is not being applied would be a
-            # lie the user could only disprove by clearing it and seeing
-            # nothing change.
-            if self._mode == 1 and key in ("subs_min", "subs_max"):
+            # Single Channel Scan has no channel-wide cuts (see
+            # _current_filters) — listing a chip for a cut that is not being
+            # applied would be a lie the user could only disprove by clearing
+            # it and seeing nothing change.
+            if self._mode == 1 and key in ("subs_min", "subs_max", "mult_min"):
                 continue
             v = (getattr(self, "_" + key) or "").strip()
             if v:
@@ -690,7 +780,7 @@ class NicheVM(QObject):
                     on_change(self)
         return Property(bool, getter, setter, notify=sig)
 
-    mode = _prop_int("mode", changed)
+    mode = _prop_int("mode", changed, lambda self: self._refresh_signal_counts())
     source = _prop_int("source", changed)
     query = _prop_str("query", changed)
     sortIndex = Property(int, _get_sort_ui, _set_sort_ui, notify=changed)
@@ -1059,7 +1149,7 @@ class NicheVM(QObject):
             yt, source=params["viral_source"], region_code=params["region_code"],
             category_id=params["category_id"], hours=params["hours"],
             stop_check=self._stop_check, progress=self._progress,
-            quota_cb=search_quota_bump, stats=stats)
+            stats=stats)
         self._viral_stats = stats
         if rows:
             niche_cache_put(key, params, rows)
@@ -1384,17 +1474,20 @@ class NicheVM(QObject):
     def _current_filters(self):
         """The active cuts, in the shape apply_niche_filters() wants.
 
-        Single Channel Scan deliberately drops the subscriber range: the scan
+        Single Channel Scan deliberately drops the channel-wide cuts: the scan
         is about one channel's own videos, so "only channels between 2k and 10k
-        subs" can only ever be a yes/no about the channel you already chose.
-        Keeping it silently applied there was the reason a channel scan could
+        subs" can only ever be a yes/no about the channel you already chose,
+        and views ÷ subscribers is then just the view floor in disguise.
+        Keeping them silently applied there was the reason a channel scan could
         come back empty for no visible reason.
         """
         if self._mode == 1 and not self._viral_active:
             subs_min = subs_max = None
+            mult_min = None
         else:
             subs_min = parse_human_number(self._subs_min)
             subs_max = parse_human_number(self._subs_max)
+            mult_min = parse_human_float(self._mult_min)
         market = self._market_code()
         days = NICHE_TIMEFRAMES[self._timeframe][1]
         if self._viral_active:
@@ -1411,7 +1504,7 @@ class NicheVM(QObject):
             "subs_max": subs_max,
             "views_min": parse_human_number(self._views_min),
             "views_max": parse_human_number(self._views_max),
-            "mult_min": parse_human_float(self._mult_min),
+            "mult_min": mult_min,
             "outlier_min": parse_human_float(self._outlier_min),
             "vel_min": parse_human_float(self._vel_min),
             # typed as a percentage ("4" = 4 %), stored as a fraction
@@ -1432,6 +1525,14 @@ class NicheVM(QObject):
             # here rather than deleted from app.core.niche.search.
             "hide_hidden_subs": False,
         }
+
+    def _refresh_signal_counts(self):
+        """Mode changes which cuts apply (channel scan drops the channel-wide
+        ones), so the tuner's histogram has to be re-counted even though the
+        visible result page is left alone until the next search."""
+        self._sig_counts = self._signal_counts(self._pool or [],
+                                               self._current_filters())
+        self.resultsChanged.emit()
 
     def _has_narrow_filters(self):
         """True when the form is asking for something narrower than "whatever
@@ -1460,14 +1561,14 @@ class NicheVM(QObject):
             # A narrowed search may run extra passes to actually reach the
             # filters, so the estimate is stated as a range rather than a
             # single number the run could then quietly exceed.
+            left = search_quota_remaining([self._api_key])
             if self._has_narrow_filters() and self._depth_target() is None:
                 self._quota_text = tr(
                     "~{c}–{max} search calls · {left} left today").format(
-                        c=cost, max=cost + _WIDEN_MAX_CALLS,
-                        left=search_quota_remaining())
+                        c=cost, max=cost + _WIDEN_MAX_CALLS, left=left)
             else:
                 self._quota_text = tr("~{c} search calls · {left} left today").format(
-                    c=cost, left=search_quota_remaining())
+                    c=cost, left=left)
         self.quotaChanged.emit()
 
     def _stop_check(self):
@@ -1834,17 +1935,19 @@ class NicheVM(QObject):
         cookies_browser = (cfg.get("yt_cookies_browser", "") or "").strip().lower()
 
         clear_cancel(video_id)
-        self._set_download(video_id, "running", int(entry.get("pct") or 0),
+        resumed_at = int(entry.get("pct") or 0)
+        self._set_download(video_id, "running", resumed_at,
                            tr("Resuming…"), cancelling=False,
                            url=url, qualityKey=quality_storage_key(quality))
         downloads_upsert(video_id, status="downloading", error_message="",
                          create_if_missing=False)
         self.toast.emit(tr("Resuming download…"), "download")
         self._launch_dl_worker(video_id, url, target_dir, quality,
-                               proxy_url, cookies_browser)
+                               proxy_url, cookies_browser,
+                               resume_pct=resumed_at)
 
     def _launch_dl_worker(self, video_id, url, target_dir, quality,
-                          proxy_url, cookies_browser):
+                          proxy_url, cookies_browser, resume_pct=0):
         """Run one download on a daemon thread. Shared by startDownload and
         resumeDownload so both report progress and cancellation identically."""
         def worker():
@@ -1862,7 +1965,8 @@ class NicheVM(QObject):
                         self._dlResolved.emit(v, px, lbl),
                     on_meta=lambda m, v=video_id: self._dlMeta.emit(v, m),
                     proxy_url=proxy_url, cookies_browser=cookies_browser,
-                    should_cancel=lambda v=video_id: is_cancelled(v))
+                    should_cancel=lambda v=video_id: is_cancelled(v),
+                    resume_pct=resume_pct)
             except Exception as exc:      # noqa: BLE001
                 log_crash("NicheVM download worker failed:\n" + str(exc))
                 ok, message, filepath = False, str(exc), ""
@@ -2434,7 +2538,7 @@ class NicheVM(QObject):
             lang=params["lang"] or None,
             video_duration=duration,
             stop_check=self._stop_check, progress=self._progress,
-            quota_cb=search_quota_bump, target=target)
+            target=target)
         if not video_ids:
             return []
         return self._enrich(yt, [{"video_id": v} for v in video_ids])
@@ -2662,6 +2766,7 @@ class NicheVM(QObject):
             lens = self._VIRAL_LENSES[self._viral_lens][1]
             ctx = self._lens_context(pool)
             rows = [r for r in rows if self._lens_ok(r, lens, ctx)]
+        self._sig_counts = self._signal_counts(pool, filters)
         sort_key = NICHE_SORTS_UI[self._sort][1]
         rows = sort_niche_rows(rows, sort_key)
         channels = self._channels_view
@@ -2727,6 +2832,64 @@ class NicheVM(QObject):
             if aud:
                 msg += "  " + aud
             self._set_status(msg, "ok")
+
+    # Which filter keys each tuner track owns, and the row test one stop
+    # applies — the same comparisons apply_niche_filters() makes.
+    _SIGNAL_KEYS = {
+        "subs": ("subs_min", "subs_max"),
+        "views": ("views_min", "views_max"),
+        "mult": ("mult_min",),
+        "outlier": ("outlier_min",),
+    }
+
+    @staticmethod
+    def _signal_test(track, n):
+        if track == "subs":
+            return lambda r: (not r.get("subs_hidden")
+                              and r.get("subscriber_count") is not None
+                              and r["subscriber_count"] <= n)
+        if track == "views":
+            return lambda r: (r.get("view_count", 0) or 0) >= n
+        field = "multiplier" if track == "mult" else "channel_outlier"
+        return lambda r: r.get(field) is not None and r[field] >= n
+
+    def _signal_counts(self, pool, filters):
+        """For each tuner track: how many pooled videos each stop would leave,
+        with every other cut held. This is what turns the tuner's stops into
+        a histogram — the user sees "10K → 212, 1K → 0" before clicking, and
+        never has to pick a cut by trial and error. Local and zero-quota:
+        one filter pass per track, then a cheap numeric test per stop."""
+        if not pool:
+            return {}
+        lens = ctx = None
+        if self._viral_active and self._viral_lens:
+            lens = self._VIRAL_LENSES[self._viral_lens][1]
+            ctx = self._lens_context(pool)
+        out = {}
+        for track, stops in NICHE_SIGNAL_STOPS.items():
+            if track in ("subs", "mult") and self._mode == 1 and not self._viral_active:
+                out[track] = []
+                continue
+            f = dict(filters)
+            for key in self._SIGNAL_KEYS[track]:
+                f[key] = None
+            rest = apply_niche_filters(pool, f)
+            if lens:
+                rest = [r for r in rest if self._lens_ok(r, lens, ctx)]
+            counts = []
+            for v in stops:
+                if not v:
+                    counts.append(len(rest))
+                    continue
+                n = (parse_human_number(v) if track in ("subs", "views")
+                     else parse_human_float(v))
+                if n is None:
+                    counts.append(0)
+                    continue
+                test = self._signal_test(track, n)
+                counts.append(sum(1 for r in rest if test(r)))
+            out[track] = counts
+        return out
 
     def _audience_note(self, pool, rows, filters):
         """How the Country cut decided — so a short result reads as "38 were
@@ -2872,18 +3035,7 @@ class NicheVM(QObject):
                          if r.get("viral_rank") else ""),
         }
         if channel:
-            best = r.get("best_video") or {}
-            bm = r.get("best_multiplier")
-            base.update({
-                "videoCount": str(r.get("video_count", 0)),
-                "bestMultiplier": format_multiplier(bm) if bm is not None else "—",
-                "bestTitle": best.get("title", "") or "—",
-                "bestThumbId": _thumb_id(best.get("thumbnail_url", "")),
-                "bestVideoUrl": best.get("video_url", ""),
-                # A channel row's actions act on its best video (same rule the
-                # legacy _niche_actions used), so carry that id through.
-                "videoId": best.get("video_id", ""),
-            })
+            base.update(_channel_card_fields(r))
         return base
 
     # ── export ──────────────────────────────────────────────────────────

@@ -205,6 +205,7 @@ Item {
         C.ThumbSkeleton {
             anchors.fill: parent
             active: thumbBox.thumbId !== "" && thumbImg.status !== Image.Ready
+                        && thumbImg.status !== Image.Error
             topLeftRadius: parent.radius
             topRightRadius: parent.radius
             bottomLeftRadius: parent.radius
@@ -1289,67 +1290,188 @@ Item {
                         Repeater {
                             model: histBlock.showAll ? Insights.history
                                                      : (Insights.history || []).slice(0, histBlock.cap)
-                            Rectangle {
+                            // v3.52: saved-scan card. The open one is unmistakable:
+                            // accent fill + ring + glow, the kind tile lights up solid,
+                            // an indicator bar grows on the leading edge and a check
+                            // badge sits where the delete button lives (hover swaps
+                            // them). Selection reads from Insights.openKey, so it
+                            // flips the instant the card is clicked.
+                            Item {
                                 id: histChip
-                                height: 48
-                                width: Math.min(300, histCol.implicitWidth + Tokens.space4 * 2 + 26)
-                                radius: Tokens.radiusMd
+                                width: 272
+                                height: 64
+                                readonly property bool open: Insights.openKey !== "" && Insights.openKey === modelData.key
                                 readonly property bool hot: histHover.hovered
-                                color: modelData.isOpen ? U.withAlpha(Theme.primary, 0.12)
-                                     : hot ? U.hoverTint(Theme.panel_bg, Theme.isDark, 0.05)
-                                     : Theme.panel_bg
-                                border.width: 1
-                                border.color: modelData.isOpen ? U.withAlpha(Theme.primary, 0.45)
-                                            : hot ? Theme.border_med : Theme.border
-                                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                readonly property bool viral: String(modelData.query || "").indexOf("Viral") === 0
+                                readonly property string kindIcon: modelData.mode === "channel" ? "smart_display"
+                                                                  : viral ? "trending_up" : "search"
+                                readonly property string kindLabel: modelData.mode === "channel" ? I18n.tr("Channel")
+                                                                   : viral ? I18n.tr("Viral") : I18n.tr("Keyword")
+                                scale: histTap.pressed ? Tokens.pressScale : 1
+                                Behavior on scale { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
+                                transform: Translate {
+                                    y: histChip.hot && !histChip.open ? -1 : 0
+                                    Behavior on y { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
+                                }
 
                                 HoverHandler { id: histHover; cursorShape: Qt.PointingHandCursor }
-                                TapHandler { onTapped: Insights.openSaved(modelData.key) }
+                                TapHandler { id: histTap; onTapped: if (!histChip.open) Insights.openSaved(modelData.key) }
+
+                                // soft accent glow + focus ring, only on the open card
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    radius: Tokens.radiusLg + 4
+                                    color: "transparent"
+                                    border.width: 3
+                                    border.color: U.withAlpha(Theme.primary, 0.18)
+                                    opacity: histChip.open ? 1 : 0
+                                    Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                                }
+
+                                Rectangle {
+                                    id: histFace
+                                    anchors.fill: parent
+                                    radius: Tokens.radiusLg
+                                    clip: true
+                                    color: histChip.open ? U.withAlpha(Theme.primary, Theme.isDark ? 0.10 : 0.07)
+                                         : histChip.hot ? U.hoverTint(Theme.panel_bg, Theme.isDark, 0.05)
+                                         : Theme.panel_bg
+                                    border.width: histChip.open ? 1.5 : 1
+                                    border.color: histChip.open ? U.withAlpha(Theme.primary, 0.85)
+                                                : histChip.hot ? Theme.border_med : Theme.border
+                                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
+                                    Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
+
+                                    // accent light pooling from the leading edge
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        radius: parent.radius - 1
+                                        opacity: histChip.open ? 1 : 0
+                                        Behavior on opacity { NumberAnimation { duration: Tokens.durSlow } }
+                                        gradient: Gradient {
+                                            orientation: Gradient.Horizontal
+                                            GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.16 : 0.10) }
+                                            GradientStop { position: 0.6; color: U.withAlpha(Theme.primary, 0.0) }
+                                        }
+                                    }
+
+                                    // leading indicator bar
+                                    Rectangle {
+                                        x: 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 3
+                                        height: histChip.open ? 30 : 0
+                                        radius: 1.5
+                                        color: Theme.primary
+                                        Behavior on height { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutBack } }
+                                    }
+                                }
+
+                                // kind tile: neutral at rest, solid accent when open
+                                Rectangle {
+                                    id: kindTile
+                                    x: Tokens.space3
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 38; height: 38
+                                    radius: Tokens.radiusMd
+                                    color: histChip.open ? Theme.primary
+                                         : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.06 : 0.05)
+                                    border.width: histChip.open ? 0 : 1
+                                    border.color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.06 : 0.08)
+                                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
+                                    C.IconGlyph {
+                                        anchors.centerIn: parent
+                                        name: histChip.kindIcon
+                                        size: 18
+                                        glyphColor: histChip.open ? Theme.on_primary
+                                                  : histChip.hot ? Theme.on_surface : Theme.on_surface_var
+                                    }
+                                }
 
                                 ColumnLayout {
                                     id: histCol
-                                    anchors.left: parent.left
-                                    anchors.right: delBtn.left
-                                    anchors.leftMargin: Tokens.space4
+                                    anchors.left: kindTile.right
+                                    anchors.leftMargin: Tokens.space3
+                                    anchors.right: sideSlot.left
+                                    anchors.rightMargin: Tokens.space2
                                     anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 1
+                                    spacing: 3
                                     RowLayout {
+                                        Layout.fillWidth: true
                                         spacing: 6
-                                        Layout.maximumWidth: 230
-                                        Rectangle {
-                                            visible: modelData.hasBrief
-                                            implicitWidth: 6; implicitHeight: 6; radius: 3
-                                            color: Theme.secondary_container
-                                        }
                                         C.AppText {
                                             Layout.fillWidth: true
-                                            Layout.maximumWidth: 220
                                             text: modelData.query
-                                            weight: Tokens.weightBold
-                                            font.pixelSize: Tokens.fontCaption + 1
-                                            color: modelData.isOpen ? Theme.primary : Theme.text_strong
+                                            weight: histChip.open ? Tokens.weightExtraBold : Tokens.weightBold
+                                            font.pixelSize: Tokens.fontBody
+                                            color: Theme.text_strong
                                             elide: Text.ElideRight
+                                        }
+                                        // AI brief badge (was an unexplained green dot)
+                                        Rectangle {
+                                            visible: modelData.hasBrief
+                                            implicitWidth: aiRow.implicitWidth + 10
+                                            implicitHeight: 18
+                                            radius: Tokens.radiusPill
+                                            color: U.withAlpha(Theme.secondary_container, 0.14)
+                                            border.width: 1
+                                            border.color: U.withAlpha(Theme.secondary_container, 0.35)
+                                            Row {
+                                                id: aiRow
+                                                anchors.centerIn: parent
+                                                spacing: 3
+                                                C.IconGlyph { name: "auto_awesome"; fill: true; size: 10; glyphColor: Theme.secondary_container; anchors.verticalCenter: parent.verticalCenter }
+                                                C.AppText { text: "AI"; mono: true; weight: Tokens.weightBold; font.pixelSize: Tokens.fontMicro; color: Theme.secondary_container; anchors.verticalCenter: parent.verticalCenter }
+                                            }
+                                            C.AppTooltip { visible: aiTipHover.hovered; text: I18n.tr("AI brief saved: reopening costs nothing") }
+                                            HoverHandler { id: aiTipHover }
                                         }
                                     }
                                     C.AppText {
-                                        text: I18n.tr("{n} videos").replace("{n}", modelData.videos) + " · " + modelData.when
+                                        Layout.fillWidth: true
+                                        text: (histChip.open ? I18n.tr("Viewing") : histChip.kindLabel)
+                                              + " · " + I18n.tr("{n} videos").replace("{n}", modelData.videos)
+                                              + " · " + modelData.when
                                         mono: true
+                                        elide: Text.ElideRight
                                         font.pixelSize: Tokens.fontMicro
-                                        color: Theme.on_surface_var
+                                        color: histChip.open ? Theme.primary : Theme.on_surface_var
+                                        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
                                     }
                                 }
-                                C.IconButton {
-                                    id: delBtn
+
+                                // check badge (open) ⇄ delete (hover)
+                                Item {
+                                    id: sideSlot
                                     anchors.right: parent.right
-                                    anchors.rightMargin: Tokens.space1
+                                    anchors.rightMargin: Tokens.space2
                                     anchors.verticalCenter: parent.verticalCenter
-                                    iconName: "close"
-                                    glyphSize: 12
-                                    implicitWidth: 24; implicitHeight: 24
-                                    opacity: histChip.hot ? 1 : 0.35
-                                    Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
-                                    tip: I18n.tr("Delete this saved report")
-                                    onClicked: Insights.deleteSaved(modelData.key)
+                                    width: 26; height: 26
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 20; height: 20; radius: 10
+                                        color: Theme.primary
+                                        opacity: histChip.open && !histChip.hot ? 1 : 0
+                                        scale: histChip.open && !histChip.hot ? 1 : 0.6
+                                        Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
+                                        Behavior on scale { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutBack } }
+                                        C.IconGlyph { anchors.centerIn: parent; name: "check"; size: 13; glyphColor: Theme.on_primary }
+                                    }
+                                    C.IconButton {
+                                        id: delBtn
+                                        anchors.centerIn: parent
+                                        iconName: "close"
+                                        glyphSize: 12
+                                        implicitWidth: 26; implicitHeight: 26
+                                        visible: opacity > 0.01
+                                        opacity: histChip.hot ? 1 : (histChip.open ? 0 : 0.3)
+                                        Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
+                                        tip: I18n.tr("Delete this saved report")
+                                        onClicked: Insights.deleteSaved(modelData.key)
+                                    }
                                 }
                             }
                         }

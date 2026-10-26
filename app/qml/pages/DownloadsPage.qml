@@ -1222,6 +1222,7 @@ Item {
         C.ThumbSkeleton {
             anchors.fill: parent
             active: th.thumbId !== "" && thImg.status !== Image.Ready
+                    && thImg.status !== Image.Error
             topLeftRadius: th.r
             topRightRadius: th.r
             bottomLeftRadius: th.r

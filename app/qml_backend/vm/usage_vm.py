@@ -19,9 +19,10 @@ from app.core.quota import (API_QUOTA_PER_KEY, QUOTA_KINDS,
                             SEARCH_QUOTA_DAILY_LIMIT,
                             _mix_from_history, _untracked_from_history,
                             api_quota_burn_rate, api_quota_capacity,
-                            api_quota_history_by_kind,
+                            api_quota_history_by_kind, clean_api_keys,
                             keys_quota_used, niche_cache_stats,
-                            quota_reset_local_str, search_quota_used)
+                            quota_reset_local_str, search_quota_remaining,
+                            search_quota_used)
 from app.core.utils import humanize_count
 from app.i18n import tr
 
@@ -131,11 +132,13 @@ class UsageVM(QObject):
 
     # ── configured keys (re-read each refresh; Settings may change them) ──
     def _configured_keys(self):
+        """Primary + backups, deduped — the same set the API layer actually
+        rotates through. The old version only fell back to the primary when
+        the backup list was empty, so a config that kept both undercounted
+        the primary key's spend as a second, separate budget."""
         cfg = load_app_config()
-        keys = [k for k in (cfg.get("youtube_api_keys") or []) if k]
-        if not keys and cfg.get("api_key"):
-            keys = [cfg["api_key"]]
-        return keys
+        return clean_api_keys([cfg.get("api_key", "")] +
+                              list(cfg.get("youtube_api_keys") or []))
 
     # ── properties ───────────────────────────────────────────────────────
     @Property(str, notify=changed)
@@ -307,16 +310,28 @@ class UsageVM(QObject):
         if keys:
             self._units_sub = tr("{p}% spent · {r} units left across {n} key(s) · one search = 100 units, any other call = 1").format(
                 p=int(round(frac * 100)), r=humanize_count(remaining), n=len(keys))
+            if len(keys) > 1:
+                # Google's 10k/day is per Cloud project, and a key string does
+                # not carry its project. Stating the assumption is the only
+                # honest option; silently summing per-key would overstate a
+                # multi-key setup that shares one project.
+                self._units_sub += " " + tr(
+                    "Each key is counted as its own project; keys from the same Google Cloud project share one 10,000/day budget.")
         else:
             self._units_sub = tr("No API key yet — add one in Settings to start tracking.")
 
-        # card 2 — search.list bucket
+        # card 2 — search.list calls. They draw on the same unit pool, so
+        # "left" is the remaining units ÷ 100, per key (no separate bucket).
         s_used = search_quota_used()
-        s_left = max(0, SEARCH_QUOTA_DAILY_LIMIT - s_used)   # == search_quota_remaining()
+        s_left = search_quota_remaining(keys) if keys else 0
+        s_max = (capacity // 100) if capacity else SEARCH_QUOTA_DAILY_LIMIT
         self._search_used = s_used
-        self._search_frac = s_used / float(SEARCH_QUOTA_DAILY_LIMIT)
-        self._search_value = "%d / %d" % (s_used, SEARCH_QUOTA_DAILY_LIMIT)
-        self._search_sub = tr("{n} searches left today · each API-source Niche Finder search adds one; Web scrape adds none (100 units each, the priciest call there is)").format(n=s_left)
+        self._search_frac = min(1.0, s_used / float(max(1, s_max)))
+        self._search_value = "%d / %d" % (s_used, s_max)
+        self._search_sub = tr(
+            "{n} more searches fit in today's remaining units · every search.list "
+            "call adds one, Niche Finder Web-scrape adds none (100 units each, "
+            "from the same 10,000/day pool)").format(n=s_left)
 
         # card 3 — runway
         rate = api_quota_burn_rate(7)

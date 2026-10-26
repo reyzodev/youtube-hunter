@@ -788,7 +788,8 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                     "formats": True, "play": True})
             if url.path == "/v1/qualities":
                 return self._qualities(self._vid(q.get("v")), q.get("vf"),
-                                       q.get("af"), q.get("lang"))
+                                       q.get("af"), q.get("lang"),
+                                       fresh=q.get("fresh") == "1")
             if url.path == "/v1/status":
                 vid = self._vid(q.get("v"))
                 if vid and q.get("watch") == "1":
@@ -887,7 +888,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         self._send(404, {"ok": False, "error": "not found"})
 
     # ── endpoints ────────────────────────────────────────────────────────
-    def _qualities(self, vid, vf=None, af=None, lang=None):
+    def _qualities(self, vid, vf=None, af=None, lang=None, fresh=False):
         """The picker rows for one video, sized for the output format the
         panel picked (default: the user's saved choice) and, on a dubbed
         video, for the picked audio track. Falls back to the generic ladder
@@ -897,11 +898,15 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         v3.45: the same choices the in-app quality picker offers — video
         format (MP4 / MKV / WEBM), audio format (MP3 / M4A / OPUS / WAV /
         FLAC) and the audio language of a dubbed video. Re-asking with a new
-        format is cheap: fetch_probe_info() caches the extraction per video."""
+        format is cheap: fetch_probe_info() caches the extraction per video.
+        `fresh` skips that cache — the panel's "check again" after the user
+        changed their IP/VPN."""
         from app.core.audio_tracks import audio_tracks_from_formats
         from app.core.download import (AUDIO_CODECS, VIDEO_CONTAINERS,
                                        download_prefs, fetch_probe_info,
-                                       qualities_from_info)
+                                       qualities_from_info,
+                                       _PROBE_BEST_PX, _PROBE_LIMITED,
+                                       _THIN_PX)
         from app.qml_backend.vm.quality_probe import _row, default_quality_rows
         if not vid:
             return self._send(400, {"ok": False, "error": "bad video id"})
@@ -917,12 +922,19 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         af = af if af in akeys else prefs.get("audio", "mp3")
         lang = re.sub(r"[^\w-]", "", str(lang or ""))[:16]
         rows, probed, err, tracks = None, False, "", []
+        limited, best_px = False, 0
         cut_rates, cut_level = {}, ""
         try:
             info, err = fetch_probe_info(
                 f"https://www.youtube.com/watch?v={vid}",
-                proxy_url=proxy, cookies_browser=cookies)
+                proxy_url=proxy, cookies_browser=cookies,
+                use_cache=not fresh)
             if info:
+                # A short list is usually the IP/VPN being capped. The panel
+                # says so, and "check again" re-probes with fresh=1, so
+                # changing IP really can bring the missing qualities back.
+                limited = bool(info.get(_PROBE_LIMITED))
+                best_px = int(info.get(_PROBE_BEST_PX) or 0)
                 try:
                     tracks = audio_tracks_from_formats(info.get("formats") or [])
                 except Exception as exc:     # noqa: BLE001 — no dub list, still fine
@@ -960,6 +972,9 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             r["saved"] = r["id"] in saved
         self._send(200, {
             "ok": True, "probed": probed, "rows": rows,
+            "limited": bool(probed and limited), "bestPx": best_px if probed else 0,
+            # agreed-on low ceiling → softer IP hint (see QualityProbeVM.thinHint)
+            "thin": bool(probed and best_px and best_px <= _THIN_PX),
             "format": {"video": vf, "audio": af},
             "formats": {
                 "video": [{"key": c["key"], "label": c["label"], "sub": tr(c["sub"])}

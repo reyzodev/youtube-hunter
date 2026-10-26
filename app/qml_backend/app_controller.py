@@ -18,9 +18,9 @@ from PySide6.QtCore import QObject, Property, QPointF, QTimer, Signal, Slot
 from PySide6.QtGui import QCursor
 
 from app.config import load_app_config, save_app_config
-from app.constants import APP_VERSION, DONATE_URL
+from app.constants import APP_VERSION, DONATE_URL, TELEGRAM_URL
 from app.core.quota import (add_quota_listener, api_quota_capacity,
-                            api_quota_remaining)
+                            api_quota_remaining, clean_api_keys)
 from app.crash import log_crash
 from app.ui import theme
 from app.qml_backend import gc_pacing, svg_icon_provider
@@ -70,6 +70,22 @@ def resolved_donate_url() -> str:
         url = DONATE_URL
     return url if url.lower().startswith(("http://", "https://")) else ""
 
+
+def resolved_telegram_url() -> str:
+    """The Telegram channel the follow button opens, or "" to hide it.
+
+    Precedence: `telegram_url` in config.json (per-install override) →
+    TELEGRAM_URL in app/constants.py. http(s) only — the value is handed to
+    the OS browser, never to the in-app web view.
+    """
+    url = ""
+    try:
+        url = str(load_app_config().get("telegram_url") or "").strip()
+    except Exception:                    # noqa: BLE001 — never break the title bar
+        url = ""
+    if not url:
+        url = TELEGRAM_URL
+    return url if url.lower().startswith(("http://", "https://")) else ""
 
 
 # Bump when the onboarding tour changes enough to be worth showing again.
@@ -122,7 +138,7 @@ class AppController(QObject):
         # their column count + card width on it (see the railTimer in
         # Sidebar.qml) so a 200ms slide doesn't rebuild every card per frame.
         self._rail_animating = False
-        # How many result cards per row the grids use (3/4/5). 0 == "Auto",
+        # How many result cards per row the grids use (2/3/4). 0 == "Auto",
         # where each grid derives the count from its own available width the way
         # it did before this preference existed. Persisted so the app reopens
         # the way the user left it.
@@ -130,11 +146,12 @@ class AppController(QObject):
             self._grid_columns = int(cfg.get("grid_columns", 0))
         except (TypeError, ValueError):
             self._grid_columns = 0
-        if self._grid_columns not in (0, 3, 4, 5):
+        if self._grid_columns == 5:     # legacy value from the old 3/4/5 picker
+            self._grid_columns = 4
+        if self._grid_columns not in (0, 2, 3, 4):
             self._grid_columns = 0
-        self._youtube_api_keys = [k for k in (cfg.get("youtube_api_keys") or []) if k]
-        if not self._youtube_api_keys and cfg.get("api_key"):
-            self._youtube_api_keys = [cfg["api_key"]]
+        self._youtube_api_keys = clean_api_keys(
+            [cfg.get("api_key", "")] + list(cfg.get("youtube_api_keys") or []))
         self._quota_remaining = 0
         self._quota_capacity = 0
         # Whether the onboarding tour has been completed/skipped. Persisted, so
@@ -248,6 +265,31 @@ class AppController(QObject):
         from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl(url))
 
+    # ── follow link ─────────────────────────────────────────────────────
+    @Property(str, constant=True)
+    def telegramUrl(self):
+        """The channel behind the title bar's paper-plane button.
+
+        Empty (blank TELEGRAM_URL or `telegram_url` in config.json) hides the
+        button rather than letting it open a dead address.
+        """
+        return resolved_telegram_url()
+
+    @Slot()
+    def openTelegram(self):
+        """The follow button: open the channel in the user's browser.
+
+        Deliberately the OS browser and not the in-app web view — that keeps
+        QtWebEngine uninitialised (~260 MB of resident memory) unless the user
+        actually opens the Support window.
+        """
+        url = self.telegramUrl
+        if not url:
+            return
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
     @Property(bool, notify=tourSeenChanged)
     def tourSeen(self):
         return self._tour_seen
@@ -304,7 +346,7 @@ class AppController(QObject):
     def setNavGuard(self, on):
         self._nav_guard = bool(on)
 
-    # ── grid columns preference (3 / 4 / 5, or 0 = Auto) ────────────────
+    # ── grid columns preference (2 / 3 / 4, or 0 = Auto) ────────────────
     @Property(int, notify=gridColumnsChanged)
     def gridColumns(self):
         return self._grid_columns
@@ -312,7 +354,9 @@ class AppController(QObject):
     @Slot(int)
     def setGridColumns(self, n):
         n = int(n)
-        if n not in (0, 3, 4, 5):
+        if n == 5:                      # legacy value from the old 3/4/5 picker
+            n = 4
+        if n not in (0, 2, 3, 4):
             n = 0
         if n == self._grid_columns:
             return

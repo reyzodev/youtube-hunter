@@ -50,8 +50,8 @@ from app.core.niche.live_stats import (LiveStatsError, STALE_AFTER_S,
                                        is_stale, refresh_rows_live,
                                        stats_age_s, youtube_api_keys)
 from app.core.youtube_api import ScrapeCancelled
-from app.core.niche.sorting import (parse_human_float, sort_archive_quick,
-                                    sort_niche_rows)
+from app.core.niche.sorting import (aggregate_by_channel, parse_human_float,
+                                    sort_archive_quick, sort_niche_rows)
 from app.core.utils import (
     days_ago_str, video_download_dir, humanize_count, local_path_from_url,
     open_external_url)
@@ -61,7 +61,9 @@ from app.qml_backend.vm import _dl_progress as dlp
 from app.qml_backend.vm._thumb_download import (remember_thumb_folder,
                                                 start_thumb_download,
                                                 thumb_folder)
-from app.qml_backend.vm.niche_vm import _age_short, _lang_label, _prefetch_page_thumbs, _thumb_id
+from app.qml_backend.vm.niche_vm import (_age_short, _channel_card_fields,
+                                         _lang_label, _prefetch_page_thumbs,
+                                         _thumb_id)
 from app.qml_backend.vm.quality_probe import default_quality_rows
 from app.qml_backend.desktop_notifier import announce, announce_download
 
@@ -70,6 +72,17 @@ from app.qml_backend.desktop_notifier import announce, announce_download
 # "Best Finds · Views ÷ Subs" ladder rather than the old five-item list. Each
 # entry is (label, local_sort_key); sort_niche_rows knows every key.
 _SORTS = NICHE_SORTS_UI
+
+
+def _live_row_key(r):
+    """The key live-refresh uses for a row: its archive key, else video id.
+    A channel aggregate has neither of its own, so it resolves to its hero
+    video — which is one of the raw rows the refresh returns."""
+    key = r.get("_archive_key") or r.get("video_id")
+    if key:
+        return key
+    bv = r.get("best_video") or {}
+    return bv.get("_archive_key") or bv.get("video_id") or ""
 
 # Everything the "Filters" side sheet can set on an open section. The first
 # block are typed bounds (stored parsed, handed back humanized), the second
@@ -173,10 +186,15 @@ class ArchiveVM(QObject):
         self._gid = None
         self._group = None
         self._detail_raw = []        # full raw rows of the open group
-        self._detail_filtered = []   # after favorites-only + sort
+        self._detail_filtered = []   # after favorites-only + sort (+ channels view)
+        self._detail_filtered_videos = []  # same, before channel aggregation
         self._detail_visible = []    # current page, flattened for QML
         self._raw_by_key = {}        # video_id / archive key → raw row
         self._fav_only = False
+        # Videos / Channels is a VIEW of the open section, not a filter on the
+        # saved rows: switching it rolls the same matched videos up per channel
+        # instead of throwing anything away.
+        self._channels_view = False
         self._sort = 0
         self._page = 0
         self._saved_ids = []         # favorite video ids ON THE CURRENT PAGE
@@ -217,6 +235,9 @@ class ArchiveVM(QObject):
         self._live_done = 0
         self._live_total = 0
         self._live_missing = 0
+        # off-page rows from the refresh in flight, applied in one pass when it
+        # finishes (see _on_live_chunk for why they are not merged per chunk)
+        self._live_pending = {}
         self._liveChunk.connect(self._on_live_chunk)
         self._liveFinished.connect(self._on_live_finished)
         # while a section is open: re-read every STALE_AFTER_S (only when the
@@ -366,6 +387,24 @@ class ArchiveVM(QObject):
         so subscriber bounds/sorts are meaningless there."""
         return (self._group or {}).get("mode") == "channel"
 
+    @Property(bool, notify=detailChanged)
+    def detailCanGroupChannels(self):
+        """Keyword / Viral / Favorites sections can be read as a channel
+        leaderboard; a channel scan cannot (it IS one channel)."""
+        return (self._group or {}).get("mode") != "channel"
+
+    @Property(bool, notify=detailChanged)
+    def detailChannelsView(self):
+        return self._channels_view
+
+    @detailChannelsView.setter
+    def detailChannelsView(self, v):
+        v = bool(v) and self.detailCanGroupChannels
+        if v != self._channels_view:
+            self._channels_view = v
+            self._render_detail()
+            self.detailChanged.emit()
+
     @Property(str, notify=detailChanged)
     def detailRuns(self):
         return str((self._group or {}).get("run_count") or 0)
@@ -375,11 +414,15 @@ class ArchiveVM(QObject):
         """Cells of the detail header strip: caption/value pairs computed
         once per open, so QML just lays them out."""
         g = self._group or {}
-        rows = self._detail_raw
+        # In Channels view the page counts channels, not videos, and its
+        # numbers must be the same filtered set the grid shows.
+        rows = (self._detail_filtered if self._channels_view
+                and self._detail_filtered else self._detail_raw)
         views = sum(r.get("view_count") or 0 for r in rows)
         mults = [r.get("multiplier") for r in rows if r.get("multiplier")]
         return [
-            {"l": tr("Videos"), "v": humanize_count(len(rows))},
+            {"l": tr("Channels") if self._channels_view else tr("Videos"),
+             "v": humanize_count(len(rows))},
             {"l": tr("Favorites"), "v": humanize_count(g.get("fav_count") or 0)},
             {"l": tr("Total views"), "v": humanize_count(views)},
             {"l": tr("Best multiplier"),
@@ -512,6 +555,16 @@ class ArchiveVM(QObject):
     @Property("QVariantList", notify=rowsChanged)
     def rows(self):
         return self._detail_visible
+
+    @Property(int, constant=True)
+    def pageSize(self):
+        """Cards per detail page. Exposed so the QML grid can keep a FIXED
+        number of cells alive instead of growing the model from 0 on the first
+        section open (v3.53 perf): with a fixed model the 24 card trees are
+        built with the page (in the background warm-up) and opening a section
+        only re-binds them, instead of constructing 24 layered cards inside the
+        click."""
+        return NICHE_PAGE_SIZE
 
     @Property(bool, notify=rowsChanged)
     def detailIsEmpty(self):
@@ -707,19 +760,28 @@ class ArchiveVM(QObject):
         self._group = dict(group)
         self._detail_raw = rows
         self._fav_only = False
+        self._channels_view = False
         self._sort = 0
         self._page = 0
         self._detail_text = ""
         self._timeframe = len(NICHE_TIMEFRAMES) - 1
         self._range = {}
         self.sortsChanged.emit()
-        self.detailChanged.emit()
+        # Fill the page BEFORE the detail view is revealed. Emitting
+        # detailChanged first made QML lay out the whole detail page with 24
+        # empty cards and then lay it out again the moment rows arrived —
+        # the section-open hitch. Now the one layout that matters happens
+        # once, on a grid that already holds its rows.
         self._render_detail()
+        self.detailChanged.emit()
         # cards show the saved numbers instantly, then turn live in place.
         # A refresh still running for the PREVIOUS section is dropped.
         self._live_token += 1
         self._live_state = "idle"
-        self._start_live(force=False)
+        # A beat after the section is on screen: the stale scan + config read
+        # are not on the click path, and the request thread starts behind the
+        # first paint instead of in front of it.
+        QTimer.singleShot(60, self._start_live)
         self._live_timer.start()
         self._live_clock.start()
 
@@ -733,7 +795,10 @@ class ArchiveVM(QObject):
         self._group = None
         self._detail_raw = []
         self._detail_filtered = []
+        self._detail_filtered_videos = []
         self._detail_visible = []
+        self._channels_view = False
+        self._live_pending = {}
         self._page = 0
         self.sortsChanged.emit()
         self.detailChanged.emit()
@@ -747,7 +812,10 @@ class ArchiveVM(QObject):
         user says which subset they mean. Purely local — these rows came out of
         SQLite, so a saved search from three weeks ago can be re-read at set level
         without spending a single API unit."""
-        rows = self._detail_filtered or self._detail_raw
+        # Always the VIDEO set: in the Channels view _detail_filtered holds
+        # aggregates, which are a presentation step and not valid input for a
+        # video-level report.
+        rows = self._detail_filtered_videos or self._detail_raw
         if not rows:
             self.toast.emit(tr("This section has no rows to analyze."), "error")
             return
@@ -952,8 +1020,13 @@ class ArchiveVM(QObject):
     @Slot(str)
     def exportCurrent(self, path):
         """Export the section as currently viewed — same favorites-only /
-        sort state the cards on screen show, not a hidden full dump."""
-        rows = self._detail_filtered
+        sort state the cards on screen show, not a hidden full dump.
+
+        Always the VIDEO set: the Channels view is an aggregation of these
+        rows, and the export format is per-video. In Channels view the export
+        therefore carries every matched video (the full evidence behind the
+        leaderboard), not one synthesized row per channel."""
+        rows = self._detail_filtered_videos or self._detail_filtered
         if not rows:
             self.toast.emit(tr("Nothing to export."), "error")
             return
@@ -1072,17 +1145,19 @@ class ArchiveVM(QObject):
         cookies_browser = (cfg.get("yt_cookies_browser", "") or "").strip().lower()
 
         clear_cancel(video_id)
-        self._set_download(video_id, "running", int(entry.get("pct") or 0),
+        resumed_at = int(entry.get("pct") or 0)
+        self._set_download(video_id, "running", resumed_at,
                            tr("Resuming…"), cancelling=False,
                            url=url, qualityKey=quality_storage_key(quality))
         downloads_upsert(video_id, status="downloading", error_message="",
                          create_if_missing=False)
         self.toast.emit(tr("Resuming download…"), "download")
         self._launch_dl_worker(video_id, url, target_dir, quality,
-                               proxy_url, cookies_browser)
+                               proxy_url, cookies_browser,
+                               resume_pct=resumed_at)
 
     def _launch_dl_worker(self, video_id, url, target_dir, quality,
-                          proxy_url, cookies_browser):
+                          proxy_url, cookies_browser, resume_pct=0):
         """Run one download on a daemon thread. Shared by startDownload and
         resumeDownload so both report progress and cancellation identically."""
         def worker():
@@ -1099,7 +1174,8 @@ class ArchiveVM(QObject):
                         self._dlResolved.emit(v, px, lbl),
                     on_meta=lambda m, v=video_id: self._dlMeta.emit(v, m),
                     proxy_url=proxy_url, cookies_browser=cookies_browser,
-                    should_cancel=lambda v=video_id: is_cancelled(v))
+                    should_cancel=lambda v=video_id: is_cancelled(v),
+                    resume_pct=resume_pct)
             except Exception as exc:      # noqa: BLE001
                 log_crash("ArchiveVM download worker failed:\n" + str(exc))
                 ok, message, filepath = False, str(exc), ""
@@ -1363,11 +1439,12 @@ class ArchiveVM(QObject):
         # the cards on screen first, so what the user is looking at turns live
         # in the first second; the rest of the section follows
         start = self._page * NICHE_PAGE_SIZE
-        on_page = {(r.get("_archive_key") or r.get("video_id"))
+        on_page = {_live_row_key(r)
                    for r in self._detail_filtered[start:start + NICHE_PAGE_SIZE]}
-        todo.sort(key=lambda r: 0 if (r.get("_archive_key") or r.get("video_id")) in on_page else 1)
+        todo.sort(key=lambda r: 0 if _live_row_key(r) in on_page else 1)
         self._live_page_keys = on_page
         self._live_dirty = False
+        self._live_pending = {}
         self._live_token += 1
         token, gid = self._live_token, self._gid
         self._live_done, self._live_total = 0, len(todo)
@@ -1394,19 +1471,20 @@ class ArchiveVM(QObject):
 
         threading.Thread(target=worker, daemon=True, name="archive-live").start()
 
-    @Slot(int, int, list)
-    def _on_live_chunk(self, gid, token, fresh):
-        if token != self._live_token or gid != self._gid:
+    def _apply_live_rows(self, fresh_by_key):
+        """Merge freshly fetched rows into the open section, preserving stars.
+
+        Pool-relative fields (outlier median, Gold Score) depend on EVERY row,
+        so this is a full-section pass. It is deliberately called at most twice
+        per refresh — once for the visible page, once for the rest at the end —
+        instead of once per 50-row chunk.
+        """
+        if not fresh_by_key:
             return
-        by_key = {}
-        for r in fresh:
-            k = r.get("_archive_key") or r.get("video_id")
-            if k:
-                by_key[k] = r
         merged = []
         for r in self._detail_raw:
             k = r.get("_archive_key") or r.get("video_id")
-            new = by_key.get(k)
+            new = fresh_by_key.get(k)
             if new is None:
                 merged.append(r)
                 continue
@@ -1417,17 +1495,38 @@ class ArchiveVM(QObject):
         # multiplier / views-per-hour / outlier ratio from the NEW numbers
         compute_niche_metrics(merged)
         self._detail_raw = merged
-        self._live_done += len(fresh)
         self._live_missing = sum(1 for r in merged if r.get("_live_missing"))
-        # Repaint at once only when this batch touches cards on screen (they
-        # come first). Off-screen batches are applied silently and the grid is
-        # re-sorted ONCE at the end, so cards don't reshuffle under the cursor
-        # every half second.
-        if set(by_key) & getattr(self, "_live_page_keys", set()):
+
+    @Slot(int, int, list)
+    def _on_live_chunk(self, gid, token, fresh):
+        if token != self._live_token or gid != self._gid:
+            return
+        by_key = {}
+        for r in fresh:
+            k = r.get("_archive_key") or r.get("video_id")
+            if k:
+                by_key[k] = r
+        self._live_done += len(fresh)
+        if not by_key:
+            self.liveChanged.emit()
+            return
+        # A 1,300-row section refreshes in ~26 chunks. Rebuilding the whole
+        # section and recomputing its pool metrics per chunk cost ~10 ms on the
+        # GUI thread each time — a dropped frame roughly once a second for the
+        # length of the refresh, which is what a crowded section felt like while
+        # scrolling. Only rows on screen are applied immediately; every other
+        # chunk is parked here and merged in one pass when the refresh ends.
+        self._live_pending.update(by_key)
+        on_page = set(by_key) & getattr(self, "_live_page_keys", set())
+        if on_page:
+            subset = {k: by_key[k] for k in on_page}
+            self._apply_live_rows(subset)
+            for k in on_page:
+                self._live_pending.pop(k, None)
             self.detailChanged.emit()      # header totals (views, gems …)
             self._render_detail(keep_page=True)
             self._live_dirty = False
-        else:
+        if len(by_key) > len(on_page):
             self._live_dirty = True
         self.liveChanged.emit()
 
@@ -1435,7 +1534,13 @@ class ArchiveVM(QObject):
     def _on_live_finished(self, gid, token, error):
         if token != self._live_token or gid != self._gid:
             return
-        if getattr(self, "_live_dirty", False):
+        if self._live_pending:
+            self._apply_live_rows(self._live_pending)
+            self._live_pending = {}
+            self._live_dirty = False
+            self.detailChanged.emit()
+            self._render_detail(keep_page=True)
+        elif getattr(self, "_live_dirty", False):
             self._live_dirty = False
             self.detailChanged.emit()
             self._render_detail(keep_page=True)
@@ -1496,16 +1601,30 @@ class ArchiveVM(QObject):
 
         sort_views = filters.get("sort_views")
         sort_subs = filters.get("sort_subs")
+        sort_i = self._sort if self._sort in self._visible_sorts() else 0
+        key = _SORTS[sort_i][1]
         if sort_views or sort_subs:
             rows = sort_archive_quick(rows, sort_subs, sort_views)
         else:
-            sort_i = self._sort if self._sort in self._visible_sorts() else 0
-            key = _SORTS[sort_i][1]
             rows = sort_niche_rows(rows, key)
         # after the sort, so each channel keeps its BEST rows — a keyword
         # section merged over many runs piles up one prolific channel
         if per_channel:
             rows = cap_per_channel(rows, per_channel)
+
+        # Analysis / export of the VIDEO set must stay possible while the
+        # Channels view is on: aggregation is a presentation step, and the
+        # aggregates are not valid inputs for a video-level report.
+        self._detail_filtered_videos = rows
+        if self._channels_view:
+            rows = aggregate_by_channel(rows)
+            # Re-sort the aggregates by the SAME user choice: channel-level
+            # multiplier / views / subscribers, not the order the constituent
+            # videos happened to have.
+            if sort_views or sort_subs:
+                rows = sort_archive_quick(rows, sort_subs, sort_views)
+            else:
+                rows = sort_niche_rows(rows, key)
 
         self._detail_filtered = rows
         if not keep_page:
@@ -1521,13 +1640,19 @@ class ArchiveVM(QObject):
         page_rows = rows[start:start + NICHE_PAGE_SIZE]
         _prefetch_page_thumbs(page_rows,
                               rows[start + NICHE_PAGE_SIZE:start + 2 * NICHE_PAGE_SIZE])
-        self._detail_visible = [self._row_for_qml(r) for r in page_rows]
+        self._detail_visible = [self._row_for_qml(r, channel=self._channels_view)
+                                for r in page_rows]
 
         # keep the raw rows reachable by both keys the cards hand back: the
         # archive key (favorite/delete/send-to-ideas) and the video id
         # (download, which the shared QualityPicker passes).
         self._raw_by_key = {}
         for r in page_rows:
+            # A channel card's actions (star, ideas, download) target its best
+            # video, so that VIDEO row — not the aggregate — must be reachable
+            # by the id the card sends back.
+            if self._channels_view:
+                r = r.get("best_video") or r
             key_ = r.get("_archive_key")
             if key_:
                 self._raw_by_key[key_] = r
@@ -1551,20 +1676,28 @@ class ArchiveVM(QObject):
             self._saved_ids = saved
             self.savedChanged.emit()
 
-    def _row_for_qml(self, r):
+    def _row_for_qml(self, r, channel=False):
         """Flatten a stored row into the plain-string dict the QML cards read
         (same field names as NicheVM._row_for_qml, so the card designs stay in
-        sync) plus the archive-only fields: archiveKey, isFavorite, seen."""
+        sync) plus the archive-only fields: archiveKey, isFavorite, seen.
+
+        In the Channels view `r` is an aggregate produced by
+        aggregate_by_channel(); its archive-only fields come from the hero
+        (best_video) row, because every action on a channel card — star,
+        ideas, download — targets that one video.
+        """
+        bv = (r.get("best_video") or {}) if channel else {}
+        src = bv if channel else r
         subs = r.get("subscriber_count")
         subs_txt = (tr("hidden") if r.get("subs_hidden")
                     else (humanize_count(subs) if subs is not None else "—"))
         mult = r.get("multiplier")
         eng = r.get("engagement")
-        return {
-            "isChannel": False,
+        base = {
+            "isChannel": channel,
             "videoId": r.get("video_id", ""),
             "channelId": r.get("channel_id", ""),
-            "archiveKey": r.get("_archive_key", ""),
+            "archiveKey": src.get("_archive_key", ""),
             "title": r.get("title", "") or r.get("channel_title", ""),
             "channelTitle": r.get("channel_title", "—"),
             "channelUrl": r.get("channel_url", ""),
@@ -1589,9 +1722,15 @@ class ArchiveVM(QObject):
             "langLabel": _lang_label(r),
             "viralTag": (f"#{r.get('viral_rank')} {r.get('viral_region') or ''}".strip()
                          if r.get("viral_rank") else ""),
-            "isFavorite": bool(r.get("_is_favorite")),
-            "firstSeen": days_ago_str(r.get("_first_seen") or ""),
-            "lastSeen": days_ago_str(r.get("_last_seen") or ""),
+            "isFavorite": bool(src.get("_is_favorite")),
+            "firstSeen": days_ago_str(src.get("_first_seen") or ""),
+            "lastSeen": days_ago_str(src.get("_last_seen") or ""),
             # v3.43: YouTube no longer returns this video (deleted / private)
-            "unavailable": bool(r.get("_live_missing")),
+            "unavailable": bool(src.get("_live_missing")),
         }
+        if channel:
+            base.update(_channel_card_fields(r))
+            # The card's fourth stat is how many views this channel drew
+            # across ALL matched videos, not just the hero's.
+            base["views"] = humanize_count(r.get("view_count", 0) or 0)
+        return base

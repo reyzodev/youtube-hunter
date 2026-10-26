@@ -21,11 +21,13 @@ import "../Utils.js" as U
 //   * Console — statement + one command bar on the left; on the right a live
 //     monitor: the radar plus a spec sheet of the current cuts, so the radar
 //     is no longer decoration — it is the read-out of your filter state.
-//   * Tuner — the three signature cuts as three equal "tracks". Each track
-//     has a big mono read-out ("≤ 100K") above a sliding segmented control
-//     with an explicit "Any" stop, so clearing a cut is a visible choice
-//     instead of the old hidden "click the active pill again".
-//   * Recipes — the presets as one row of quiet chips under the tracks.
+//   * Tuner — the three signature cuts inside ONE console deck. Each track
+//     reads label → statement value → fine calibration rail, so the three
+//     cuts scan as a single instrument instead of three form cards. The rail
+//     keeps an explicit "Any" stop, so clearing a cut stays a visible choice.
+//     The header carries live match telemetry, putting the effect of a cut
+//     right where the cut is made.
+//   * Recipes — the presets as one row of quiet chips under the deck.
 //   * Drawer — advanced options split by BEHAVIOUR in two side-by-side zones
 //     ("Instant" vs "On next run"), so it is obvious which knob needs a re-run.
 //   * Type — one family (Hanken / IRANYekanX via FontBridge), personality from
@@ -90,6 +92,10 @@ Item {
     // Wide enough for the console monitor and the two-zone drawer.
     readonly property bool _wide: content.width >= 1120
     readonly property bool _narrow: content.width < 760
+    // The cuts now exclude every fetched video — the header says so before
+    // the empty grid has to.
+    readonly property bool _noMatch: Niche.hasResults && !Niche.isRunning
+                                     && Niche.metricPool > 0 && Niche.metricMatchFrac <= 0
 
     // A human read-out of one numeric cut: "≤ 100K", "≥ 1M", "1K – 10K".
     function _cut(minV, maxV) {
@@ -104,6 +110,8 @@ Item {
     readonly property string _viewsCut: _cut(Niche.viewsMin, Niche.viewsMax)
     readonly property string _multCut: String(Niche.multMin || "").trim() !== ""
                                        ? "≥ " + String(Niche.multMin).trim() + "×" : ""
+    readonly property string _outlierCut: String(Niche.outlierMin || "").trim() !== ""
+                                          ? "≥ " + String(Niche.outlierMin).trim() + "×" : ""
 
     // Which option of a track the VM's current value is (0 = Any, -1 = a
     // custom value typed in the drawer).
@@ -117,17 +125,30 @@ Item {
         return -1
     }
 
-    readonly property var _subsOpts:  [ { t: I18n.tr("Any"), v: "" }, { t: "10K", v: "10K" },
-                                        { t: "100K", v: "100K" },     { t: "1M", v: "1M" } ]
-    readonly property var _viewsOpts: [ { t: I18n.tr("Any"), v: "" }, { t: "10K", v: "10K" },
-                                        { t: "100K", v: "100K" },     { t: "1M", v: "1M" },
-                                        { t: "10M", v: "10M" } ]
-    readonly property var _multOpts:  [ { t: I18n.tr("Any"), v: "" }, { t: "10×", v: "10" },
-                                        { t: "50×", v: "50" },        { t: "100×", v: "100" } ]
+    // The stops live in app/core/niche/config.py (the VM counts each one), so
+    // the rail and the histogram can never disagree about what a stop means.
+    function _stops(track, suffix) {
+        const src = (Niche.signalStops && Niche.signalStops[track]) || []
+        const out = []
+        for (let i = 0; i < src.length; i++)
+            out.push({ t: i === 0 ? I18n.tr("Any") : src[i] + suffix, v: src[i] })
+        return out
+    }
+    function _counts(track) {
+        return (Niche.signalCounts && Niche.signalCounts[track]) || []
+    }
 
-    // The three cuts the tracks show are not repeated as chips; only the
-    // other active options (window, sort, format, depth…) are.
-    readonly property var _trackKeys: ["subs_min", "subs_max", "views_min", "views_max", "mult_min"]
+    readonly property var _subsOpts: _stops("subs", "")
+    readonly property var _viewsOpts: _stops("views", "")
+    readonly property var _multOpts: _stops("mult", "×")
+    readonly property var _outlierOpts: _stops("outlier", "×")
+
+    // The cuts the tracks show are not repeated as chips; only the other
+    // active options (window, sort, format, depth…) are. A channel scan has
+    // no channel-wide cuts, so only its two tracks' keys are claimed.
+    readonly property var _trackKeys: Niche.mode === 1
+        ? ["views_min", "views_max", "outlier_min"]
+        : ["subs_min", "subs_max", "views_min", "views_max", "mult_min", "outlier_min"]
     readonly property int _extraFilters: {
         let n = 0
         const a = Niche.activeFilters || []
@@ -314,120 +335,294 @@ Item {
         }
     }
 
-    // One of the three outlier cuts: caption, a big read-out of the current
-    // value, and a sliding segmented control with an explicit "Any" stop.
-    component SignalTrack: Rectangle {
-        id: trk
-        property string caption: ""
-        property string icon: ""
-        property string unit: ""
-        property string readout: ""
+    // A fine calibration rail: one stop per value, a lit bridge up to the
+    // selected one, and the label under each. It reads as an instrument scale
+    // rather than a row of buttons — still one click per stop.
+    component SignalRail: Item {
+        id: rail
         property var options: []
+        // videos left at each stop (same order as options); [] until the
+        // first pool exists, which is when the rail stays a bare scale
+        property var counts: []
         property int index: 0
         signal picked(string v)
-        readonly property bool on: readout !== ""
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        radius: Tokens.radiusLg
-        color: trk.on ? U.mix(Theme.surface_low, Theme.primary, Theme.isDark ? 0.07 : 0.04)
-                      : Theme.surface_low
-        border.width: 1
-        border.color: trk.on ? U.withAlpha(Theme.primary, 0.38) : Theme.border
-        Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
-        Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
-        implicitHeight: trkCol.implicitHeight + Tokens.space4 * 2
+        readonly property int n: options.length
+        readonly property bool hasData: n > 0 && counts.length === n
+        readonly property real cellW: n > 0 ? width / n : 0
+        readonly property int _active: (index >= 0 && index < n) ? index : -1
+        readonly property int _max: {
+            let m = 0
+            for (let i = 0; i < counts.length; i++) m = Math.max(m, counts[i] || 0)
+            return m
+        }
+        // the scale sits lower once the histogram needs room above it
+        readonly property int _lineY: hasData ? 30 : 12
+        implicitHeight: hasData ? 58 : 42
+        Behavior on implicitHeight { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
 
-        // a short lit bar on the leading top edge when the cut is on
+        // the scale
         Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.leftMargin: Tokens.space4
+            x: rail.cellW / 2
+            y: rail._lineY
+            width: Math.max(0, rail.width - rail.cellW)
             height: 2
             radius: 1
-            width: trk.on ? 44 : 0
+            color: Theme.border_med
+        }
+        // the lit bridge — fills from "Any" to the active stop
+        Rectangle {
+            x: rail.cellW / 2
+            y: rail._lineY
+            width: rail._active > 0 ? rail.cellW * rail._active : 0
+            height: 2
+            radius: 1
             color: Theme.primary
             Behavior on width { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
         }
 
-        ColumnLayout {
-            id: trkCol
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: Tokens.space4
-            spacing: Tokens.space3
+        Repeater {
+            model: rail.options
+            Item {
+                id: stop
+                required property int index
+                required property var modelData
+                readonly property bool active: rail._active === index
+                readonly property int cnt: rail.hasData ? (rail.counts[index] || 0) : -1
+                readonly property bool empty: cnt === 0
+                width: rail.cellW
+                height: rail.height
+                x: index * rail.cellW
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Tokens.space2
+                MouseArea {
+                    id: stopMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: rail.picked(stop.modelData.v)
+                }
+
+                // how much the pool gives at this stop — a tall bar is an
+                // open door, a missing one is a cut that leads nowhere
+                Rectangle {
+                    visible: rail.hasData
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 16
+                    height: rail._max > 0
+                            ? Math.max(stop.cnt > 0 ? 2 : 0,
+                                       (rail._lineY - 15) * stop.cnt / rail._max)
+                            : 0
+                    y: rail._lineY - 4 - height
+                    radius: 2
+                    color: stop.active ? U.withAlpha(Theme.primary, 0.85)
+                         : stop.empty ? U.withAlpha(Theme.on_surface, 0.08)
+                         : U.withAlpha(Theme.primary, stopMouse.containsMouse ? 0.42 : 0.26)
+                    Behavior on height { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
+                }
+                C.AppText {
+                    visible: rail.hasData
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 0
+                    text: stop.cnt >= 0 ? stop.cnt : ""
+                    mono: true
+                    weight: stop.active ? Tokens.weightBold : Tokens.weightMedium
+                    font.pixelSize: Tokens.fontMicro - 1
+                    color: stop.active ? (stop.empty ? Theme.warn : Theme.text_strong)
+                         : stop.empty ? Theme.outline : Theme.on_surface_var
+                    opacity: stop.empty && !stop.active ? 0.7 : 1
+                    LayoutMirroring.enabled: false
+                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                }
+
+                // halo under the chosen stop, so the rail has a "lit" point
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: rail._lineY + 1 - height / 2
+                    width: 18; height: 18; radius: 9
+                    visible: stop.active
+                    color: U.withAlpha(Theme.primary, 0.16)
+                }
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: rail._lineY + 1 - height / 2
+                    width: stop.active ? 10 : (stopMouse.containsMouse ? 9 : 7)
+                    height: width
+                    radius: width / 2
+                    color: stop.active ? Theme.primary
+                         : stopMouse.containsMouse ? Theme.on_surface : Theme.border_med
+                    Behavior on width { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
+                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                }
+                C.AppText {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: rail._lineY + 12
+                    text: stop.modelData.t
+                    mono: true
+                    weight: stop.active ? Tokens.weightBold : Tokens.weightMedium
+                    font.pixelSize: Tokens.fontMicro
+                    color: stop.active ? Theme.text_strong
+                         : stopMouse.containsMouse ? Theme.on_surface : Theme.on_surface_var
+                    opacity: stop.empty && !stop.active ? 0.5 : 1
+                    LayoutMirroring.enabled: false
+                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                }
+            }
+        }
+    }
+
+    // One outlier cut: label, statement read-out, calibration rail with the
+    // pool each stop would leave. It draws no box of its own — all four share
+    // one deck in the tuner, which is what removes the stacked-card look.
+    component SignalTrack: ColumnLayout {
+        id: trk
+        property string caption: ""
+        property string icon: ""
+        property string unit: ""
+        property string tip: ""
+        property string readout: ""
+        property var options: []
+        property var counts: []
+        property int index: 0
+        signal picked(string v)
+        readonly property bool on: readout !== ""
+        readonly property bool hasData: options.length > 0
+                                            && counts.length === options.length
+        readonly property int _activeCnt: (hasData && index >= 0)
+                                          ? (counts[index] || 0) : -1
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        spacing: Tokens.space2
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Tokens.space2
+            HoverHandler { id: capHover }
+            C.AppTooltip {
+                visible: capHover.hovered && trk.tip !== ""
+                delay: 420
+                text: trk.tip
+                preferAbove: true
+            }
+
+            Rectangle {
+                width: 28; height: 28; radius: 9
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                color: trk.on ? U.withAlpha(Theme.primary, 0.16)
+                              : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.05 : 0.03)
+                border.width: 1
+                border.color: trk.on ? U.withAlpha(Theme.primary, 0.40) : Theme.border
+                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
+                Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
                 C.IconGlyph {
+                    anchors.centerIn: parent
                     name: trk.icon; size: 14
                     fill: trk.on
                     glyphColor: trk.on ? Theme.primary : Theme.on_surface_var
-                    Layout.alignment: Qt.AlignVCenter
                 }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
                 C.AppText {
+                    Layout.fillWidth: true
                     text: trk.caption
                     weight: Tokens.weightDemiBold
                     font.pixelSize: Tokens.fontCaption
-                    color: Theme.on_surface_var
-                    Layout.fillWidth: true
+                    color: trk.on ? Theme.text_strong : Theme.on_surface
                     elide: Text.ElideRight
-                    Layout.alignment: Qt.AlignVCenter
+                }
+                C.AppText {
+                    Layout.fillWidth: true
+                    text: trk.unit
+                    font.pixelSize: Tokens.fontMicro
+                    color: Theme.on_surface_var
+                    elide: Text.ElideRight
+                }
+            }
+            Rectangle {
+                visible: trk.on && trk.index < 0
+                radius: Tokens.radiusPill
+                color: U.withAlpha(Theme.tertiary, 0.12)
+                border.width: 1
+                border.color: U.withAlpha(Theme.tertiary, 0.35)
+                implicitWidth: customLbl.implicitWidth + Tokens.space2 * 2
+                implicitHeight: 20
+                Layout.alignment: Qt.AlignVCenter
+                C.AppText {
+                    id: customLbl
+                    anchors.centerIn: parent
+                    text: I18n.tr("Custom")
+                    weight: Tokens.weightDemiBold
+                    font.pixelSize: Tokens.fontMicro
+                    color: Theme.tertiary
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Tokens.space1
+            spacing: Tokens.space2
+
+            C.AppText {
+                text: trk.on ? trk.readout : I18n.tr("Any")
+                mono: trk.on
+                weight: Tokens.weightExtraBold
+                font.pixelSize: 30
+                font.letterSpacing: trk.on ? -0.6 : 0
+                color: trk.on ? Theme.text_strong : Theme.outline
+                LayoutMirroring.enabled: false
+                Layout.alignment: Qt.AlignBottom
+                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
+            }
+            Item { Layout.fillWidth: true }
+            // what the chosen stop leaves — the same number the histogram
+            // shows, repeated where the eye already is
+            Rectangle {
+                visible: trk.on && trk.hasData && trk.index >= 0
+                radius: Tokens.radiusPill
+                color: U.withAlpha(trk._activeCnt === 0 ? Theme.warn : Theme.primary, 0.10)
+                border.width: 1
+                border.color: U.withAlpha(trk._activeCnt === 0 ? Theme.warn : Theme.primary, 0.28)
+                implicitWidth: leftLbl.implicitWidth + Tokens.space2 * 2
+                implicitHeight: 20
+                Layout.alignment: Qt.AlignBottom
+                C.AppText {
+                    id: leftLbl
+                    anchors.centerIn: parent
+                    text: I18n.tr("{n} left").replace("{n}", trk._activeCnt)
+                    mono: true
+                    weight: Tokens.weightBold
+                    font.pixelSize: Tokens.fontMicro
+                    color: trk._activeCnt === 0 ? Theme.warn : Theme.primary
+                }
+            }
+            // a quiet bulb that lights once this cut narrows the pool
+            Item {
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 15; implicitHeight: 15
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 8
+                    color: U.withAlpha(Theme.primary, 0.14)
+                    visible: trk.on
                 }
                 Rectangle {
-                    visible: trk.on && trk.index < 0
-                    radius: Tokens.radiusPill
-                    color: U.withAlpha(Theme.tertiary, 0.12)
-                    border.width: 1
-                    border.color: U.withAlpha(Theme.tertiary, 0.35)
-                    implicitWidth: customLbl.implicitWidth + Tokens.space2 * 2
-                    implicitHeight: 20
-                    Layout.alignment: Qt.AlignVCenter
-                    C.AppText {
-                        id: customLbl
-                        anchors.centerIn: parent
-                        text: I18n.tr("Custom")
-                        weight: Tokens.weightDemiBold
-                        font.pixelSize: Tokens.fontMicro
-                        color: Theme.tertiary
-                    }
-                }
-            }
-
-            Row {
-                spacing: Tokens.space2
-                C.AppText {
-                    id: readoutLbl
-                    text: trk.on ? trk.readout : I18n.tr("Any")
-                    mono: trk.on
-                    weight: Tokens.weightExtraBold
-                    font.pixelSize: 28
-                    font.letterSpacing: trk.on ? -0.5 : 0
-                    color: trk.on ? Theme.text_strong : Theme.outline
-                    LayoutMirroring.enabled: false
+                    anchors.centerIn: parent
+                    width: 7; height: 7; radius: 3.5
+                    color: trk.on ? Theme.primary : Theme.border_med
                     Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durMed } }
                 }
-                C.AppText {
-                    visible: trk.on && trk.unit !== ""
-                    text: trk.unit
-                    weight: Tokens.weightDemiBold
-                    font.pixelSize: Tokens.fontCaption
-                    color: Theme.on_surface_var
-                    anchors.baseline: readoutLbl.baseline
-                }
             }
+        }
 
-            C.SlideSegment {
-                Layout.fillWidth: true
-                equal: true
-                mono: true
-                cellHeight: 30
-                fontSize: Tokens.fontCaption
-                model: trk.options.map(function (o) { return o.t })
-                currentIndex: trk.index
-                onActivated: (i) => trk.picked(trk.options[i].v)
-            }
+        SignalRail {
+            Layout.fillWidth: true
+            Layout.topMargin: Tokens.space1
+            options: trk.options
+            counts: trk.counts
+            index: trk.index
+            onPicked: (v) => trk.picked(v)
         }
     }
 
@@ -675,7 +870,6 @@ Item {
     C.SmoothScrollView {
         id: scroller
         anchors.fill: parent
-        ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
         Item {
             id: canvas
@@ -1162,9 +1356,15 @@ Item {
                                         value: page._viewsCut
                                     }
                                     SpecRow {
+                                        visible: Niche.mode === 0
                                         icon: "trending_up"
                                         label: I18n.tr("Multiplier")
                                         value: page._multCut
+                                    }
+                                    SpecRow {
+                                        icon: "query_stats"
+                                        label: I18n.tr("vs own average")
+                                        value: page._outlierCut
                                     }
                                 }
 
@@ -1217,10 +1417,10 @@ Item {
                             spacing: Tokens.space3
                             C.IconTile {
                                 iconName: "target"
-                                size: 34
+                                size: 38
                                 solid: Niche.activeFilterCount > 0
-                                Layout.preferredWidth: 34
-                                Layout.preferredHeight: 34
+                                Layout.preferredWidth: 38
+                                Layout.preferredHeight: 38
                                 Layout.alignment: Qt.AlignVCenter
                             }
                             ColumnLayout {
@@ -1242,6 +1442,51 @@ Item {
                                     elide: Text.ElideRight
                                 }
                             }
+                            // Live impact, at the point of action: how many of
+                            // the fetched pool survive the current cuts, with
+                            // the same share meter the scoreboard uses.
+                            Rectangle {
+                                visible: Niche.hasResults && !Niche.isRunning
+                                Layout.alignment: Qt.AlignVCenter
+                                radius: Tokens.radiusPill
+                                color: U.withAlpha(page._noMatch ? Theme.warn : Theme.secondary_container, 0.10)
+                                border.width: 1
+                                border.color: U.withAlpha(page._noMatch ? Theme.warn : Theme.secondary_container, 0.30)
+                                implicitWidth: impactRow.implicitWidth + Tokens.space3 * 2
+                                implicitHeight: 30
+                                Row {
+                                    id: impactRow
+                                    anchors.centerIn: parent
+                                    spacing: Tokens.space2
+                                    Rectangle {
+                                        width: 6; height: 6; radius: 3
+                                        color: page._noMatch ? Theme.warn : Theme.secondary_container
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    C.AppText {
+                                        text: page._noMatch
+                                              ? I18n.tr("No matches")
+                                              : I18n.tr("{n} matches").replace("{n}", Niche.metricMatches)
+                                        mono: !page._noMatch
+                                        weight: Tokens.weightBold
+                                        font.pixelSize: Tokens.fontCaption
+                                        color: page._noMatch ? Theme.warn : Theme.secondary_container
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Rectangle {
+                                        width: 38; height: 3; radius: 2
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: U.withAlpha(page._noMatch ? Theme.warn : Theme.secondary_container, 0.18)
+                                        Rectangle {
+                                            width: parent.width * Math.max(0, Math.min(1, Niche.metricMatchFrac))
+                                            height: parent.height
+                                            radius: 2
+                                            color: page._noMatch ? Theme.warn : Theme.secondary_container
+                                            Behavior on width { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
+                                        }
+                                    }
+                                }
+                            }
                             C.PrimaryButton {
                                 variant: "ghost"
                                 iconName: "restart_alt"
@@ -1253,42 +1498,98 @@ Item {
                             }
                         }
 
-                        // the three tracks
-                        GridLayout {
+                        // the console deck — all three cuts on ONE instrument
+                        // face, with no nested cards between them
+                        Rectangle {
                             Layout.fillWidth: true
-                            columns: page._narrow ? 1 : (Niche.mode === 1 ? 2 : 3)
-                            columnSpacing: Tokens.space3
-                            rowSpacing: Tokens.space3
+                            radius: Tokens.radiusLg
+                            gradient: Gradient {
+                                orientation: Gradient.Vertical
+                                GradientStop { position: 0.0; color: U.withAlpha(Theme.surface_low, Theme.isDark ? 0.78 : 0.94) }
+                                GradientStop { position: 1.0; color: U.withAlpha(Theme.surface, Theme.isDark ? 0.42 : 0.92) }
+                            }
+                            border.width: 1
+                            border.color: Theme.border
+                            implicitHeight: trackGrid.implicitHeight + Tokens.space5 * 2
 
-                            SignalTrack {
-                                // Single Channel Scan has no subscriber cut: it
-                                // is about the videos of the one channel picked.
-                                visible: Niche.mode === 0
-                                caption: I18n.tr("Channel size")
-                                icon: "user"
-                                unit: I18n.tr("subscribers")
-                                readout: page._subsCut
-                                options: page._subsOpts
-                                index: page._optIndex(page._subsOpts, Niche.subsMax, Niche.subsMin)
-                                onPicked: (v) => { Niche.subsMin = ""; Niche.subsMax = v; filterTimer.restart() }
+                            // specular top edge — the same lit-glass language
+                            // as GlassPanel, so the deck belongs to the panel
+                            Rectangle {
+                                anchors.top: parent.top
+                                anchors.topMargin: 1
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.max(0, parent.width - Tokens.radiusLg * 2)
+                                height: 1
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: U.withAlpha(Theme.glass_hi, 0.0) }
+                                    GradientStop { position: 0.5; color: Theme.glass_hi }
+                                    GradientStop { position: 1.0; color: U.withAlpha(Theme.glass_hi, 0.0) }
+                                }
                             }
-                            SignalTrack {
-                                caption: I18n.tr("Reach")
-                                icon: "visibility"
-                                unit: I18n.tr("views")
-                                readout: page._viewsCut
-                                options: page._viewsOpts
-                                index: page._optIndex(page._viewsOpts, Niche.viewsMin, Niche.viewsMax)
-                                onPicked: (v) => { Niche.viewsMax = ""; Niche.viewsMin = v; filterTimer.restart() }
-                            }
-                            SignalTrack {
-                                caption: I18n.tr("Views ÷ subscribers")
-                                icon: "trending_up"
-                                unit: I18n.tr("multiplier")
-                                readout: page._multCut
-                                options: page._multOpts
-                                index: page._optIndex(page._multOpts, Niche.multMin, "")
-                                onPicked: (v) => { Niche.multMin = v; filterTimer.restart() }
+
+                            GridLayout {
+                                id: trackGrid
+                                anchors.fill: parent
+                                anchors.margins: Tokens.space5
+                                // Four instruments across when there is room;
+                                // two rows of two at mid widths; one column
+                                // when narrow. A channel scan drops the two
+                                // channel-wide tracks, so it stays two-up.
+                                columns: page._narrow ? 1
+                                       : (Niche.mode === 1 ? 2 : (page._wide ? 4 : 2))
+                                columnSpacing: Tokens.space5
+                                rowSpacing: Tokens.space5
+
+                                SignalTrack {
+                                    // Single Channel Scan has no channel-wide
+                                    // cuts: subscriber count and views÷subs
+                                    // describe the channel, not its videos.
+                                    visible: Niche.mode === 0
+                                    caption: I18n.tr("Channel size")
+                                    icon: "user"
+                                    unit: I18n.tr("subscribers")
+                                    tip: I18n.tr("The channel's subscriber count. Small channels are where an outlier means the idea won, not the audience.")
+                                    readout: page._subsCut
+                                    options: page._subsOpts
+                                    counts: page._counts("subs")
+                                    index: page._optIndex(page._subsOpts, Niche.subsMax, Niche.subsMin)
+                                    onPicked: (v) => { Niche.subsMin = ""; Niche.subsMax = v; filterTimer.restart() }
+                                }
+                                SignalTrack {
+                                    caption: I18n.tr("Reach")
+                                    icon: "visibility"
+                                    unit: I18n.tr("views")
+                                    tip: I18n.tr("The video's own view count.")
+                                    readout: page._viewsCut
+                                    options: page._viewsOpts
+                                    counts: page._counts("views")
+                                    index: page._optIndex(page._viewsOpts, Niche.viewsMin, Niche.viewsMax)
+                                    onPicked: (v) => { Niche.viewsMax = ""; Niche.viewsMin = v; filterTimer.restart() }
+                                }
+                                SignalTrack {
+                                    visible: Niche.mode === 0
+                                    caption: I18n.tr("Views ÷ subscribers")
+                                    icon: "trending_up"
+                                    unit: I18n.tr("multiplier")
+                                    tip: I18n.tr("How far the video outran the channel's subscriber base.")
+                                    readout: page._multCut
+                                    options: page._multOpts
+                                    counts: page._counts("mult")
+                                    index: page._optIndex(page._multOpts, Niche.multMin, "")
+                                    onPicked: (v) => { Niche.multMin = v; filterTimer.restart() }
+                                }
+                                SignalTrack {
+                                    caption: I18n.tr("vs own average")
+                                    icon: "query_stats"
+                                    unit: I18n.tr("channel outlier")
+                                    tip: I18n.tr("Views against the channel's own typical video. The cleanest outlier signal: the idea won, not the audience.")
+                                    readout: page._outlierCut
+                                    options: page._outlierOpts
+                                    counts: page._counts("outlier")
+                                    index: page._optIndex(page._outlierOpts, Niche.outlierMin, "")
+                                    onPicked: (v) => { Niche.outlierMin = v; filterTimer.restart() }
+                                }
                             }
                         }
 
@@ -1300,14 +1601,22 @@ Item {
                             Flow {
                                 Layout.fillWidth: true
                                 spacing: Tokens.space2
-                                C.AppText {
-                                    text: I18n.tr("Recipes")
-                                    weight: Tokens.weightBold
-                                    font.pixelSize: Tokens.fontCaption
-                                    color: Theme.on_surface_var
+                                Row {
                                     height: 34
-                                    verticalAlignment: Text.AlignVCenter
-                                    rightPadding: Tokens.space1
+                                    spacing: Tokens.space1 + 2
+                                    C.IconGlyph {
+                                        name: "auto_awesome"; size: 13
+                                        glyphColor: Theme.tertiary
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    C.AppText {
+                                        text: I18n.tr("Recipes")
+                                        weight: Tokens.weightBold
+                                        font.pixelSize: Tokens.fontCaption
+                                        color: Theme.on_surface_var
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        rightPadding: Tokens.space1
+                                    }
                                 }
                                 Repeater {
                                     model: Niche.presetOptions
@@ -1315,22 +1624,34 @@ Item {
                                         id: presetBtn
                                         // the last preset is "Clear filters" —
                                         // that lives in the header as Reset all
-                                        visible: index < 4
+                                        visible: index < 5
+                                        // the chip the form currently IS; any
+                                        // touch on a cut un-lights it
+                                        readonly property bool current: Niche.activePreset === index
                                         height: 34
                                         implicitWidth: presetRow.implicitWidth + Tokens.space4 * 2
                                         hoverEnabled: true
                                         HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                        onClicked: Niche.applyPreset(index)
-                                        scale: presetBtn.pressed ? Tokens.pressScale : 1.0
+                                        // second click returns to the open form
+                                        onClicked: presetBtn.current ? Niche.clearAllFilters()
+                                                                     : Niche.applyPreset(index)
+                                        scale: presetBtn.pressed ? Tokens.pressScale
+                                             : presetBtn.hovered ? 1.012 : 1.0
                                         Behavior on scale { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
                                         background: Rectangle {
                                             radius: Tokens.radiusPill
                                             // Opaque fills only — a translucent
                                             // hover passes through mid-grey.
-                                            color: presetBtn.hovered ? U.mix(Theme.surface, Theme.primary, 0.10) : Theme.surface
+                                            color: presetBtn.current
+                                                   ? U.mix(Theme.surface, Theme.primary, 0.14)
+                                                   : presetBtn.hovered ? U.mix(Theme.surface, Theme.primary, 0.10)
+                                                                       : Theme.surface
                                             border.width: 1
-                                            border.color: presetBtn.hovered ? U.withAlpha(Theme.primary, 0.40) : Theme.border
+                                            border.color: presetBtn.current ? U.withAlpha(Theme.primary, 0.62)
+                                                         : presetBtn.hovered ? U.withAlpha(Theme.primary, 0.40)
+                                                                             : Theme.border
                                             Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                            Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
                                         }
                                         contentItem: Item {
                                             implicitWidth: presetRow.implicitWidth
@@ -1340,19 +1661,33 @@ Item {
                                                 anchors.centerIn: parent
                                                 spacing: Tokens.space2
                                                 C.IconGlyph {
-                                                    name: ["user", "user", "diamond", "visibility"][index] || "tune"
+                                                    name: ["user", "bolt", "query_stats", "movie", "fmt_short"][index] || "tune"
                                                     size: 14
-                                                    fill: presetBtn.hovered
-                                                    glyphColor: Theme.primary
+                                                    fill: presetBtn.hovered || presetBtn.current
+                                                    glyphColor: presetBtn.current ? Theme.primary : Theme.on_surface_var
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
                                                 C.AppText {
                                                     text: modelData
-                                                    weight: Tokens.weightDemiBold
+                                                    weight: presetBtn.current ? Tokens.weightBold : Tokens.weightDemiBold
                                                     font.pixelSize: Tokens.fontCaption
-                                                    color: presetBtn.hovered ? Theme.text_strong : Theme.on_surface
+                                                    color: presetBtn.current ? Theme.primary
+                                                         : presetBtn.hovered ? Theme.text_strong : Theme.on_surface
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
+                                                C.IconGlyph {
+                                                    visible: presetBtn.current
+                                                    name: "check"; size: 12
+                                                    glyphColor: Theme.primary
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+                                            }
+                                            C.AppTooltip {
+                                                visible: presetBtn.hovered
+                                                         && (Niche.presetHints[index] || "") !== ""
+                                                delay: 420
+                                                text: Niche.presetHints[index] || ""
+                                                preferAbove: true
                                             }
                                         }
                                     }
@@ -2070,8 +2405,13 @@ Item {
 
                             Item { Layout.fillWidth: true }
 
-                            // v16: the Auto/3/4/5 column picker is gone — the grid is always
-                            // width-driven (Auto), so it adapts to every screen on its own.
+                            // Cards per row — Auto or a pinned 2/3/4. Shared
+                            // with the Search Archive grid via App.gridColumns.
+                            C.GridDensityPicker {
+                                Layout.alignment: Qt.AlignVCenter
+                                visible: Niche.hasResults
+                            }
+
                             C.AppText {
                                 text: Niche.cacheLabel
                                 mono: true
@@ -2269,12 +2609,20 @@ Item {
                             readonly property real availW: content.width - Tokens.space5 * 2
                             // 330: the Signal card's floor (same as Search
                             // Archive, so both grids break at the same widths).
-                            // v16: always Auto (no pinned counts any more).
                             // Frozen during the rail slide.
                             property int _frozenCols: 0
                             property real _frozenW: 0
-                            readonly property int _liveCols:
+                            readonly property int _autoCols:
                                      Math.max(1, Math.min(6, Math.floor((availW + columnSpacing) / (330 + columnSpacing))))
+                            // A pinned 2/3/4 is an intent, not a promise: below
+                            // 256 px the card's action row stops fitting, so a
+                            // narrow window falls back to the columns that do.
+                            readonly property int _fitCols:
+                                     Math.max(1, Math.min(6, Math.floor((availW + columnSpacing) / (256 + columnSpacing))))
+                            readonly property int _liveCols:
+                                     App.gridColumns > 0
+                                     ? Math.min(App.gridColumns, _fitCols)
+                                     : _autoCols
                             columns: (App.railAnimating && _frozenCols > 0) ? _frozenCols : _liveCols
                             readonly property real cardW:
                                 (App.railAnimating && _frozenW > 0) ? _frozenW

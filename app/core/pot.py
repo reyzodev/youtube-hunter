@@ -75,7 +75,7 @@ _ASSETS = {
 # The WEB family — the clients a BotGuard token is valid for.
 _WEB_CLIENTS = ("web", "web_safari", "mweb", "tv_simply", "web_music",
                 "web_creator", "web_embedded", "tv")
-_CONFIG_KEY = "pot_helper"          # legacy key; v3.41.5 the helper is REQUIRED
+_CONFIG_KEY = "pot_helper"          # legacy key; the helper is optional since v1.0.2
 _START_TIMEOUT_S = 15.0
 _TOKEN_TIMEOUT_S = 25.0
 _RETRY_AFTER_FAIL_S = 120.0         # a server that won't start isn't retried every video
@@ -98,7 +98,8 @@ _BLOCKED_CODES = {5, 225, 226, 4551, 0x800704EC, 0xC0000022, 0xC0E90002}
 _BLOCKED_TEXT = (
     "Windows blocked bgutil-pot.exe, the helper that mints YouTube's PO "
     "Token. It is not digitally signed, and Windows Security's Smart App "
-    "Control refuses to run programs it cannot verify. Downloads need it. "
+    "Control refuses to run programs it cannot verify. Downloads can still "
+    "work without it, but may fail more often on VPNs and shared IPs. "
     "To allow it: Windows Security > App & browser control > Smart App "
     "Control > Off, then restart YouTube Hunter. (Code signing the build is "
     "the only fix that does not ask the user to change a Windows setting.)")
@@ -177,15 +178,14 @@ def find_exe():
 
 
 def enabled():
-    """v3.41.5: the helper is a REQUIRED part of the download engine (like the
-    JS runtime), so it can no longer be switched off. An old config that still
-    says "off" is ignored."""
+    """The helper is optional. When installed it is always used — there is no
+    on/off switch — but nothing depends on it being present."""
     return True
 
 
 def set_enabled(on):
-    """Kept for API compatibility. The helper is mandatory, so this only clears
-    a legacy "off" value from config and never stops the server."""
+    """Kept for API compatibility. The helper is used whenever installed; this
+    only clears a legacy "off" value from config."""
     try:
         from app.config import save_app_config
         cfg = load_app_config()

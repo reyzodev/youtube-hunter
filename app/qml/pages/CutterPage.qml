@@ -43,8 +43,8 @@ Item {
     // 360p), so the sound comes from a second player — previewSound — that is
     // kept in lock-step with the picture. False = the picture has its own.
     readonly property bool _splitAudio: Cutter.mode === 0 && (Cutter.previewAudioUrl || "") !== ""
-    // v3.41.5: cutting a YouTube link uses the full download engine, so it
-    // needs every required component (JS runtime + PO Token helper).
+    // v1.0.2: cutting a YouTube link needs the required JS runtime. The PO
+    // Token helper is optional and used when installed.
     function _startCut() {
         if (Cutter.mode === 0 && !Geo.allowDownload()) return
         if (Cutter.mode === 0 && !Deno.ready) { Deno.requestInstall(); return }
@@ -1412,7 +1412,6 @@ Item {
     C.SmoothScrollView {
         id: scroller
         anchors.fill: parent
-        ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
         Item {
             id: canvas

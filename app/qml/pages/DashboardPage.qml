@@ -52,7 +52,11 @@ Item {
     }
     readonly property color _kindTint: page._srcKind === "video" ? Theme.tertiary : Theme.secondary_container
     readonly property bool _hasFolder: (Dashboard.saveFolder || "") !== ""
-    readonly property bool _ready: page._src !== "" && page._hasFolder
+    readonly property bool _ready: page._src !== "" && page._hasFolder && page._amount >= 1
+    // Most Popular / Most Relevant (and any filter text) go through YouTube
+    // search: 100 quota units per 50 results instead of 1
+    readonly property bool _usesSearch: page._query !== ""
+        || sortCombo.currentIndex === 1 || sortCombo.currentIndex === 2
     readonly property bool _wide: content.width >= 1080
     readonly property var _fmtLabels: [I18n.tr("All formats"), I18n.tr("Long-form"), I18n.tr("Shorts")]
 
@@ -78,8 +82,38 @@ Item {
         return parts[parts.length - 1] || f
     }
 
+    // v3.54 — "Published" window, export chips, pre-flight cost
+    readonly property var _dayChoices: [0, 7, 30, 90, 365]
+    readonly property int _days: Dashboard.publishedWithin
+    readonly property var _extLabels: ["csv", "jsonl", "xlsx", "db"]
+    readonly property bool _txOn: Settings.transcriptsEnabled
+    // quota estimate: ids (1 unit / 50 from the uploads playlist, 100 / 50
+    // from search) + metadata (1 / 50) + resolve + channel lookup
+    readonly property int _fetch: page._fmt !== 0
+        ? Math.min(page._amount * 6, page._amount + 500) : page._amount
+    readonly property int _pages: Math.max(1, Math.ceil(page._fetch / 50))
+    readonly property int _units: (page._usesSearch ? 100 * page._pages : page._pages) + page._pages + 2
+    readonly property bool _unitsUpTo: page._fmt !== 0 || (page._days > 0 && !page._usesSearch)
+    readonly property int _quotaLeft: Dashboard.quotaLeft
+
+    function _shortName(u) {
+        u = (u || "").trim()
+        var m = u.match(/@([A-Za-z0-9._\-]+)/)
+        if (m) return "@" + m[1]
+        m = u.match(/channel\/(UC[A-Za-z0-9_\-]+)/)
+        if (m) return m[1].substring(0, 10) + "…"
+        m = u.match(/[?&]v=([A-Za-z0-9_\-]{6,})/) || u.match(/youtu\.be\/([A-Za-z0-9_\-]{6,})/)
+        if (m) return "▶ " + m[1]
+        return u.replace(/^https?:\/\/(www\.)?/, "").substring(0, 28)
+    }
+
+    Component.onCompleted: Dashboard.refreshQuota()
+    onVisibleChanged: if (visible && !Dashboard.isRunning) Dashboard.refreshQuota()
+
     function _start() {
         if (Dashboard.isRunning || !page._ready) return
+        if (sortCombo.currentIndex === 3 && Dashboard.publishedWithin !== 0)
+            Dashboard.publishedWithin = 0
         Dashboard.startScraping(page._src, page._query, page._amount,
                                 sortCombo.currentIndex, page._fmt)
     }
@@ -416,6 +450,76 @@ Item {
                                     }
                                 }
 
+                                // v3.54: one click back to a channel you scraped before
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.space1 + 2
+                                    visible: page._src === "" && !Dashboard.isRunning
+                                             && Dashboard.recentSources.length > 0
+                                    Row {
+                                        height: 30
+                                        spacing: Tokens.space1 + 2
+                                        C.IconGlyph {
+                                            name: "history"; size: 14
+                                            glyphColor: Theme.outline
+                                            anchors.verticalCenter: parent.verticalCenter
+                                        }
+                                        C.AppText {
+                                            text: I18n.tr("Recent")
+                                            weight: Tokens.weightDemiBold
+                                            font.pixelSize: Tokens.fontCaption
+                                            color: Theme.outline
+                                            anchors.verticalCenter: parent.verticalCenter
+                                        }
+                                        Item { width: Tokens.space1; height: 1 }
+                                    }
+                                    Repeater {
+                                        model: Dashboard.recentSources
+                                        AbstractButton {
+                                            id: recentChip
+                                            required property var modelData
+                                            height: 30
+                                            implicitWidth: rcRow.implicitWidth + Tokens.space3 * 2
+                                            hoverEnabled: true
+                                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                            onClicked: { urlField.text = recentChip.modelData; urlField.forceActiveFocus() }
+                                            background: Rectangle {
+                                                radius: Tokens.radiusPill
+                                                color: recentChip.hovered ? U.mix(Theme.surface_low, Theme.primary, 0.10) : Theme.surface_low
+                                                border.width: 1
+                                                border.color: recentChip.hovered ? U.withAlpha(Theme.primary, 0.45) : Theme.border
+                                                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                            }
+                                            contentItem: Item {
+                                                Row {
+                                                    id: rcRow
+                                                    anchors.centerIn: parent
+                                                    spacing: Tokens.space1 + 2
+                                                    C.IconGlyph {
+                                                        name: "youtube"; fill: true; size: 13
+                                                        glyphColor: recentChip.hovered ? Theme.primary : Theme.on_surface_var
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                    C.AppText {
+                                                        text: page._shortName(recentChip.modelData)
+                                                        weight: Tokens.weightBold
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.on_surface
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                    C.IconGlyph {
+                                                        name: "close"; size: 12
+                                                        visible: recentChip.hovered
+                                                        glyphColor: Theme.outline
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        TapHandler { onTapped: Dashboard.forgetRecent(recentChip.modelData) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // filter inside the channel (optional)
                                 Rectangle {
                                     id: queryWell
@@ -461,9 +565,9 @@ Item {
                                             onAccepted: page._start()
                                             HoverHandler { cursorShape: Qt.IBeamCursor }
                                         }
-                                        // the cost of a filtered run, said up front
+                                        // the cost of a search-backed run, said up front
                                         Rectangle {
-                                            visible: page._query !== ""
+                                            visible: page._usesSearch
                                             Layout.alignment: Qt.AlignVCenter
                                             radius: Tokens.radiusPill
                                             color: U.withAlpha(Theme.warn, 0.12)
@@ -568,7 +672,7 @@ Item {
                                                 onEditingFinished: {
                                                     var n = parseInt(text, 10)
                                                     if (isNaN(n)) n = Math.round(maxSlider.value)
-                                                    maxSlider.value = Math.max(0, Math.min(5000, n))
+                                                    maxSlider.value = Math.max(1, Math.min(5000, n))
                                                     text = Math.round(maxSlider.value)
                                                 }
                                                 LayoutMirroring.enabled: false
@@ -587,7 +691,7 @@ Item {
                                             id: maxSlider
                                             Layout.fillWidth: true
                                             enabled: !Dashboard.isRunning
-                                            from: 0; to: 5000; value: 50; stepSize: 1
+                                            from: 1; to: 5000; value: 50; stepSize: 1
                                             snapMode: Slider.SnapAlways
                                             live: true
                                             onValueChanged: if (!maxField.activeFocus)
@@ -709,6 +813,40 @@ Item {
                                         }
                                     }
                                 }
+
+                                // v3.54: only what was published recently
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.space2
+                                    RowLayout {
+                                        spacing: Tokens.space2
+                                        C.IconGlyph { name: "schedule"; size: 14; glyphColor: Theme.on_surface_var }
+                                        FieldLabel { text: I18n.tr("Published") }
+                                        Item { Layout.fillWidth: true }
+                                    }
+                                    C.SlideSegment {
+                                        Layout.fillWidth: true
+                                        equal: true
+                                        cellHeight: 36
+                                        enabledCells: !Dashboard.isRunning && sortCombo.currentIndex !== 3
+                                        model: [I18n.tr("Any time"), I18n.tr("7 days"), I18n.tr("30 days"),
+                                                I18n.tr("90 days"), I18n.tr("12 months")]
+                                        currentIndex: Math.max(0, page._dayChoices.indexOf(page._days))
+                                        onActivated: (i) => Dashboard.publishedWithin = page._dayChoices[i]
+                                    }
+                                    C.AppText {
+                                        visible: page._days > 0 || sortCombo.currentIndex === 3
+                                        text: sortCombo.currentIndex === 3
+                                              ? I18n.tr("Oldest first walks the whole channel, so a date window does not apply.")
+                                              : page._usesSearch
+                                                ? I18n.tr("YouTube filters the window itself, so no search quota is spent on older videos.")
+                                                : I18n.tr("Stops as soon as it reaches videos older than the window.")
+                                        font.pixelSize: Tokens.fontCaption
+                                        color: Theme.outline
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                }
                             }
 
                             // ─── 3 · Output ───
@@ -720,9 +858,7 @@ Item {
                                     n: 3
                                     title: I18n.tr("Output")
                                     done: page._hasFolder
-                                    note: (Dashboard.exportFormat || "") !== ""
-                                          ? I18n.tr("Saved as .{f}").replace("{f}", String(Dashboard.exportFormat).toLowerCase())
-                                          : ""
+                                    note: I18n.tr("Saved as .{f}").replace("{f}", page._extLabels[Settings.formatIndex] || "csv")
                                 }
 
                                 GridLayout {
@@ -795,6 +931,90 @@ Item {
                                                     font.pixelSize: Tokens.fontCaption
                                                     color: Theme.primary
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // v3.54: the two choices people flip per run, without a trip to Settings
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: compCol.width >= 720 ? 2 : 1
+                                    columnSpacing: Tokens.space6
+                                    rowSpacing: Tokens.space3
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        spacing: Tokens.space2
+                                        RowLayout {
+                                            spacing: Tokens.space2
+                                            C.IconGlyph { name: "description"; size: 14; glyphColor: Theme.on_surface_var }
+                                            FieldLabel { text: I18n.tr("File type") }
+                                        }
+                                        C.SlideSegment {
+                                            Layout.fillWidth: true
+                                            equal: true
+                                            mono: true
+                                            cellHeight: 36
+                                            enabledCells: !Dashboard.isRunning
+                                            model: ["CSV", "JSONL", "Excel", "SQLite"]
+                                            currentIndex: Settings.formatIndex
+                                            onActivated: (i) => Settings.applyScrapePrefs(Settings.transcriptsEnabled, i)
+                                        }
+                                    }
+                                    Rectangle {
+                                        id: txCard
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.alignment: Qt.AlignBottom
+                                        implicitHeight: 52
+                                        radius: Tokens.radiusMd
+                                        color: Theme.input_bg
+                                        border.width: 1
+                                        border.color: page._txOn ? U.withAlpha(Theme.primary, 0.35) : Theme.border
+
+                                        // Fade the "on" wash by opacity: interpolating
+                                        // the card's color between rgba(primary, 0.06)
+                                        // and opaque input_bg flashed brighter than
+                                        // either state mid-transition.
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: txCard.border.width
+                                            radius: Math.max(0, txCard.radius - txCard.border.width)
+                                            color: Theme.primary
+                                            opacity: page._txOn ? 0.06 : 0
+                                            Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
+                                        }
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: Tokens.space3
+                                            anchors.rightMargin: Tokens.space3
+                                            spacing: Tokens.space3
+                                            C.IconGlyph { name: "subject"; size: 17; glyphColor: page._txOn ? Theme.primary : Theme.outline }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 0
+                                                C.AppText {
+                                                    text: I18n.tr("Transcripts")
+                                                    weight: Tokens.weightBold
+                                                    font.pixelSize: Tokens.fontBody
+                                                    color: Theme.text_strong
+                                                }
+                                                C.AppText {
+                                                    text: page._txOn ? I18n.tr("Full text for AI + scripts (slower)")
+                                                                     : I18n.tr("Metadata only (fastest)")
+                                                    font.pixelSize: Tokens.fontCaption
+                                                    color: Theme.outline
+                                                    elide: Text.ElideRight
+                                                    Layout.fillWidth: true
+                                                }
+                                            }
+                                            C.AppSwitch {
+                                                enabled: !Dashboard.isRunning
+                                                checked: page._txOn
+                                                onToggled: Settings.applyScrapePrefs(checked, Settings.formatIndex)
                                             }
                                         }
                                     }
@@ -967,10 +1187,87 @@ Item {
                                         value: page._fmtLabels[page._fmt] || ""
                                     }
                                     ReceiptRow {
+                                        visible: page._days > 0 && sortCombo.currentIndex !== 3
+                                        icon: "schedule"
+                                        label: I18n.tr("Published")
+                                        value: I18n.tr("last {d} days").replace("{d}", page._days)
+                                    }
+                                    ReceiptRow {
+                                        icon: "subject"
+                                        label: I18n.tr("Transcripts")
+                                        value: page._txOn ? I18n.tr("On") : I18n.tr("Off")
+                                        valueColor: page._txOn ? Theme.text_strong : Theme.outline
+                                    }
+                                    ReceiptRow {
                                         icon: "folder"
                                         label: I18n.tr("Saves to")
                                         value: page._hasFolder ? page._folderName : I18n.tr("not set")
                                         valueColor: page._hasFolder ? Theme.text_strong : Theme.warn
+                                    }
+                                }
+                            }
+
+                            // ── v3.54 pre-flight: what this run costs, against what is left today ──
+                            Rectangle {
+                                id: costBox
+                                Layout.fillWidth: true
+                                visible: !Dashboard.isRunning
+                                radius: Tokens.radiusLg
+                                readonly property bool over: page._quotaLeft >= 0 && page._units > page._quotaLeft
+                                color: costBox.over ? U.withAlpha(Theme.warn, 0.08) : "transparent"
+                                border.width: 1
+                                border.color: costBox.over ? U.withAlpha(Theme.warn, 0.45) : Theme.border
+                                implicitHeight: costCol.implicitHeight + Tokens.space3 * 2
+                                ColumnLayout {
+                                    id: costCol
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: Tokens.space3
+                                    anchors.leftMargin: Tokens.space4
+                                    anchors.rightMargin: Tokens.space4
+                                    spacing: Tokens.space2
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Tokens.space2
+                                        C.IconGlyph { name: "bolt"; fill: true; size: 14; glyphColor: page._usesSearch ? Theme.warn : Theme.primary }
+                                        C.AppText {
+                                            text: (page._unitsUpTo ? I18n.tr("up to") + " " : "≈ ")
+                                                  + Number(page._units).toLocaleString(Qt.locale("en_US"), "f", 0)
+                                            mono: true
+                                            weight: Tokens.weightExtraBold
+                                            font.pixelSize: Tokens.fontBody
+                                            color: Theme.text_strong
+                                            LayoutMirroring.enabled: false
+                                        }
+                                        C.AppText {
+                                            text: I18n.tr("quota units")
+                                            font.pixelSize: Tokens.fontCaption
+                                            color: Theme.on_surface_var
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        C.AppText {
+                                            text: page._quotaLeft < 0 ? I18n.tr("no key yet")
+                                                  : I18n.tr("{n} left today").replace("{n}", Number(page._quotaLeft).toLocaleString(Qt.locale("en_US"), "f", 0))
+                                            mono: true
+                                            font.pixelSize: Tokens.fontCaption
+                                            color: costBox.over ? Theme.warn : Theme.outline
+                                        }
+                                    }
+                                    // the run as a slice of today's budget
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        visible: page._quotaLeft > 0
+                                        implicitHeight: 4
+                                        radius: 2
+                                        color: Theme.surface_high
+                                        Rectangle {
+                                            height: parent.height
+                                            radius: 2
+                                            width: Math.max(4, parent.width * Math.min(1, page._units / Math.max(1, page._quotaLeft)))
+                                            color: page._units > page._quotaLeft ? Theme.warn : Theme.primary
+                                            Behavior on width { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
+                                        }
                                     }
                                 }
                             }
@@ -1128,13 +1425,19 @@ Item {
                     }
                 }
 
+                // ── v3.54: the results board (streams in while the run goes) ──
+                C.ScrapeResults {
+                    Layout.fillWidth: true
+                    visible: Dashboard.resultCount > 0
+                }
+
                 // ── live progress + log (only while running or after a run) ──
                 // Same TerminalPanel the Live Logs page uses, so there is one
                 // implementation of the log view rather than two that drift.
                 C.TerminalPanel {
                     id: term
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 400
+                    Layout.preferredHeight: Dashboard.resultCount > 0 ? 300 : 400
                     visible: Dashboard.isRunning || term.hasLines
                     showProgress: true
                     progress: Dashboard.progress

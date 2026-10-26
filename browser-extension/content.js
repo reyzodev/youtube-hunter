@@ -63,6 +63,9 @@
       retry: "Try again",
       reading: "Reading the formats this video really has…",
       standard: "Couldn't read this video's formats, so these are the standard options.",
+      ipLimit: "Only low qualities are being offered — this is usually your IP or VPN, not the video. Change it, then",
+      ipLimitSoft: "Only up to {p}p is available. If you expected better, your IP or VPN may be the reason — change it, then",
+      checkAgain: "check again",
       audio: "Audio",
       download: "Download",
       sending: "Sending to YouTube Hunter…",
@@ -916,6 +919,7 @@
       phase: "idle",      // connecting | offline | waking | reading | pick | sending | running | done | error
       video: null, meta: null,
       rows: [], probed: true, format: null,
+      limited: false, bestPx: 0, thin: false,   // low ceiling: IP/VPN or the upload
       key: null,
       live: null,          // running progress
       result: null,        // final status
@@ -1040,6 +1044,7 @@
 
     function freshState(vid) {
       return { phase: "connecting", video: vid, meta: pageMeta(), rows: [], probed: true,
+               limited: false, bestPx: 0, thin: false,
                format: null, key: null, live: null, result: null, message: "",
                saved: [], dlKey: null, vf: state.vf, af: state.af, lang: "",
                tracks: [], formats: null, refreshing: false, parked: null };
@@ -1245,6 +1250,10 @@
     function takeQualities(d, wantBase) {
       state.rows = (Array.isArray(d.rows) ? d.rows : []).filter((r) => r && r.key !== "best");
       state.probed = !!d.probed;
+      state.limited = !!(d.probed && d.limited);
+      state.bestPx = d.bestPx || 0;
+      state.thin = !!(d.probed && d.thin);
+      state.refreshing = false;
       state.format = d.format || null;
       if (d.format) { state.vf = d.format.video || state.vf; state.af = d.format.audio || state.af; }
       state.formats = d.formats || null;
@@ -1303,6 +1312,41 @@
           const video = state.rows.filter((r) => !r.isAudio);
           state.key = rid(video[0] || state.rows[0]);
         }
+      }
+      render();
+    }
+
+    // "check again" after the user changed IP/VPN: a forced probe (fresh=1
+    // skips the app's extraction cache). The ladder stays on screen while it
+    // runs; if it finds higher formats, the new best is picked, like the app.
+    async function reprobe() {
+      if (!state.video || isLive() || state.refreshing || !canPick()) return;
+      const token = ++fmtToken, run = runToken;
+      state.refreshing = true;
+      render();
+      const q = await call(qualitiesPath() + "&fresh=1", { timeout: 90000 });
+      if (token !== fmtToken || run !== runToken) return;
+      state.refreshing = false;
+      if (!q.reachable) {
+        state.message = t("offBody");
+        render();
+        return;
+      }
+      const d = q.data || {};
+      if (!d.ok || !Array.isArray(d.rows) || !d.rows.length) {
+        state.message = t("standard");
+        render();
+        return;
+      }
+      const prevBest = state.bestPx;
+      takeQualities(d, baseKey());
+      if (state.phase === "pick") state.message = "";
+      const video = state.rows.filter((r) => !r.isAudio);
+      if (!state.key || !state.rows.some((r) => rid(r) === state.key)) {
+        state.key = rid(video[0] || state.rows[0]);
+      } else if (prevBest && state.bestPx > prevBest) {
+        // the check found higher formats — pick the new best, like the app
+        state.key = rid(video[0] || state.rows[0]);
       }
       render();
     }
@@ -1564,6 +1608,7 @@
           r && r.focus({ preventScroll: true });
         }
       } else if (act === "download") startDownload();
+      else if (act === "reprobe") reprobe();
       else if (act === "play") play(el.getAttribute("data-key") || state.key);
       else if (act === "vf" || act === "af") {
         const v = el.getAttribute("data-val");
@@ -1999,6 +2044,16 @@
       html += audioHead ? fmtChipsHTML("af", F.audio, state.af, t("fmtAudio"))
                         : fmtChipsHTML("vf", F.video, state.vf, t("fmtVideo"));
       html += "</div>";
+      // low ceiling: the IP/VPN is probably capped (or the upload really is
+      // low-res — the wording says which). The user can change it and re-probe
+      // without closing the panel.
+      if (state.probed && state.thin && !isLive()) {
+        const limMsg = state.limited || !state.bestPx
+          ? t("ipLimit")
+          : t("ipLimitSoft").replace("{p}", String(state.bestPx));
+        html += `<p class="note lim">${esc(limMsg)} <button type="button" class="notebtn"
+            data-act="reprobe"${state.refreshing ? " disabled" : ""}>${esc(t("checkAgain"))}</button>.</p>`;
+      }
       if (!state.probed) html += `<p class="note">${esc(t("standard"))}</p>`;
       if (state.message && state.phase === "pick") html += `<p class="note warn">${esc(state.message)}</p>`;
       else if (state.phase === "pick" && isSaved(curRow())) html += `<p class="note again">${esc(t("savedHere"))}</p>`;

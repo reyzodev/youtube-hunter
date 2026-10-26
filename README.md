@@ -8,7 +8,7 @@
 
 [Install](docs/INSTALL.md) · [Browser extension](docs/EXTENSION.md) · [Build from source](#build-from-source) · [Changelog](CHANGELOG.md)
 
-![Version](https://img.shields.io/badge/version-1.0.0-22c55e?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.0.1-22c55e?style=flat-square)
 ![Platform](https://img.shields.io/badge/Windows-10%201809%2B%20%7C%2011%20(x64)-0ea5e9?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square&logo=python&logoColor=white)
 ![Qt](https://img.shields.io/badge/Qt%20Quick-6.12-41cd52?style=flat-square&logo=qt&logoColor=white)
@@ -28,7 +28,7 @@ It is a native Windows application (Python + Qt Quick/QML). Everything runs on y
 
 ## Download & install
 
-1. Open the **[latest release](../../releases/latest)** and download **`YouTubeHunter-Setup-1.0.0-x64.exe`**.
+1. Open the **[latest release](../../releases/latest)** and download **`YouTubeHunter-Setup-1.0.1-x64.exe`**.
 2. Run it. It installs **per user** in `%LOCALAPPDATA%\Programs\YouTube Hunter` — no administrator prompt, no UAC, nothing written to `Program Files`.
 3. Launch **YouTube Hunter** from the Start menu or the desktop shortcut.
 
@@ -193,7 +193,7 @@ installer.iss             Inno Setup script (bundles the app, the extension, the
 
 ## Version
 
-**1.0.0** — research, outlier detection, AI briefs, downloads with audio-track selection, a frame-accurate cutter, live activity cards, the Hunter button inside YouTube, and in-app updates (a new version installs itself from the app).
+**1.0.1** — the Scraper gains a fast lane with a live results board (outlier sort, title search, deep scan, published window, transcript and file-type toggles), saved Niche Scan cards are redesigned, AI Chat is now "Hunter", the title bar follows the project on Telegram, Settings builds its cards in the background, and Main.qml precompiles during startup. The launch screen itself is unchanged from 1.0.0.
 
 ## License
 

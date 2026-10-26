@@ -56,7 +56,7 @@ def _decode(raw, size):
 
 
 class _ThumbResponse(QQuickImageResponse, QRunnable):
-    """One in-flight thumbnail request. Runs on the pool, then signals QML."""
+    """One in-flight image request. Runs on the pool, then signals QML."""
 
     def __init__(self, b64_url, requested_size):
         QQuickImageResponse.__init__(self)

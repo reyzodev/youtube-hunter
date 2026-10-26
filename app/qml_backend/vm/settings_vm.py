@@ -132,7 +132,7 @@ class SettingsVM(QObject):
         # ── scrape prefs ──
         self._export_format = cfg.get("export_format", "csv") or "csv"
         self._autosave_freq = cfg.get("autosave_freq", 500)
-        self._thread_count = int(cfg.get("thread_count", 1) or 1)
+        self._thread_count = int(cfg.get("thread_count", 3) or 3)
         self._transcripts_enabled = bool(cfg.get("transcripts_enabled", True))
         self._save_folder = cfg.get("save_folder", "") or ""
         # Per-kind destinations (Settings → Save locations). Empty means "use
@@ -388,6 +388,27 @@ class SettingsVM(QObject):
     def formatIndex(self, i):
         i = max(0, min(len(FORMAT_KEYS) - 1, int(i)))
         self._export_format = FORMAT_KEYS[i]
+        self.changed.emit()
+
+    @Slot(bool, int)
+    def applyScrapePrefs(self, transcripts, format_index):
+        """v3.54: the Scraper page's Transcripts switch + export-format chips.
+        Written straight to config.json and folded into the clean snapshot,
+        so they never leave the Settings page "unsaved"."""
+        transcripts = bool(transcripts)
+        fmt = FORMAT_KEYS[max(0, min(len(FORMAT_KEYS) - 1, int(format_index)))]
+        self._transcripts_enabled = transcripts
+        self._export_format = fmt
+        if isinstance(self._clean, dict):
+            self._clean["transcripts"] = transcripts
+            self._clean["export_format"] = fmt
+        try:
+            cfg = load_app_config()
+            cfg["transcripts_enabled"] = transcripts
+            cfg["export_format"] = fmt
+            save_app_config(cfg)
+        except Exception:          # noqa: BLE001
+            pass
         self.changed.emit()
 
     @Property(int, notify=changed)

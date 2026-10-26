@@ -57,13 +57,9 @@ Item {
                 detailSearch.text = Archive.detailFilterText
         }
         function onRowsChanged() {
-            // v3.39.4: no count reset (the ready map is keyed by row, so a
-            // stale page can never satisfy the new one) — just re-arm the cap.
-            page._thumbGateOpen = false
-            thumbGateCap.restart()
-            // v3.44: skeletons only if the pictures are actually slow
-            page._skeletonArmed = false
-            skeletonArm.restart()
+            // v3.53: nothing to re-arm any more — the grid no longer blanks
+            // itself while thumbnails load (see the note above the cell). A
+            // page turn inside a section is a data swap, not a load.
         }
     }
 
@@ -112,58 +108,20 @@ Item {
         }
     }
 
-    // ── reveal gate (v3.39.4) ──
-    // v3.39.2 held the WHOLE page until every one of its ~24 thumbnails had
-    // arrived, so one slow image (12s network timeout) kept the grid on
-    // skeletons. Now:
-    //   • only the first two rows (what is on screen) gate the reveal;
-    //   • a hard cap (thumbGateCap) opens the gate regardless — late cards
-    //     then fade their own picture in over their own ThumbSkeleton;
-    //   • readiness is remembered per row, so going back to a page you have
-    //     already seen reveals instantly.
+    // ── thumbnails: fill in, never block ──
+    // v3.39.4 used to hold the grid back until the first two rows of
+    // thumbnails had arrived (with a 650 ms cap), hiding all 24 cards and
+    // swapping in a second, full-card skeleton grid when they were slow.
+    // v3.53: the cards hold the real title / numbers / channel the moment a
+    // section opens — only the PICTURE is missing — and each card already
+    // carries its own ThumbSkeleton over the media area. So the grid is never
+    // hidden and never swaps itself for skeletons: content appears at once and
+    // the pictures fade in. That also removes the "blank → fade → stagger"
+    // sequence that made paging feel like the page was reloading.
     // v3.44 perf: the page's rows converted from the VM ONCE per change. Every
     // cell used to read Archive.rows itself, i.e. 24 full list conversions.
     readonly property var _rows: Archive.rows || []
-    property var _readyMap: ({})
-    property int _readyTick: 0
-    property bool _thumbGateOpen: false
     function _rowKey(r) { return (r && (r.archiveKey || r.videoId || r.thumbId)) || "" }
-    function _noteThumbReady(r) {
-        var k = _rowKey(r)
-        if (k === "" || _readyMap[k]) return
-        _readyMap[k] = true
-        _readyTick++
-    }
-    readonly property int _thumbExpected:
-        Math.min(page._rows.length, Math.max(4, grid.columns * 2))
-    readonly property int _thumbReadyCount: {
-        page._readyTick
-        var rs = page._rows
-        var n = 0
-        for (var i = 0; i < _thumbExpected; i++)
-            if (_readyMap[_rowKey(rs[i])]) n++
-        return n
-    }
-    readonly property bool _thumbLoading: Archive.isDetail && _thumbExpected > 0
-                                          && !_thumbGateOpen
-                                          && _thumbReadyCount < _thumbExpected
-    Timer {
-        id: thumbGateCap
-        // long enough for cached / prefetched thumbs (they land in tens of
-        // ms), short enough that a slow CDN never reads as "stuck".
-        interval: 650
-        onTriggered: page._thumbGateOpen = true
-    }
-    // v3.44 perf: the 24 skeletons (each a layer + MultiEffect + two infinite
-    // animations) used to be BUILT on every page flip, even when the next
-    // page's thumbnails were already prefetched and landed in ~30 ms. Now they
-    // only come in if the pictures are still missing after this beat.
-    property bool _skeletonArmed: false
-    Timer {
-        id: skeletonArm
-        interval: 160
-        onTriggered: page._skeletonArmed = true
-    }
     property int _specSeen: -2
     readonly property int _heroSize: Math.round(Math.max(30, Math.min(50, masterCol.width / 30)))
 
@@ -1397,7 +1355,9 @@ Item {
         anchors.fill: parent
         visible: !Archive.isDetail
         opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+        // v3.53: 120 ms, not 190 — a page-sized cross-fade is a full-window
+        // layer while it runs; shorter keeps the switch crisp.
+        Behavior on opacity { NumberAnimation { duration: 120 } }
 
         Item {
             width: masterScroll.availableWidth
@@ -1408,6 +1368,11 @@ Item {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 height: 520
+                // v3.54: a hidden view and a moving wash are both work. Drift
+                // only while this view is the one on screen and the wheel has
+                // settled — during a fling the scene is repainting anyway.
+                ambient: page._motion && page.visible && !Archive.isDetail
+                         && !masterScroll.gliding
             }
 
             ColumnLayout {
@@ -1433,7 +1398,11 @@ Item {
                                 color: Theme.primary
                                 anchors.verticalCenter: parent.verticalCenter
                                 SequentialAnimation on opacity {
-                                    running: page._motion && page.visible && Tokens.appActive
+                                    // Keep blinking while this view is hidden
+                                    // (the section detail is open) and the pulse
+                                    // is just an invisible timer.
+                                    running: page._motion && page.visible
+                                             && !Archive.isDetail && Tokens.appActive
                                     loops: Animation.Infinite
                                     NumberAnimation { to: 0.25; duration: 1100; easing.type: Easing.InOutQuad }
                                     NumberAnimation { to: 1.0; duration: 1100; easing.type: Easing.InOutQuad }
@@ -1792,9 +1761,17 @@ Item {
                     }
 
                     Repeater {
-                        model: page._sectSlice
+                        // Fixed slots, like the card deck: `model: page._sectSlice`
+                        // destroyed and rebuilt all 12 tiles on every search
+                        // keystroke / tab switch / page turn (~140 ms, and the
+                        // entrance wave replayed each time). Slots past the slice
+                        // are simply invisible; the layout ignores them.
+                        // An empty archive builds none of them at all.
+                        model: Archive.hasAny ? page._sectPerPage : 0
                         SectionTile {
-                            g: modelData
+                            readonly property var _g: page._sectSlice[index] || null
+                            g: _g || ({})
+                            visible: _g !== null
                             order: index
                             Layout.preferredWidth: sectGrid.cardW
                             Layout.fillHeight: true
@@ -1825,7 +1802,9 @@ Item {
         anchors.fill: parent
         visible: Archive.isDetail
         opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+        // v3.53: see the master view above — a section opens in one quick
+        // settle instead of a slow dissolve.
+        Behavior on opacity { NumberAnimation { duration: 120 } }
 
         Item {
             width: detailScroll.availableWidth
@@ -1836,6 +1815,10 @@ Item {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 height: 460
+                // v3.54: see the master view's wash — same gating, for the
+                // view that a busy section is actually scrolled in.
+                ambient: page._motion && page.visible && Archive.isDetail
+                         && !detailScroll.gliding
             }
 
             ColumnLayout {
@@ -2107,10 +2090,35 @@ Item {
                             }
                         }
 
-                        // row 2 — published · format · result count
+                        // row 2 — view mode · published · format · result count
                         Flow {
                             Layout.fillWidth: true
                             spacing: Tokens.space4
+
+                            // Same Videos/Channels toggle as Niche Finder, but
+                            // scoped to this section's already-filtered rows:
+                            // no re-query, no API call, and a channel scan
+                            // (which IS one channel) hides it entirely.
+                            Row {
+                                visible: Archive.detailCanGroupChannels
+                                spacing: Tokens.space2
+                                C.AppText {
+                                    text: I18n.tr("View")
+                                    weight: Tokens.weightDemiBold
+                                    font.pixelSize: Tokens.fontCaption
+                                    color: Theme.on_surface_var
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                SegBar {
+                                    segHeight: 30
+                                    options: [
+                                        { label: I18n.tr("Videos"), icon: "movie" },
+                                        { label: I18n.tr("Channels"), icon: "user" }
+                                    ]
+                                    current: Archive.detailChannelsView ? 1 : 0
+                                    onPicked: (i) => { Archive.detailChannelsView = (i === 1) }
+                                }
+                            }
 
                             Row {
                                 spacing: Tokens.space2
@@ -2156,6 +2164,10 @@ Item {
                                     onPicked: (i) => page.applyRange({ format: ["all", "long", "short"][i] })
                                 }
                             }
+
+                            // Cards per row — the SAME preference the Niche
+                            // Finder grid writes, so both galleries match.
+                            C.GridDensityPicker {}
                         }
                     }
 
@@ -2278,19 +2290,72 @@ Item {
                 }
 
                 // ── the grid — columns always follow the width ──
-                GridLayout {
-                    id: grid
+                // v3.54 perf: the 24 cards are built by their own ASYNC loader
+                // instead of as part of this page's construction. Building
+                // them inline made the Archive page's Loader.Ready wait for
+                // ~1.6 s of card construction (2.4 s total on a cold visit,
+                // and it held up the whole background warm-up queue). The
+                // loader below starts on the same frame the page exists, so
+                // the work still happens early and only once — but it no
+                // longer gates the page appearing on screen.
+                Loader {
+                    id: deckLoader
+                    objectName: "archiveDeck"
                     Layout.fillWidth: true
                     Layout.topMargin: Tokens.space1
                     visible: !Archive.detailIsEmpty
-                    columnSpacing: Tokens.space4
-                    rowSpacing: Tokens.space5
+                    asynchronous: true
+                    // Armed just after the page itself exists. Starting it in
+                    // the same pass as construction would make it load
+                    // synchronously (the page has no window yet while its own
+                    // async loader is still incubating) and the page would
+                    // wait for the cards all over again.
+                    active: false
+                    sourceComponent: deckComp
+                    Component.onCompleted: deckArm.start()
+                    Timer {
+                        id: deckArm
+                        // Long enough that the page's own async loader has
+                        // long finished: arming during its incubation makes the
+                        // deck build synchronously and the page waits for it.
+                        interval: 1500
+                        onTriggered: deckLoader.active = true
+                    }
+                    // While the deck is still incubating, reserve roughly the
+                    // grid's real height so opening a section never pushes the
+                    // pager down a second later.
+                    readonly property int _autoCols: Math.max(1, Math.min(6, Math.floor((detailCol.width + Tokens.space4) / (330 + Tokens.space4))))
+                    readonly property int _fitCols: Math.max(1, Math.min(6, Math.floor((detailCol.width + Tokens.space4) / (256 + Tokens.space4))))
+                    readonly property int _cols: App.gridColumns > 0
+                                                 ? Math.min(App.gridColumns, _fitCols)
+                                                 : _autoCols
+                    readonly property real _cardW: (detailCol.width - Tokens.space4 * (_cols - 1)) / _cols
+                    readonly property real _estH: Math.ceil(Archive.pageSize / _cols)
+                        * (_cardW * 9 / 16 + 218 + Tokens.space5) - Tokens.space5
+                    Layout.preferredHeight: item ? item.implicitHeight : _estH
+                }
+
+                Component {
+                    id: deckComp
+                    GridLayout {
+                        id: grid
+                        width: deckLoader.width
+                        visible: !Archive.detailIsEmpty
+                        columnSpacing: Tokens.space4
+                        rowSpacing: Tokens.space5
 
                     readonly property real availW: detailCol.width
                     readonly property int minCardW: 330
                     property int _frozenCols: 0
                     property real _frozenW: 0
-                    readonly property int _liveCols: Math.max(1, Math.min(6, Math.floor((availW + columnSpacing) / (minCardW + columnSpacing))))
+                    readonly property int _autoCols: Math.max(1, Math.min(6, Math.floor((availW + columnSpacing) / (minCardW + columnSpacing))))
+                    // Same rule as the Niche Finder grid: a pinned 2/3/4 is
+                    // honoured down to 256 px per card, the width below which
+                    // the action row stops fitting.
+                    readonly property int _fitCols: Math.max(1, Math.min(6, Math.floor((availW + columnSpacing) / (256 + columnSpacing))))
+                    readonly property int _liveCols: App.gridColumns > 0
+                                                     ? Math.min(App.gridColumns, _fitCols)
+                                                     : _autoCols
                     columns: (App.railAnimating && _frozenCols > 0) ? _frozenCols : _liveCols
                     readonly property real cardW:
                         (App.railAnimating && _frozenW > 0) ? _frozenW
@@ -2314,23 +2379,43 @@ Item {
                         // the 1–3 s freeze on "next page". Now the cards stay
                         // alive and only their `row` changes; the count only
                         // moves on a short last page.
-                        model: page._rows.length
+                        //
+                        // v3.53 perf: the model is now the CONSTANT page size,
+                        // not `rows.length`. Growing 0 → 24 on the first
+                        // section open built all 24 card trees inside the
+                        // click (~800 ms on the software renderer, and the
+                        // "small lag" before the grid appears). A fixed model
+                        // builds them with the page — i.e. during the
+                        // background warm-up — so opening a section only
+                        // re-binds them; cells past the last row are simply
+                        // invisible, and Qt Quick Layouts ignores invisible
+                        // items when it places the grid.
+                        model: Archive.pageSize
                         Item {
                             id: cell
                             readonly property var rowData: page._rows[index] || ({})
                             readonly property string rowKey: page._rowKey(rowData)
+                            visible: index < page._rows.length
                             Layout.preferredWidth: grid.cardW
                             Layout.preferredHeight: vcard.implicitHeight
                             Layout.fillHeight: true
                             Layout.alignment: Qt.AlignTop
                             implicitHeight: vcard.implicitHeight
-                            // staggered arrival whenever a NEW video lands in
-                            // this slot (page / filter / sort change) — not on
-                            // in-place updates of the same video
+
+                            // A NEW SECTION arrives with a short stagger; turning
+                            // a page inside the same section only swaps the data.
+                            // Re-playing 24 full-card fades — each one a layer over
+                            // a card that already owns three — on every page turn is
+                            // what made paging read as "the grid is reloading".
+                            property int _arrivedGid: -2
                             opacity: 0
-                            transform: Translate { id: cellRise; y: 16 }
+                            transform: Translate { id: cellRise; y: 12 }
                             function arrive() {
-                                if (!page._motion) { cellIn.stop(); cell.opacity = 1; cellRise.y = 0; return }
+                                const gid = Archive.detailId
+                                if (!page._motion || gid === cell._arrivedGid) {
+                                    cellIn.stop(); cell.opacity = 1; cellRise.y = 0; return
+                                }
+                                cell._arrivedGid = gid
                                 cellIn.stop()
                                 cell.opacity = 0
                                 cellRise.y = 10
@@ -2340,29 +2425,16 @@ Item {
                             onRowKeyChanged: arrive()
                             ParallelAnimation {
                                 id: cellIn
+                                // 8 ms per slot, capped at the first row and a
+                                // bit: a wave, not a queue — the whole grid has
+                                // landed in ~200 ms.
                                 SequentialAnimation {
-                                    PauseAnimation { duration: Math.min(index, 10) * 14 }
-                                    NumberAnimation { target: cell; property: "opacity"; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
+                                    PauseAnimation { duration: Math.min(index, 7) * 8 }
+                                    NumberAnimation { target: cell; property: "opacity"; to: 1; duration: 150; easing.type: Easing.OutCubic }
                                 }
                                 SequentialAnimation {
-                                    PauseAnimation { duration: Math.min(index, 10) * 14 }
-                                    NumberAnimation { target: cellRise; property: "y"; to: 0; duration: Tokens.durSlow; easing.type: Easing.OutCubic }
-                                }
-                            }
-                            // One card tree only: the skeleton is an overlay,
-                            // not a second grid. Built only when thumbnails are
-                            // genuinely slow (see _skeletonArmed).
-                            Loader {
-                                anchors.fill: parent
-                                active: {
-                                    page._readyTick       // _readyMap mutates in place
-                                    return page._thumbLoading && page._skeletonArmed
-                                           && !page._readyMap[cell.rowKey]
-                                }
-                                sourceComponent: C.VideoCardSkeleton {
-                                    cardWidth: grid.cardW
-                                    running: true
-                                    delay: ((index % grid.columns) + Math.floor(index / grid.columns)) * 90
+                                    PauseAnimation { duration: Math.min(index, 7) * 8 }
+                                    NumberAnimation { target: cellRise; property: "y"; to: 0; duration: 200; easing.type: Easing.OutCubic }
                                 }
                             }
                             C.ArchiveVideoCard {
@@ -2372,17 +2444,15 @@ Item {
                                 // v3.52: no hover effects while the grid is
                                 // scrolling — see ArchiveVideoCard.scrollIdle.
                                 scrollIdle: !detailScroll.gliding
-                                opacity: page._thumbLoading ? 0 : 1
-                                Behavior on opacity { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
                                 row: cell.rowData
                                 target: Archive
                                 cardWidth: grid.cardW
                                 onDownloadRequested: (vid, title, thumb) => qualityPicker.openFor(vid, title, thumb)
                                 onThumbDownloadRequested: (thumb, title, isShort) => page.saveThumb(thumb, title, isShort)
-                                onThumbnailReady: page._noteThumbReady(cell.rowData)
                             }
                         }
                     }
+                }
                 }
 
                 // ── pager ──

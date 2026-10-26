@@ -1907,8 +1907,8 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
     available, up to 4K) into `target_dir`. Blocking — call on a worker thread.
     `on_progress(pct, written_bytes)`; `on_resolved(height_px, label)` reports
     the quality actually cut. Returns (ok, message_or_CANCELLED, filepath)."""
-    # v3.41.5: YouTube cuts need the full download engine (JS runtime + PO
-    # Token helper), same as a normal download.
+    # v1.0.2: YouTube cuts need the required JS runtime, same as a normal
+    # download. The PO Token helper stays optional and is used when present.
     from app.core.runtime_deps import download_engine_missing
     _missing = download_engine_missing()
     if _missing:

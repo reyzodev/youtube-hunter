@@ -244,6 +244,41 @@ Rectangle {
                 }
             }
 
+            // ── follow on Telegram ──
+            // Release notes, fixes and tutorials are announced on the channel,
+            // so the button lives in the open rather than behind About. It
+            // opens the OS browser (not the in-app web view), so no
+            // QtWebEngine cost unless the Support window is used.
+            AbstractButton {
+                id: tgBtn
+                objectName: "hdrTg"
+                visible: App.telegramUrl !== ""
+                width: 30; height: 30
+                anchors.verticalCenter: parent.verticalCenter
+                scale: pressed ? 0.92 : 1.0
+                Behavior on scale { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
+                onClicked: App.openTelegram()
+
+                HoverHandler { id: tgHover; cursorShape: Qt.PointingHandCursor }
+
+                background: Rectangle {
+                    radius: Tokens.radiusSm
+                    color: tgHover.hovered ? Theme.hover_bg : U.withAlpha(Theme.hover_bg, 0)
+                    Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                }
+                contentItem: IconGlyph {
+                    name: "telegram"
+                    size: 17
+                    glyphColor: tgHover.hovered ? Theme.primary : Theme.on_surface_var
+                }
+
+                AppTooltip {
+                    visible: tgHover.hovered
+                    delay: 350
+                    text: I18n.tr("Follow us on Telegram")
+                }
+            }
+
             // help / replay-tour button
             AbstractButton {
                 id: helpBtn

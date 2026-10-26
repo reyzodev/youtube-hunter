@@ -24,6 +24,11 @@ Text {
     font.weight: Fonts.weightFor(weight, root.text)
     font.pixelSize: Tokens.fontBody
     renderType: Text.NativeRendering
+    // Every label in the app goes through here; AutoText made Qt sniff each
+    // string for HTML on every change (a video title containing "<" even
+    // switched it into QTextDocument). No caller passes markup to AppText —
+    // the few styled labels declare plain Text + StyledText themselves.
+    textFormat: Text.PlainText
 
     // Align to the LAYOUT START, and let the mirroring do the rest.
     //

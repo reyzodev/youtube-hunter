@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import NicheScope
+import "../Utils.js" as U
 
 // A ScrollView with the app's standard eased wheel scrolling baked in.
 //
@@ -18,6 +19,44 @@ ScrollView {
     clip: true
 
     property real _wheelTarget: 0
+
+    // Always-visible scrollbar. The stock AsNeeded bar spends most of its life
+    // faded to zero opacity, so the only way to find it is to hover the edge
+    // blindly. Here the slim track is always on screen while the page can
+    // actually scroll, and the handle brightens on hover / drag.
+    ScrollBar.vertical: ScrollBar {
+        id: vbar
+        readonly property bool scrollable: root.contentItem
+                                           && root.contentItem.contentHeight > root.contentItem.height + 1
+        policy: scrollable ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+        // Same placement the Basic style gives its own bar: without these the
+        // override sits unpositioned (and the style's bar is the one you see).
+        parent: root
+        x: root.mirrored ? 0 : root.width - width
+        y: root.topPadding
+        height: root.availableHeight
+        active: root.ScrollBar.horizontal.active
+        implicitWidth: 12
+        padding: 3
+        // Keep the handle grabbable even on very long pages (the default ratio
+        // can shrink it to a few pixels).
+        minimumSize: Math.min(0.5, 28 / Math.max(1, height))
+
+        contentItem: Rectangle {
+            implicitWidth: 6
+            radius: width / 2
+            color: vbar.pressed ? Theme.primary
+                 : vbar.hovered ? U.withAlpha(Theme.primary, 0.90)
+                 : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.30 : 0.24)
+            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+        }
+        background: Rectangle {
+            radius: 5
+            color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.055 : 0.045)
+            border.width: 1
+            border.color: U.withAlpha(Theme.outline_variant, 0.55)
+        }
+    }
 
     // Wheel tuning. A page can override these; the defaults are the behaviour
     // every page already had.

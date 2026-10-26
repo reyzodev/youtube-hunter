@@ -9,7 +9,7 @@ import NicheScope
 import "../components" as C
 import "../Utils.js" as U
 
-// AI Chat — "Scope", the studio partner (v3.14).
+// AI Chat — "Hunter", the studio partner (v3.14; renamed from "Scope" in the launch-screen v3 rebrand).
 //
 // Design plan (kept here so later edits can check the render against it):
 //   * Subject — a producer you talk to about YOUR data: outlier videos,
@@ -22,8 +22,8 @@ import "../Utils.js" as U
 //   * Colour — Graphite + the live accent used as a studio TALLY LIGHT only:
 //     live state, outliers, the send key. Mint = ready, amber = missing
 //     transcript, tertiary = the model.
-//   * Signature — the lens (C.ScopeLens): a six-blade iris that breathes when
-//     idle, stops down and hunts while thinking, opens wide while streaming.
+//   * Signature — the sigil (C.HunterSigil): the Hunter crest in HUD brackets
+//     that breathes when idle, hunts while thinking, locks on while streaming.
 //   * Multitool — the + unfolds every way to bring data in (Niche Finder,
 //     Archive, a YouTube link, files, Google Drive, images).
 Item {
@@ -670,7 +670,7 @@ Item {
                             width: 6; height: 6; radius: 3
                             color: (trow.current || modelData.live) ? Theme.primary : Theme.border_med
                             SequentialAnimation on opacity {
-                                running: modelData.live === true
+                                running: modelData.live === true && page.visible && Tokens.appActive
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 0.3; duration: 500 }
                                 NumberAnimation { to: 1; duration: 500 }
@@ -926,7 +926,7 @@ Item {
                             PathLine { x: 0; y: 0 }
                         }
                     }
-                    C.ScopeLens {
+                    C.HunterSigil {
                         id: heroLens
                         anchors.centerIn: parent
                         size: Math.round(Math.max(96, Math.min(150, empty.height * 0.22)))
@@ -1150,7 +1150,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             sourceComponent: page._gpu ? lensStamp : lensReal
                         }
-                        C.AppText { text: "Scope"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
+                        C.AppText { text: "Hunter"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
                         C.AppText {
                             anchors.verticalCenter: parent.verticalCenter
                             text: (modelData.model ? modelData.model + " · " : "") + modelData.time
@@ -1261,8 +1261,8 @@ Item {
                     spacing: 10
                     Row {
                         spacing: 10
-                        C.ScopeLens { size: 28; mode: Chat.phase; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText { text: "Scope"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
+                        C.HunterSigil { size: 28; mode: Chat.phase; anchors.verticalCenter: parent.verticalCenter }
+                        C.AppText { text: "Hunter"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
                         C.AppText { anchors.verticalCenter: parent.verticalCenter; text: Chat.modelName; color: Theme.outline; font.pixelSize: Tokens.fontCaption }
                     }
                     Column {
@@ -1312,7 +1312,7 @@ Item {
         }
 
         // v3.40.7: the one idle lens every past answer shows (rendered once)
-        C.ScopeLens { id: lensMaster; size: 28; mode: "idle"; x: -200; y: -200; visible: page._gpu }
+        C.HunterSigil { id: lensMaster; size: 28; mode: "idle"; x: -200; y: -200; visible: page._gpu }
         ShaderEffectSource {
             id: lensTex
             sourceItem: page._gpu ? lensMaster : null
@@ -1323,7 +1323,7 @@ Item {
             visible: false
         }
         Component { id: lensStamp; ShaderEffect { property variant source: lensTex } }
-        Component { id: lensReal; C.ScopeLens { size: 28; mode: "idle" } }
+        Component { id: lensReal; C.HunterSigil { size: 28; mode: "idle" } }
 
         // v3.40.6: frozen picture of the previous chat, cross-faded away on a
         // switch. Declared after the thread but before the dock/header, so the
@@ -1483,7 +1483,7 @@ Item {
                             background: null
                             leftPadding: 10; rightPadding: 10; topPadding: 6; bottomPadding: 4
                             color: Theme.text_strong
-                            placeholderText: I18n.tr("Ask Scope… e.g. “Why did this video become an outlier?”")
+                            placeholderText: I18n.tr("Ask Hunter… e.g. “Why did this video become an outlier?”")
                             placeholderTextColor: Theme.outline
                             font.family: Fonts.familyFor("body", Tokens.weightRegular, text)
                             font.pixelSize: 16
@@ -1906,7 +1906,7 @@ Item {
                 // reported as "Binding loop detected for property height", and a
                 // loop there re-evaluates the whole composer on every frame.
                 height: visible ? Math.ceil(font.pixelSize * 1.45) : 0
-                text: I18n.tr("Scope only answers about YouTube and content creation · Enter to send · Shift+Enter for a new line")
+                text: I18n.tr("Hunter only answers about YouTube and content creation · Enter to send · Shift+Enter for a new line")
                 color: Theme.outline
                 font.pixelSize: Tokens.fontCaption
             }
@@ -1991,8 +1991,8 @@ Item {
         Column {
             anchors.centerIn: parent
             spacing: 18
-            C.ScopeLens { anchors.horizontalCenter: parent.horizontalCenter; size: 140; mode: dropZone.containsDrag ? "streaming" : "idle" }
-            C.AppText { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.tr("Drop it and Scope reads it"); weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontDisplay; color: Theme.text_strong }
+            C.HunterSigil { anchors.horizontalCenter: parent.horizontalCenter; size: 140; mode: dropZone.containsDrag ? "streaming" : "idle" }
+            C.AppText { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.tr("Drop it and Hunter reads it"); weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontDisplay; color: Theme.text_strong }
             C.AppText { anchors.horizontalCenter: parent.horizontalCenter; text: "CSV · XLSX · PDF · DOCX · SRT · PNG/JPG — 40 MB"; mono: true; font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
         }
     }
@@ -2228,7 +2228,10 @@ Item {
         id: linkDialog
         width: Math.min(560, page.width - 60)
         title: I18n.tr("Add YouTube links")
-        readonly property int found: Chat.countLinks(linkField.text)
+        // `Chat` is a context property: during window teardown it is already
+        // null while this binding is re-evaluated, which used to print
+        // "Cannot call method 'countLinks' of null" on every exit.
+        readonly property int found: Chat ? Chat.countLinks(linkField.text) : 0
         function submit() {
             if (found <= 0 || Chat.linksBusy) return
             Chat.addLinks(linkField.text)
@@ -2433,7 +2436,7 @@ Item {
                 anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 22; spacing: 8
                 C.AppText {
                     Layout.fillWidth: true
-                    text: I18n.tr("Scope checks every claim against the numbers it came from.")
+                    text: I18n.tr("Hunter checks every claim against the numbers it came from.")
                     color: Theme.outline
                     font.pixelSize: Tokens.fontCaption
                     elide: Text.ElideRight

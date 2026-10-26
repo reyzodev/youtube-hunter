@@ -431,15 +431,15 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # rung that is really a duplicate (`tv_embedded` was exactly that; it is NOT a
 # client in this yt-dlp build).
 #
-# v1.0.1 — SLIMMED. The app now REQUIRES a JS runtime (deno) and the PO Token
-# helper (bgutil-pot) before any download starts (download_engine_missing), so
-# the web-family clients get real BotGuard tokens and the JS challenge is
-# solved. That makes most of the old 12-rung ladder dead weight: `android` and
-# `ios` need DroidGuard / iOSGuard tokens the helper cannot mint (they 403 on
-# the CDN now), `web` / `tv_simply` are already inside yt-dlp's default set,
-# and `visionos` never answered anywhere. Every dead rung was a full player-
-# response + JS-challenge round trip (2-6 s) on the failure path — a blocked
-# video walked ~20 of them before giving up.
+# v1.0.1 — SLIMMED. The app now REQUIRES a JS runtime (deno) before any
+# download starts (download_engine_missing); the PO Token helper is optional
+# but recommended, and when installed the web-family clients get real BotGuard
+# tokens and the JS challenge is solved. That makes most of the old 12-rung
+# ladder dead weight: `android` and `ios` need DroidGuard / iOSGuard tokens the
+# helper cannot mint (they 403 on the CDN now), `web` / `tv_simply` are already
+# inside yt-dlp's default set, and `visionos` never answered anywhere. Every
+# dead rung was a full player-response + JS-challenge round trip (2-6 s) on the
+# failure path — a blocked video walked ~20 of them before giving up.
 #
 # What is left, in order: the default multi-client set (richest list), then
 # the token-free / token-backed clients that each sit on a DIFFERENT block
@@ -947,6 +947,17 @@ _PROBE_CACHE_TTL_S = 15 * 60
 _PROBE_CACHE_MAX = 12
 _probe_cache = {}               # key -> (monotonic_ts, info)
 _PROBE_TAG = "_yth_probe"       # {clients, cookies, dashy} of a cached answer
+# A fallback answer (no client returned an adaptive stream above 360p) carries
+# these so the picker can explain WHY the ladder is short instead of silently
+# presenting 360p as the video's real ceiling:
+#   limited  → the low ceiling is likely this IP/VPN being throttled
+#   agreed   → several clients agreed on the same ceiling: likely the upload
+#   best_px  → the highest resolution actually answered
+# A thin answer is never cached, so "check again" after changing IP really does
+# ask YouTube fresh instead of reusing the capped result.
+_PROBE_LIMITED = "_yth_probe_limited"
+_PROBE_AGREED = "_yth_probe_agreed"
+_PROBE_BEST_PX = "_yth_probe_best_px"
 _probe_cache_lock = threading.Lock()
 
 
@@ -1117,7 +1128,13 @@ def fetch_probe_info(url, proxy_url="", cookies_browser="", use_cache=True):
         if thin_votes[best_px] >= 4:
             break
     if fallback is not None:
-        return fallback[2], ""
+        info = fallback[2]
+        best_px = int(fallback[0] or 0)
+        agreed = thin_votes.get(best_px, 0) >= 4
+        info[_PROBE_BEST_PX] = best_px
+        info[_PROBE_AGREED] = bool(agreed)
+        info[_PROBE_LIMITED] = not agreed
+        return info, ""
     log_crash("quality probe: extraction failed: " + (last_err or "?"))
     return None, last_err or "extraction failed"
 
@@ -1819,8 +1836,19 @@ class _ProgressAggregator:
     between whole fragments instead of stepping once per chunk.
     """
 
-    def __init__(self, expected=1):
+    def __init__(self, expected=1, resume_pct=0):
         self.expected = max(1, int(expected))
+        # A resumed download re-fetches the fragmented DASH chunks that were in
+        # flight when it stopped, so its first live byte reading is BELOW the
+        # percentage the user paused at. `resume_pct` is that paused number;
+        # update() maps the new transfer onto [resume_pct, 99] so the bar
+        # climbs from exactly where it stopped instead of sitting frozen until
+        # the re-fetched bytes catch up.
+        try:
+            self._resume_from = max(0, min(99, int(resume_pct or 0)))
+        except (TypeError, ValueError):
+            self._resume_from = 0
+        self._resume_base = None    # first live raw percentage, once bytes move
         # Reference totals learned from the pre-flight probe BEFORE the transfer
         # starts, so the denominator is right from the first tick instead of
         # being discovered (and revised) mid-download. 0 means "unknown".
@@ -1830,7 +1858,7 @@ class _ProgressAggregator:
         # Per stream, keyed by format id: byte counters plus the fragment the
         # stream is on / has in total. Summed across streams for one global bar.
         self._streams = {}
-        self._floor = 0             # highest percentage reported so far
+        self._floor = self._resume_from   # highest percentage reported so far
         self._finished = 0          # streams that reported status == finished
         # BYTE counters get the same monotonic treatment as the percentage, so a
         # retry rung restarting from zero doesn't drop the size line from "50 MB"
@@ -1984,19 +2012,43 @@ class _ProgressAggregator:
         # only then the approx estimate — which is re-derived after every
         # fragment and so is the one source that can legitimately walk backwards.
         if total_shown:
-            pct = int(done_sum * 100 / total_shown)
+            raw_pct = done_sum * 100.0 / total_shown
         elif frag_total:
-            pct = int(frag_done * 100 / frag_total)
+            raw_pct = frag_done * 100.0 / frag_total
         elif known_total:
-            pct = int(done_sum * 100 / known_total)
+            raw_pct = done_sum * 100.0 / known_total
         else:
-            pct = 0
+            raw_pct = 0.0
+        # Resume mapping. The first live raw reading becomes the anchor — the
+        # paused percentage — and the remaining raw span is stretched onto
+        # [anchor, 99]. Without this, a resume whose fragment files were only
+        # partially reusable showed a bar frozen at the paused % (the UI floor)
+        # for the tens of seconds it took to re-fetch the lost chunks, then a
+        # lurch to 99. With it, the percentage moves on the very first tick and
+        # keeps moving steadily; bytes and the displayed percentage still come
+        # from the same transfer, they are just re-based after the restart.
+        if self._resume_from:
+            if self._resume_base is None and done_sum > 0:
+                self._resume_base = min(raw_pct, float(self._resume_from))
+            if self._resume_base is None:
+                pct = float(self._resume_from)
+            else:
+                span = 100.0 - self._resume_base
+                if span > 0:
+                    pct = self._resume_from + max(
+                        0.0, raw_pct - self._resume_base) * (
+                            99.0 - self._resume_from) / span
+                else:
+                    pct = 99.0
+                pct = max(pct, float(self._resume_from))
+        else:
+            pct = raw_pct
         # Capped at 99 while bytes are still moving: 100 is reserved for the file
         # that actually exists on disk (the VM writes it in _on_dl_done, after
         # the ffmpeg mux). Without the cap, a stream that met its byte estimate
         # showed 100% and then sat there through the merge — a finished-looking
         # download that won't open.
-        pct = max(0, min(99, pct))
+        pct = max(0, min(99, int(pct)))
         if pct < self._floor:
             pct = self._floor
         else:
@@ -2542,34 +2594,104 @@ def _download_from_preflight(ydl, url, pre_info, bytes_seen, should_cancel):
     return ydl.extract_info(url, download=True)
 
 
-_ENGINE_REFRESH = {"done": False, "module": None}
+# v1.0.2: the refresh runs on its OWN thread and a download waits for it at
+# most _ENGINE_REFRESH_BUDGET_S. Before, it ran inline with no overall
+# deadline: on a filtered / throttled network the PyPI wheel trickled in
+# forever and the row sat on "Updating downloader… 0%" until the app was
+# killed (that row also held one of the two global download slots, so every
+# later download queued behind it). Now the download carries on down the
+# ladder with the engine it already has, and the user gets a real answer.
+_ENGINE_REFRESH_BUDGET_S = 35.0
+_ENGINE_REFRESH = {"started": False, "module": None, "abandoned": False,
+                   "sink": None, "event": threading.Event()}
 _ENGINE_REFRESH_LOCK = threading.Lock()
 
 
-def _refresh_engine_once(_status=None):
-    """Fetch the newest yt-dlp wheel into the runtime dir and load it — at most
+def _engine_refresh_worker():
+    st = _ENGINE_REFRESH
+
+    def _say(text):
+        sink = st["sink"]
+        if sink:
+            try:
+                sink(text)
+            except Exception:      # noqa: BLE001
+                pass
+
+    try:
+        from app.core.runtime_deps import (latest_yt_dlp_release,
+                                           current_yt_dlp_version,
+                                           update_yt_dlp, reload_yt_dlp,
+                                           version_tuple)
+        release = latest_yt_dlp_release(timeout=12)
+        cur = current_yt_dlp_version()
+        if cur and version_tuple(cur) >= version_tuple(release["version"]):
+            # Already the newest engine: re-downloading the same wheel can't
+            # fix a block, it only made the user wait.
+            log_crash(f"engine refresh: yt-dlp {cur} is already current, skipped")
+            return
+        ok, info = update_yt_dlp(
+            on_progress=lambda p: _say(tr("Updating downloader… {pct}%").format(pct=p)),
+            deadline_s=_ENGINE_REFRESH_BUDGET_S - 3,
+            should_cancel=lambda: st["abandoned"])
+        if not ok:
+            log_crash("engine refresh failed: " + str(info)[:300])
+            return
+        with _ENGINE_REFRESH_LOCK:
+            # Only swap the live module while a download is still waiting for
+            # it. If every waiter already moved on, the new wheel is on disk
+            # and simply loads on the next launch: no mid-flight module swap.
+            if not st["abandoned"]:
+                st["module"] = reload_yt_dlp()
+    except Exception as exc:      # noqa: BLE001 — refresh is best-effort
+        log_crash("engine refresh failed: " + str(exc)[:300])
+    finally:
+        st["event"].set()
+
+
+def _refresh_engine_once(_status=None, should_cancel=None):
+    """Fetch the newest yt-dlp wheel into the runtime dir and load it, at most
     once per process. Returns the fresh module, or None when nothing newer
-    could be loaded. Concurrent callers wait for the one refresh in flight
-    instead of starting their own."""
+    could be loaded IN TIME. Never blocks longer than _ENGINE_REFRESH_BUDGET_S
+    and stops waiting at once when the user cancels."""
+    st = _ENGINE_REFRESH
     with _ENGINE_REFRESH_LOCK:
-        if _ENGINE_REFRESH["done"]:
-            return _ENGINE_REFRESH["module"]
-        _ENGINE_REFRESH["done"] = True
+        first = not st["started"]
+        st["started"] = True
         if _status:
-            _status(tr("Updating downloader…"))
-        try:
-            from app.core.runtime_deps import update_yt_dlp, reload_yt_dlp
-            ok, _ver = update_yt_dlp()
-            if ok:
-                _ENGINE_REFRESH["module"] = reload_yt_dlp()
-        except Exception as exc:      # noqa: BLE001 — refresh is best-effort
-            log_crash("engine refresh failed: " + str(exc)[:300])
-        return _ENGINE_REFRESH["module"]
+            st["sink"] = _status
+    if st["event"].is_set():
+        return st["module"]
+    if st["abandoned"]:
+        return None          # an earlier download already gave up on it
+    if _status:
+        _status(tr("Updating downloader…"))
+    if first:
+        threading.Thread(target=_engine_refresh_worker, daemon=True,
+                         name="yt-dlp-refresh").start()
+    deadline = time.monotonic() + _ENGINE_REFRESH_BUDGET_S
+    try:
+        while not st["event"].wait(0.25):
+            if should_cancel is not None and should_cancel():
+                return None
+            if time.monotonic() >= deadline:
+                log_crash("engine refresh: no answer within "
+                          f"{int(_ENGINE_REFRESH_BUDGET_S)}s, continuing with "
+                          "the current engine")
+                with _ENGINE_REFRESH_LOCK:
+                    st["abandoned"] = True
+                return None
+        return st["module"]
+    finally:
+        with _ENGINE_REFRESH_LOCK:
+            if st["sink"] is _status:
+                st["sink"] = None
 
 
 def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                    proxy_url="", cookies_browser="", on_detail=None,
-                   should_cancel=None, on_resolved=None, on_meta=None):
+                   should_cancel=None, on_resolved=None, on_meta=None,
+                   resume_pct=0):
     """Download one video to `target_dir`. Blocking — call on a worker thread.
 
     `quality` is a preset dict from DOWNLOAD_QUALITY_PRESETS. `on_status(text)`,
@@ -2582,6 +2704,12 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
     (`frag_done`/`frag_total`, e.g. "part 32 of 93") that downloads now report
     because they run in fragmented DASH mode. `frag_total` is 0 when the download
     isn't fragmented, in which case the UI just omits the fragment readout.
+
+    `resume_pct` is the percentage the user paused this download at (0 for a
+    fresh download). Fragment files are only partially reusable across a
+    restart, so the resumed transfer's own byte percentage starts below that
+    number; the aggregator maps it onto [resume_pct, 99] so the bar resumes
+    exactly where it stopped and climbs continuously.
 
     `on_resolved(height_px, label)` is called once, after a successful download,
     with the resolution ACTUALLY delivered. Callers persist the row's quality
@@ -2608,8 +2736,9 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
         if on_status:
             on_status(text)
 
-    # v3.41.5: refuse up front when a REQUIRED engine component is missing
-    # (JS runtime or PO Token helper) instead of half-working at 360p / 403.
+    # v1.0.2: refuse up front when the REQUIRED engine component is missing
+    # (the JS runtime) instead of half-working at 360p / 403. The PO Token
+    # helper is optional and never blocks a download.
     _missing = download_engine_missing()
     if _missing:
         return False, _missing, ""
@@ -2626,7 +2755,8 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
 
     # One aggregator for the whole call. A non-audio pick merges video+audio, so
     # two streams are expected until the pre-flight probe reports the real count.
-    progress = _ProgressAggregator(1 if quality.get("audio_only") else 2)
+    progress = _ProgressAggregator(1 if quality.get("audio_only") else 2,
+                                   resume_pct=resume_pct)
     # GUI throttle (mirrors the cutter's 4/sec): yt-dlp hook ticks arrive many
     # times per second with concurrent fragments, and each one used to become
     # two queued Qt signals + a SQLite write on the GUI thread — the flood that
@@ -3068,7 +3198,7 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                 # that silently rewrote the developer's environment.
                 if _is_bot_or_403(last_err) and not refreshed:
                     refreshed = True
-                    fresh = _refresh_engine_once(_status)
+                    fresh = _refresh_engine_once(_status, should_cancel)
                     if fresh is not None:
                         yt_dlp = fresh
                 # Browser cookies are the ONLY thing that gets past a real bot

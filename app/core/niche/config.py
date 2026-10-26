@@ -225,6 +225,34 @@ NICHE_PRESETS = [
     ("Clear filters", {}),
 ]
 
+# Outlier signal tuner (v1.1 "Signal Tuner"). The four cuts the Niche
+# Finder's tuner shows as tracks, and the stops on each. The first stop is
+# always "" (= Any). Kept here, not in QML, because the VM counts how many
+# pooled videos each stop would leave and the two must never disagree.
+#   subs    -> subs_max   (channel at most N subscribers)
+#   views   -> views_min  (video at least N views)
+#   mult    -> mult_min   (views ÷ subscribers at least N×)
+#   outlier -> outlier_min (views ÷ the channel's own average at least N×)
+# The stops include every threshold a built-in recipe uses (20K views, 50K
+# subs, 20× multiplier), so applying a recipe lights a real stop instead of
+# reporting a value it cannot show as "Custom".
+NICHE_SIGNAL_STOPS = {
+    "subs":    ["", "1K", "10K", "50K", "100K", "1M"],
+    "views":   ["", "10K", "20K", "100K", "1M", "10M"],
+    "mult":    ["", "3", "10", "20", "50", "100"],
+    "outlier": ["", "2", "5", "10", "25"],
+}
+
+# One line per recipe for the tuner's hover tip, in NICHE_PRESETS order.
+NICHE_PRESET_HINTS = [
+    "≤ 10K subs · ≥ 100K views · ≥ 20× views ÷ subs",
+    "Channel under 6 months · ≥ 100K views",
+    "≥ 5× the channel's own average · ≥ 20K views",
+    "Long-form 8–20 min · ≤ 100K subs · ≥ 3×",
+    "Shorts · ≤ 50K subs · ≥ 1M views",
+    "",
+]
+
 # Hard ceiling on how many rows a view will take on. It used to be the
 # number of cards built in one go, which is why it had to be low — now the
 # card grids page six rows at a time (GRID_ROWS_PER_PAGE) and only that

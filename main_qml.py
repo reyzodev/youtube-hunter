@@ -76,7 +76,8 @@ import traceback
 
 from PySide6.QtCore import QTimer, QUrl, Qt, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QIcon
-from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
+from PySide6.QtQml import (QQmlApplicationEngine, QQmlComponent,
+                           qmlRegisterSingletonType)
 
 from app import i18n
 from app.config import load_app_config
@@ -91,7 +92,8 @@ from app.core.quota import init_niche_db
 from app.crash import CRASH_LOG_PATH, _enable_faulthandler, log_crash
 from app.i18n import tr
 from app.paths import asset_path
-from app.qt_logging import _qt_message_filter, note_shutting_down
+from app.qt_logging import (_qt_message_filter, note_shutting_down,
+                            silence_ffmpeg_logs)
 from app.ui.fonts import load_fonts
 from app.ui.theme import apply_theme
 from app.ui.brand import window_icon as brand_window_icon
@@ -216,8 +218,33 @@ def main():
     # thing that makes Qt walk the font database, and the filter is what keeps
     # those 20-30 harmless DirectWrite lines from burying real warnings.
     qInstallMessageHandler(_qt_message_filter)
+    # Qt's FFmpeg backend writes its format dumps and decoder notices directly
+    # to stderr, past the Qt handler. Media errors still arrive through
+    # MediaPlayer.error in QML.
+    silence_ffmpeg_logs()
     apply_theme(cfg.get("theme", "system"), cfg.get("accent", "crimson"))
     load_fonts()
+
+    # v3.54: start compiling Main.qml + every page NOW, on Qt's QML loader
+    # thread (C++, no GIL), so the ~2 MB of QML compiles in parallel with the
+    # DB setup and ViewModels below instead of after them. engine.load() later
+    # hits the warm type cache. The in-window BrandSplash is unchanged.
+    # YH_NO_PRECOMPILE=1 turns it off.
+    engine = QQmlApplicationEngine()
+    qml_dir = asset_path("app", "qml")
+    engine.addImportPath(qml_dir)
+    qmlRegisterSingletonType(
+        QUrl.fromLocalFile(os.path.join(qml_dir, "Tokens.qml")),
+        "NicheScope", 1, 0, "Tokens")
+    _precompile = None
+    if os.environ.get("YH_NO_PRECOMPILE") != "1":
+        try:
+            _precompile = QQmlComponent(
+                engine, QUrl.fromLocalFile(os.path.join(qml_dir, "Main.qml")),
+                QQmlComponent.CompilationMode.Asynchronous)
+        except Exception as _exc:            # noqa: BLE001 — speed-up only
+            log_crash("QML precompile skipped: " + str(_exc))
+            _precompile = None
 
     # The QML pages write to the same SQLite files the legacy app does (search
     # archive / favorites, AI Ideas, downloads, quota), so the schemas have to
@@ -306,8 +333,9 @@ def main():
     # click did nothing visible.
     niche_vm.ideas_sink = ideas_vm.addReferences
     archive_vm.ideas_sink = ideas_vm.addReferences
+    dashboard_vm.ideas_sink = ideas_vm.addReferences   # v3.54 results board
     insights_vm.ideas_sink = ideas_vm.addReferences
-    # AI Chat ("Scope"). Gets the Niche VM so its picker can offer the live
+    # AI Chat ("Hunter"). Gets the Niche VM so its picker can offer the live
     # result pool without a second search.
     chat_vm = ChatVM(niche_vm)
     # A provider added / edited / removed in Settings shows up in the chat's
@@ -357,7 +385,8 @@ def main():
                                 (insights_vm, "Niche Scan"),
                                 (chat_vm, "AI Chat"),
                                 (geo_vm, "Connection"),
-                                (deno_vm, "Downloads")):
+                                (deno_vm, "Downloads"),
+                                (dashboard_vm, "Scraper")):
         _toast = getattr(_vm, "toast", None)
         if _toast is not None:
             _toast.connect(
@@ -391,7 +420,6 @@ def main():
     file_drag.toast.connect(
         lambda msg, kind: notifications_vm.push(msg, kind, "Downloads"))
 
-    engine = QQmlApplicationEngine()
     engine.addImageProvider("thumbs", ThumbImageProvider())
     engine.addImageProvider("svgicon", SvgIconProvider())
     ctx = engine.rootContext()
@@ -443,19 +471,13 @@ def main():
         if callable(_retranslate):
             app_ctrl.languageRetranslate.connect(_retranslate)
 
-    qml_dir = asset_path("app", "qml")
-    engine.addImportPath(qml_dir)
-    # Register the Tokens singleton under the NicheScope module. The on-disk
-    # qmldir is enough when the dir is an import path, but registering here too
-    # makes `import NicheScope` resolve regardless of how the app is launched
-    # (source vs PyInstaller bundle).
-    qmlRegisterSingletonType(
-        QUrl.fromLocalFile(os.path.join(qml_dir, "Tokens.qml")),
-        "NicheScope", 1, 0, "Tokens")
+    # (import path + Tokens singleton are registered above, before the
+    # background precompile — v3.54)
     if launch_hidden:
         # Never flash the window up first: Main.qml declares `visible: true`.
         engine.setInitialProperties({"visible": False})
     engine.load(QUrl.fromLocalFile(os.path.join(qml_dir, "Main.qml")))
+    _precompile = None   # type cache is warm now; drop the helper component
 
     if not engine.rootObjects():
         print("QML failed to load Main.qml", file=sys.stderr)

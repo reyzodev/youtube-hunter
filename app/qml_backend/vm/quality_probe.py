@@ -30,7 +30,8 @@ from app.core.download import (AUDIO_CODECS, DOWNLOAD_QUALITY_PRESETS,
                                VIDEO_CONTAINERS, audio_lang_for,
                                download_prefs, fetch_probe_info,
                                qualities_from_info, save_download_prefs,
-                               set_audio_lang)
+                               set_audio_lang, _PROBE_AGREED,
+                               _PROBE_BEST_PX, _PROBE_LIMITED, _THIN_PX)
 from app.crash import log_crash
 from app.i18n import tr
 
@@ -92,7 +93,8 @@ class QualityProbeVM(QObject):
     _tracksReady = Signal(str, "QVariant")  # (video_id, tracks)
 
     # worker → GUI bridge (auto-queued across threads)
-    _done = Signal(str, "QVariant", str)   # (video_id, rows_or_None, error)
+    _done = Signal(str, "QVariant", str, bool, bool, int)
+    # (video_id, rows_or_None, error, ip_limited, clients_agreed, best_px)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,6 +103,12 @@ class QualityProbeVM(QObject):
         self._rows = default_quality_rows()
         self._probed = False        # rows came from a real probe
         self._error = ""
+        # Why the probed ceiling is low (see fetch_probe_info). `_limited`
+        # means the short list is probably this IP/VPN rather than the upload,
+        # so the picker offers "change your IP, then check again".
+        self._limited = False
+        self._agreed = False
+        self._best_px = 0
         self._fmt = download_prefs()
         # (video_id, info) of the last successful extraction. Kept so that
         # switching MP4/MKV/MP3… recomputes the sizes locally — the size of
@@ -133,6 +141,55 @@ class QualityProbeVM(QObject):
     def failed(self):
         return self._error != "" and not self._probed
 
+    @Property(bool, notify=changed)
+    def limited(self):
+        """True when the probe's short list is probably this IP/VPN being
+        restricted (several clients did NOT agree on the low ceiling). The
+        picker shows a "change your IP, then check again" banner for this."""
+        return self._limited
+
+    @Property(bool, notify=changed)
+    def thinHint(self):
+        """True whenever the probe came back with only low resolutions.
+
+        Clients agreeing on the ceiling makes the upload itself plausible, but
+        a restricted IP can cap every client identically — so the picker still
+        offers the IP check, worded more softly in that case."""
+        return bool(self._probed and self._best_px > 0
+                    and self._best_px <= _THIN_PX)
+
+    @Property(int, notify=changed)
+    def bestHeight(self):
+        """Highest resolution the probe actually got, 0 when unknown."""
+        return self._best_px
+
+    @Property(str, notify=changed)
+    def limitTitle(self):
+        if not self.thinHint:
+            return ""
+        if self._limited:
+            return tr("Only low qualities are being offered")
+        return tr("Only up to {px}p is available").format(px=self._best_px)
+
+    @Property(str, notify=changed)
+    def limitNote(self):
+        """The actionable explanation under the banner. Deliberately says
+        "usually"/"may", because a genuine 360p upload produces a similar
+        short list and only another probe after an IP change can tell them
+        apart."""
+        if not self.thinHint:
+            return ""
+        if not self._limited:
+            return tr("This video may really top out here. If you expected a "
+                      "higher quality, your IP, VPN or network can also be the "
+                      "reason — change it, then check again. The current "
+                      "quality downloads fine.")
+        px = f"{self._best_px}p" if self._best_px else tr("low resolutions")
+        return tr("YouTube answered with {px} as the best quality. This is "
+                  "usually your IP, VPN or network being restricted — not the "
+                  "video. Change your IP (another VPN server or network), then "
+                  "check again. You can still download the current quality.").format(px=px)
+
     @Property("QVariantList", notify=changed)
     def options(self):
         """The rows to offer. Real resolutions once probed; the full preset
@@ -147,6 +204,14 @@ class QualityProbeVM(QObject):
         if self._busy:
             return tr("Checking which qualities this video actually has…")
         if self._probed:
+            if self._agreed and self._best_px:
+                return tr("This video itself offers only up to {px}p. Sizes are "
+                          "of the finished file; ≈ marks a conversion whose size "
+                          "can only be estimated.").format(px=self._best_px)
+            if self._limited:
+                return tr("The list below is what YouTube answered with. Sizes "
+                          "are of the finished file; ≈ marks a conversion whose "
+                          "size can only be estimated.")
             return tr("Only the qualities this video actually has are listed. "
                       "Sizes are of the finished file; ≈ marks a conversion "
                       "whose size can only be estimated.")
@@ -250,16 +315,19 @@ class QualityProbeVM(QObject):
         vid, info = self._info
         if not info or vid != self._video_id:
             return
+        limited = bool(info.get(_PROBE_LIMITED))
+        agreed = bool(info.get(_PROBE_AGREED))
+        best_px = int(info.get(_PROBE_BEST_PX) or 0)
         self._busy = True
         self.changed.emit()
 
         def worker(_vid=vid, _info=info):
             try:
                 rows, err = self._rows_for(_info)
-                self._done.emit(_vid, rows, err)
+                self._done.emit(_vid, rows, err, limited, agreed, best_px)
             except Exception as exc:      # noqa: BLE001
                 log_crash("QualityProbeVM._recompute failed: " + str(exc))
-                self._done.emit(_vid, None, str(exc))
+                self._done.emit(_vid, None, str(exc), limited, agreed, best_px)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -272,17 +340,33 @@ class QualityProbeVM(QObject):
         the same card should not spend another extraction, and the format list
         does not change minute to minute.
         """
+        self._probe(video_id, force=False)
+
+    @Slot()
+    def refresh(self):
+        """Ask YouTube again for the current video, ignoring every cache.
+
+        The picker's "check again" after the user changes IP/VPN. A thin answer
+        is not cached in the first place, but the cached rich answer (or a
+        previously agree-on-360p verdict) would otherwise short-circuit the
+        probe and make the button a no-op."""
+        self._probe(self._video_id, force=True)
+
+    def _probe(self, video_id, force=False):
         video_id = (video_id or "").strip()
         if not video_id:
             self.reset()
             return
-        if video_id == self._video_id and (self._busy or self._probed):
+        if not force and video_id == self._video_id and (self._busy or self._probed):
             return
 
         self._video_id = video_id
         self._busy = True
         self._probed = False
         self._error = ""
+        self._limited = False
+        self._agreed = False
+        self._best_px = 0
         self._tracks = []
         self._audio = audio_lang_for(video_id)
         self.audioChanged.emit()
@@ -296,13 +380,19 @@ class QualityProbeVM(QObject):
         cookies = (cfg.get("yt_cookies_browser", "") or "").strip().lower()
         url = f"https://www.youtube.com/watch?v={video_id}"
 
-        def worker(_vid=video_id, _url=url, _proxy=proxy, _cookies=cookies):
+        def worker(_vid=video_id, _url=url, _proxy=proxy, _cookies=cookies,
+                   _force=force):
             try:
                 info, err = fetch_probe_info(
-                    _url, proxy_url=_proxy, cookies_browser=_cookies)
+                    _url, proxy_url=_proxy, cookies_browser=_cookies,
+                    use_cache=not _force)
                 if not info:
-                    self._done.emit(_vid, None, err or "probe failed")
+                    self._done.emit(_vid, None, err or "probe failed",
+                                    False, False, 0)
                     return
+                limited = bool(info.get(_PROBE_LIMITED))
+                agreed = bool(info.get(_PROBE_AGREED))
+                best_px = int(info.get(_PROBE_BEST_PX) or 0)
                 # only cache it if the user is still on this video — a slow
                 # probe for A must not overwrite B's extraction
                 if _vid == self._video_id:
@@ -314,10 +404,10 @@ class QualityProbeVM(QObject):
                     tracks = []
                 self._tracksReady.emit(_vid, tracks)
                 rows, err = self._rows_for(info)
-                self._done.emit(_vid, rows, err)
+                self._done.emit(_vid, rows, err, limited, agreed, best_px)
             except Exception as exc:      # noqa: BLE001 — reported, not raised
                 log_crash("QualityProbeVM.start failed: " + str(exc))
-                self._done.emit(_vid, None, str(exc))
+                self._done.emit(_vid, None, str(exc), False, False, 0)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -329,6 +419,9 @@ class QualityProbeVM(QObject):
         self._busy = False
         self._probed = False
         self._error = ""
+        self._limited = False
+        self._agreed = False
+        self._best_px = 0
         self._info = (None, None)
         self._rows = default_quality_rows()
         self._tracks = []
@@ -336,12 +429,15 @@ class QualityProbeVM(QObject):
         self.changed.emit()
         self.audioChanged.emit()
 
-    @Slot(str, "QVariant", str)
-    def _on_done(self, video_id, rows, error):
+    @Slot(str, "QVariant", str, bool, bool, int)
+    def _on_done(self, video_id, rows, error, limited, agreed, best_px):
         # A stale result — the user moved on to another card while this ran.
         if video_id != self._video_id:
             return
         self._busy = False
+        self._limited = bool(limited) and bool(rows)
+        self._agreed = bool(agreed) and bool(rows)
+        self._best_px = int(best_px or 0)
         if rows:
             self._rows = rows
             self._probed = True
@@ -350,4 +446,6 @@ class QualityProbeVM(QObject):
             self._rows = default_quality_rows()
             self._probed = False
             self._error = error or "probe failed"
+            self._limited = False
+            self._agreed = False
         self.changed.emit()

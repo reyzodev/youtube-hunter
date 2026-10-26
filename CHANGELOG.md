@@ -7,6 +7,206 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased: Launch speed — QML precompile
+
+- Main.qml and every page compile on Qt's QML loader thread while Python sets
+  up the databases and ViewModels, so the existing in-window BrandSplash
+  appears sooner. The launch screen itself is unchanged. Off switch:
+  `YH_NO_PRECOMPILE=1`.
+- Qt's FFmpeg backend log chatter is silenced at the source; media errors
+  still reach the UI through `MediaPlayer.error`.
+
+## Unreleased: Transcripts switch — no more red blink
+
+- The Transcripts card faded its fill between `rgba(primary, 0.06)` and the
+  opaque `input_bg`. ColorAnimation interpolates alpha and RGB together, so
+  the middle of the fade was a stronger red than either state — the card
+  visibly blinked on every flip. The wash now sits on its own layer and fades
+  by opacity, so it moves straight between the two real states.
+
+## Unreleased: Scraper results — 8 videos, then "Show more"
+
+- The results board lists 8 videos before the Show more button (was 24).
+  Each click adds 8; changing the sort tab or the title search starts at 8
+  again. "Top 10 → AI Ideas" still picks from the full sorted/filtered list,
+  not only the visible page.
+
+## Unreleased: v3.54.1 — scraper gate corrections
+
+- **False "IP blocked" on the first scrape.** `GeoVM.apiBlocked` was judged on
+  a `www.youtube.com/generate_204` probe, but the scraper talks to
+  `youtube.googleapis.com`: many VPN exits answer 403 / time out on the web
+  frontend while the Data API keeps working. It now uses only the country
+  check and a total outage, so the probe can no longer park the first run
+  behind the dialog. The launch modal is shown only for a restricted country;
+  offline / unreachable stay in the title-bar pill.
+- **Transcript pause needs 3 consecutive refusals**, not one. A single
+  video-specific bot check no longer pauses the whole run.
+
+## Unreleased: Scraper "Fast lane" + calmer offline handling
+
+- Ids are streamed: metadata downloads in parallel (3 pages in flight) while
+  the id list is still loading. New module `app/core/scrape_pipeline.py`.
+- Backup API keys are actually used: a key that runs out hands over to the
+  next one mid-run (before, the run died on the primary key).
+- Long-form / Shorts filter stops fetching ids once it has enough matches
+  (search mode: ~half the quota in tests).
+- Partial responses (`fields=`), 25 s request timeout (was 60 s), automatic
+  fallback if the field mask is ever rejected.
+- Internet drop mid-scrape: the run waits up to 5 min and resumes by itself.
+- GUI updates throttled (progress only on % change, status ≤ 4/s).
+- Connection lost mid-session no longer opens a modal; the title-bar pill +
+  tray handle it. Plain "offline" at launch: pill only.
+
+## Unreleased: Niche Scan saved-scan cards redesigned
+
+**Bug fix.** Re-opening a saved scan never showed as selected: `openSaved()`
+loaded the report but never rebuilt the strip's `isOpen` flags. It now refreshes
+them, and the page reads a new `Insights.openKey` so the card flips the moment
+it is clicked (a re-opened report keeps the key it was stored under).
+
+**Redesign.** Fixed-width cards (272 x 64) with a kind tile (Keyword / Channel /
+Viral icon), title, and a mono meta line. The open card gets an accent fill,
+1.5px accent border + outer ring, a leading indicator bar, a solid accent tile,
+"Viewing" in the meta line and a check badge (hover swaps it for delete). The
+unexplained green dot is now an "AI" badge with a tooltip. Hover lifts, press
+squeezes. Files: `pages/InsightsPage.qml`, `qml_backend/vm/insights_vm.py`.
+
+## Unreleased: AI Chat is now "Hunter"
+
+**AI Chat rebrand.** The assistant is now "Hunter" (was "Scope"), and its
+iris icon is replaced by `HunterSigil.qml`: the crest inside lock-on brackets
+that hunt while thinking and lock on while answering.
+
+## Unreleased — Downloads no longer hang on "Updating downloader… 0%"
+
+**Downloader refresh (the "works on my PC, stuck at 0% on theirs" bug).** When
+YouTube answers a download with a bot check / 403 (common on flagged IPs and
+VPN exits), the ladder refreshes yt-dlp from PyPI once per session. That
+refresh ran inline with no overall deadline: `requests.get(timeout=120)` only
+bounds each socket read, so on a filtered or throttled connection the wheel
+trickled in forever and the row sat on "Updating downloader… 0%" while also
+holding one of the two global download slots.
+
+- The refresh runs on its own thread; a download waits for it **at most 35 s**
+  (and stops waiting at once on Stop), then continues down the ladder with the
+  engine it has, so the user gets a real result or a real error.
+- It first compares versions and **skips** the download when the running
+  yt-dlp is already the newest.
+- `update_yt_dlp()` streams the wheel with a wall-clock budget, a watchdog that
+  closes a stalled connection, cancel support and a live percentage
+  ("Updating downloader… 42%").
+- The new engine is unpacked beside the old one and swapped in only when
+  complete; a failed update can no longer leave a half-deleted engine.
+
+---
+
+## Unreleased — First run: the setup dialog keeps its buttons inside the card
+
+The one-time download-setup card ("deno + PO Token") was 460 px wide, but its
+own footer needs 470 px — Skip (104) + From file… (135) + Download and install
+(207) + the gaps — so the green button hung out of the card's right edge, and
+the row's "Not installed" chip was squeezed 14 px out of its file row. The
+width was capped at 460 while the card's *implicit* content width was 1091 px
+(a wrapping `AppText` reports its un-wrapped width), which is why nothing
+resized itself to fit.
+
+- **The card is 560 px** — the footer gets 516 px for its 470 px of buttons,
+  with ~46 px of slack for the "Try again" state. (The minimum window is
+  980 px, so the cap never bites.)
+- The dialog also carries `objectName: "denoDialog"` so a headless check can
+  open it and measure.
+- Audited every other first-run surface with the same measurement — open each
+  modal popup and walk its item tree for anything leaving its parent's rect:
+  message / unsaved-changes / confirm dialogs, the geo gate, the browser
+  extension guide, the update dialog and the onboarding tour. All clean; what
+  they do report is intentional bleed (drop shadows, glow blobs, scrollable
+  guide content).
+
+---
+
+## Unreleased — Feel: the Search Archive stops looking "heavy"
+
+Opening a saved section and turning its pages ran *smooth* but read as heavy: the
+grid blanked itself, faded back in, and then played a staggered entrance across
+24 cards — every single time, including on a page turn that only swapped the
+data. Nothing was slow; too much was moving, for too long.
+
+- **The grid never blanks any more.** It used to hide all 24 cards behind
+  `opacity: 0` until the first two rows of thumbnails had arrived (650 ms cap)
+  and put a second, full-card skeleton grid in their place. But a card already
+  carries the title, the numbers, the channel and its own `ThumbSkeleton` over
+  the media area the moment a section opens — only the picture is missing. So
+  the cards now appear at once and the pictures fade into them. The whole
+  reveal-gate (`_thumbLoading`, the ready map, both timers, the skeleton Loader)
+  is gone with it.
+- **A page turn is a data swap, not an arrival.** The staggered entrance now
+  plays when you open a different section (`Archive.detailId` changes) and not
+  when you page inside one. Paging used to re-run 24 full-card fades — each one
+  a layer over a card that already owns three — which is what made it feel like
+  the grid was reloading.
+- **The arrival itself is shorter**: 8 ms per slot (capped at the first row) and
+  a 150 ms fade / 200 ms rise, so the grid has landed in ~250 ms instead of
+  ~460 ms.
+- **Faster cross-fades**: a thumbnail lands in 180 ms (was 320), the skeleton
+  hands over in 140 ms (was 190), and the master ⇄ detail switch is a 120 ms
+  settle instead of a 190 ms dissolve.
+- **The card's hover zoom is 300 ms, not 720.** It is the single most expensive
+  thing a grid of these does — every frame re-renders that card's layered
+  thumbnail and its mask — and it used to keep running for most of a second
+  after the pointer had already moved on.
+
+Measured on the real database: the motion after opening a section ends at
+~290 ms (was ~460), and after a page turn at 0 ms (was ~460).
+
+---
+
+## Unreleased — Speed: the app stops stalling on its own database
+
+The "small lag" that showed up everywhere — switching pages, opening the Search
+Archive, coming back to Content Lab — was not the QML. It was **one line of
+SQLite behaviour**, repeated a few times per click.
+
+Every helper in `app/core/db` opens a connection, runs a statement and closes
+it. Closing the last connection to a WAL database makes SQLite run a
+checkpoint: it copies the write-ahead log back into the main `.db` and unmaps
+both. On the real 23 MB `ideas.db` in `%APPDATA%\Roaming` that close measured
+**70–130 ms**, and it landed on the GUI thread — so the QML profiler reported
+"polish: 0 ms, render: 3 ms" while a single frame took **250–750 ms**.
+
+- **One connection per database file is now held open for the life of the
+  process** (`app/core/db/_sqlite.py`). The short-lived connections are never
+  the last one out, so no checkpoint runs on close: the same close is now
+  **0.1 ms**, and a full `archive_list_groups_full()` went from **75 ms to 5 ms**.
+  The WAL still checkpoints on commit (`wal_autocheckpoint`, 1000 pages), so it
+  stays bounded at ~4 MB.
+- **`iso_age_hours()` tries `fromisoformat` first** instead of `strptime` and a
+  fallback. The YouTube API always sends fractional seconds, so every archived
+  row used to pay for a *failed* `strptime` parse (~16 µs): 1200 rows = 20 ms of
+  GUI thread on every section open, again on every filter change. Now 1.6 ms.
+- **Content Lab reads its library in one query.** The grid and the "combine with
+  my blueprints" picker used to call `content_lab_get_ideas()` once per section
+  — a connection, a statement and a WAL attach each time. `content_lab_ideas_by_entry()`
+  returns the lot in one JOIN; opening Content Lab went from **~100 ms to ~28 ms**.
+- **The archive grid keeps a fixed 24 cells.** Growing the model from 0 on the
+  first section open built all 24 card trees (layers, masks, MultiEffects)
+  inside the click; they are now built with the page during the background
+  warm-up and opening a section only re-binds them: **~990 ms → ~250 ms**.
+- **Thumbnail skeletons stop animating when the image fails.** `active` only
+  checked `status !== Ready`, so a blocked / unreachable `i.ytimg.com` left every
+  card shimmering forever — a permanent per-frame cost on exactly the networks
+  where the app is already slow.
+- **Exit is quiet again.** Teardown re-evaluates `Theme.*` / `I18n.tr()` bindings
+  after their context properties are released; the two extra wordings
+  ("Cannot call method … of null", "Value is null …") are muted only after
+  `aboutToQuit`, like the original one.
+
+Measured on the real database, 14 pages, worst frame during a page switch:
+`Archive 255 → 34 ms`, `Content Lab 743 → 19 ms`, everything else ≤ 35 ms
+(was up to 45 ms). Page-to-page `click → visible` is 13–36 ms.
+
+---
+
 ## Unreleased — Search Archive: filters on a saved section
 
 A saved section used to be read-only: the only knobs were the quick text box and

@@ -188,18 +188,32 @@ def search_quota_used():
         return 0
 
 
-def search_quota_bump(n=1):
+def _bump_search_calls(n=1):
     with _LEDGER_LOCK:
-        today = _pt_date_str()
-        used = search_quota_used() if _meta_get("search_quota_date") == today else 0
-        _meta_set("search_quota_date", today)
-        _meta_set("search_quota_used", used + int(n))
-    _notify_quota_listeners()
+        return _bump_search_calls_locked(n)
+
+
+def _bump_search_calls_locked(n=1):
+    today = _pt_date_str()
+    used = search_quota_used() if _meta_get("search_quota_date") == today else 0
+    _meta_set("search_quota_date", today)
+    _meta_set("search_quota_used", used + int(n))
     return used + int(n)
 
 
-def search_quota_remaining():
-    return max(0, SEARCH_QUOTA_DAILY_LIMIT - search_quota_used())
+def search_quota_remaining(keys=None):
+    """How many more search.list calls today's remaining units can fund.
+
+    There is no separate 100-call search bucket: one search costs 100 of the
+    SAME 10,000 units/day as every other call. Per key, floor(left/100)
+    searches fit, and the leftovers on one key cannot be pooled with another's,
+    so the per-key results are summed. `keys=None` keeps the old single-key
+    call-count approximation for callers that have no key list.
+    """
+    if keys is None:
+        return max(0, SEARCH_QUOTA_DAILY_LIMIT - search_quota_used())
+    return sum(max(0, API_QUOTA_PER_KEY - used) // 100
+               for used in keys_quota_used(clean_api_keys(keys)))
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -404,9 +418,27 @@ def niche_cache_stats():
     return (rows, rows * 100)
 
 
+def clean_api_keys(keys):
+    """Trimmed, non-empty, de-duplicated — a key pasted into both the primary
+    field and the backup list must not be counted as two daily budgets."""
+    out = []
+    for k in keys or []:
+        k = str(k or "").strip()
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
 def api_quota_capacity(keys):
-    """Total daily allotment across every currently-configured key."""
-    return max(1, len(keys)) * API_QUOTA_PER_KEY
+    """Total daily allotment across every distinct configured key.
+
+    Google's 10,000 units/day is per Google Cloud PROJECT, not per API key.
+    Nothing in the key itself says which project it belongs to, so we assume
+    one project per distinct key; Usage & Quota states that assumption where
+    it matters. With no key the capacity is zero — the old `max(1, ...)` here
+    reported a full 10,000 units for an empty key list.
+    """
+    return len(clean_api_keys(keys)) * API_QUOTA_PER_KEY
 
 
 def api_quota_remaining(keys):
@@ -417,7 +449,7 @@ def api_quota_remaining(keys):
     minutes — and it still reports exactly what it had left, because the
     ledger is keyed by the key's own hash, not by "is this key currently
     in my list"."""
-    keys = [k for k in keys if k]
+    keys = clean_api_keys(keys)
     return sum(max(0, API_QUOTA_PER_KEY - u) for u in keys_quota_used(keys))
 
 
@@ -512,6 +544,12 @@ def _install_quota_tracking():
                 n, kind = 0, None
             if n:
                 api_quota_bump(n, kind=kind)
+                # Count search.list calls here, not at each call site: Niche
+                # searches, Viral discovery, scrape search pages and channel-id
+                # resolution all pass through this wrapper, and the call sites
+                # that remembered to bump were only a subset of them.
+                if kind == "search":
+                    _bump_search_calls(1)
                 # Google's client library puts the developer key straight
                 # in the query string — this is how we know WHICH key just
                 # spent these units, without touching any call site.

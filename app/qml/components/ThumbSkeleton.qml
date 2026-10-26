@@ -30,12 +30,18 @@ Item {
     // Optional glyph shown in the middle once the sweep is running, so an empty
     // cell still says what it is going to be.
     property string glyph: ""
+    // v3.54: pause the sweep/pulse while the surrounding grid is scrolling.
+    // The placeholder stays visible; only its two infinite animations stop, so
+    // a grid of loading cards stops asking for a repaint on every frame.
+    property bool animate: true
 
     visible: opacity > 0
     // Fade the whole skeleton out when the image lands rather than snapping it
     // away — the crossfade is what makes the swap feel intentional.
+    // v3.53: 140 ms, not 190. A grid of 24 of these crossfading at once was
+    // half a second of everything looking "still loading".
     opacity: active ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: Tokens.durMed; easing.type: Easing.OutCubic } }
+    Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
     Rectangle {
         id: base
@@ -53,7 +59,7 @@ Item {
         // spends a moment off-screen, and without this the tile looks dead in
         // that gap.
         SequentialAnimation on opacity {
-            running: root.active && root.visible
+            running: root.active && root.visible && root.animate
             loops: Animation.Infinite
             NumberAnimation { to: 0.72; duration: 900; easing.type: Easing.InOutQuad }
             NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
@@ -77,7 +83,7 @@ Item {
                 GradientStop { position: 1.0; color: U.withAlpha(Theme.on_surface, 0.0) }
             }
             SequentialAnimation on x {
-                running: root.active && root.visible
+                running: root.active && root.visible && root.animate
                 loops: Animation.Infinite
                 NumberAnimation {
                     from: -sweep.width

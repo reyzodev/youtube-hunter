@@ -2,7 +2,7 @@
 
 import re
 
-from app.core.niche.helpers import _DIGIT_MAP, _NUM_SUFFIXES
+from app.core.niche.helpers import _DIGIT_MAP, _NUM_SUFFIXES, is_gem_row
 
 _NICHE_SORTS = {
     "multiplier":       lambda r: (r.get("multiplier") or -1),
@@ -81,7 +81,15 @@ def sort_archive_quick(rows, subs_dir, views_dir):
 
 def aggregate_by_channel(rows):
     """Roll videos up into one row per channel — the 'which small channels
-    are winning right now' view."""
+    are winning right now' view.
+
+    Alongside the search-level totals (video_count / view_count = what
+    matched here), the aggregate carries the CHANNEL's own lifetime facts
+    (uploads, total views, age, country) and the profile of its strongest
+    matched video, so a channel card can answer "how big is this channel,
+    how new is it, and how badly did this video beat its norm?" without
+    another API call.
+    """
     buckets = {}
     for r in rows:
         cid = r.get("channel_id") or r.get("channel_title") or "?"
@@ -92,28 +100,52 @@ def aggregate_by_channel(rows):
             "channel_thumb_url": r.get("channel_thumb_url", ""),
             "subscriber_count": r.get("subscriber_count"),
             "subs_hidden": r.get("subs_hidden", False),
-            "channel_total_views": r.get("channel_total_views", 0),
-            "channel_video_count": r.get("channel_video_count", 0),
+            "channel_total_views": r.get("channel_total_views", 0) or 0,
+            "channel_video_count": r.get("channel_video_count", 0) or 0,
+            "channel_created_at": r.get("channel_created_at") or "",
+            "channel_country": r.get("channel_country") or "",
+            "channel_lang": r.get("channel_lang") or "",
+            "latest_published_at": r.get("published_at") or "",
             "video_count": 0,
             "view_count": 0,
             "best_multiplier": None,
             "best_video": None,
             "velocity": 0.0,
         })
+        # Sparse -> complete: a scrape-only row can arrive without the
+        # channels.list fields, so keep filling from later rows.
+        for fld in ("channel_total_views", "channel_video_count"):
+            if not b.get(fld) and (r.get(fld) or 0):
+                b[fld] = r.get(fld) or 0
+        for fld in ("channel_created_at", "channel_country", "channel_lang"):
+            if not b.get(fld) and r.get(fld):
+                b[fld] = r.get(fld)
+        if (r.get("published_at") or "") > (b.get("latest_published_at") or ""):
+            b["latest_published_at"] = r.get("published_at") or ""
         b["video_count"] += 1
         b["view_count"] += r.get("view_count", 0) or 0
         b["velocity"] += r.get("velocity", 0) or 0
         mult = r.get("multiplier")
         if mult is not None and (b["best_multiplier"] is None or mult > b["best_multiplier"]):
             b["best_multiplier"] = mult
+            # Hero the biggest OUTLIER (views ÷ subs), not merely the
+            # most-viewed upload: the card's cover, multiplier and best-video
+            # line must describe the same video. Falls back to views below.
+            b["best_video"] = r
         best = b["best_video"]
-        if best is None or (r.get("view_count", 0) or 0) > (best.get("view_count", 0) or 0):
+        if (mult is None and (best is None or
+                              (r.get("view_count", 0) or 0) > (best.get("view_count", 0) or 0))):
             b["best_video"] = r
     out = []
     for b in buckets.values():
         subs = b.get("subscriber_count")
-        b["multiplier"] = (b["view_count"] / float(subs)
-                           if subs and not b.get("subs_hidden") else None)
+        # The channel card's hero is its best matched video's outlier, so the
+        # sortable "multiplier" IS that number — ordering and the big figure
+        # on the card never disagree. The match-set total stays available as
+        # matched_multiplier for anything that wants the channel-level read.
+        b["matched_multiplier"] = (b["view_count"] / float(subs)
+                                   if subs and not b.get("subs_hidden") else None)
+        b["multiplier"] = b.get("best_multiplier")
         b["title"] = b["channel_title"]
         bv = b.get("best_video") or {}
         b["thumbnail_url"] = bv.get("thumbnail_url", "")
@@ -122,6 +154,24 @@ def aggregate_by_channel(rows):
         b["age_hours"] = bv.get("age_hours")
         b["is_short"] = bv.get("is_short", False)
         b["outlier_ratio"] = bv.get("outlier_ratio", 0)
+        b["best_view_count"] = bv.get("view_count", 0) or 0
+        b["best_multiplier_value"] = b.get("best_multiplier")
+        b["best_duration_s"] = bv.get("duration_s", 0) or 0
+        # Badge the channel with its hero video's tier so a Gold/Gem/Short
+        # find is visible in the Channels view too.
+        b["gold_score"] = int(bv.get("gold_score") or 0)
+        b["gold_tier"] = bv.get("gold_tier") or ""
+        b["is_gem"] = bool(is_gem_row(bv))
+        b["viral_rank"] = bv.get("viral_rank")
+        b["viral_region"] = bv.get("viral_region") or ""
+        # Channel-wide averages: lifetime views per upload is the baseline
+        # this search's hits should be judged against.
+        if b["channel_video_count"]:
+            b["avg_views"] = b["channel_total_views"] / float(b["channel_video_count"])
+        else:
+            b["avg_views"] = None
+        b["avg_matched_views"] = (b["view_count"] / float(b["video_count"])
+                                  if b["video_count"] else 0)
         out.append(b)
     return out
 

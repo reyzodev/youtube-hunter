@@ -1,6 +1,6 @@
 """app.qml_backend.vm.chat_vm - YouTube Hunter (QML).
 
-ViewModel behind AIChatPage.qml — "Scope", the AI studio partner.
+ViewModel behind AIChatPage.qml — "Hunter", the AI studio partner.
 
 What it owns:
   * threads      — the conversation rail (search, pin, rename, delete, export)
@@ -681,7 +681,7 @@ class ChatVM(QObject):
                 lines.append(f"- {s['title']}" + (f" — {s['subtitle']}" if s.get("subtitle") else ""))
             lines.append("")
         for m in self._messages:
-            who = tr("You") if m["role"] == "user" else "Scope"
+            who = tr("You") if m["role"] == "user" else "Hunter"
             lines.append(f"### {who} · {m.get('time', '')}")
             if m["role"] == "user":
                 for a in m.get("attachments") or []:
@@ -1248,7 +1248,7 @@ class ChatVM(QObject):
         if tid == self._tid:
             self._flush_added()
         if added:
-            self.toast.emit(tr("{n} brief(s) added. Ask Scope to analyse them.").format(n=added),
+            self.toast.emit(tr("{n} brief(s) added. Ask Hunter to analyse them.").format(n=added),
                             "success")
 
     @Slot(str, str)
@@ -1270,7 +1270,7 @@ class ChatVM(QObject):
             self.toast.emit(tr("Couldn't save the brief: {e}").format(e=e), "error")
             return
         if self._add_source(written_brief_source(path, title)):
-            self.toast.emit(tr("Brief added. Ask Scope to analyse it."), "success")
+            self.toast.emit(tr("Brief added. Ask Hunter to analyse it."), "success")
 
     @Slot(int, "QVariant", str)
     def _on_source_add(self, tid, src, error):
@@ -1879,10 +1879,10 @@ class ChatVM(QObject):
             self.toast.emit(error, "error")
         # v3.40: a long answer landing while the user is in another app
         if error and not cancelled:
-            announce("error", tr("Scope couldn't answer"), error, page=13,
+            announce("error", tr("Hunter couldn't answer"), error, page=13,
                      icon="nav_chat", source=tr("AI Chat"))
         elif text and not cancelled:
-            announce("success", tr("Scope replied"), _notice_preview(text),
+            announce("success", tr("Hunter replied"), _notice_preview(text),
                      page=13, icon="nav_chat", source=tr("AI Chat"),
                      group="chat")
         if text and not cancelled and not error and tid in self._auto_title:

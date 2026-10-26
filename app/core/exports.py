@@ -12,6 +12,9 @@ import sqlite3
 _ILLEGAL_CELL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
+_XLSX_CELL_MAX = 32767
+
+
 def _clean_cell(value):
     if isinstance(value, str):
         return _ILLEGAL_CELL_RE.sub("", value)
@@ -45,8 +48,18 @@ def write_export(data, path, fmt):
             ws.title = "videos"
             headers = list(data[0].keys())
             ws.append(headers)
-            for row in data:
-                ws.append([row.get(h, "") for h in headers])
+            for r, row in enumerate(data, start=2):
+                for c, h in enumerate(headers, start=1):
+                    v = row.get(h, "")
+                    if isinstance(v, str) and len(v) > _XLSX_CELL_MAX:
+                        # Excel's hard cell limit; longer transcripts made
+                        # Excel "repair" (and drop) the file on open
+                        v = v[:_XLSX_CELL_MAX - 1] + "…"
+                    cell = ws.cell(row=r, column=c, value=v)
+                    if isinstance(v, str) and v.startswith("="):
+                        # a title like "=HYPERLINK(...)" must stay text,
+                        # never become a live formula
+                        cell.data_type = "s"
             wb.save(tmp)
         elif fmt == "sqlite":
             conn = sqlite3.connect(tmp)

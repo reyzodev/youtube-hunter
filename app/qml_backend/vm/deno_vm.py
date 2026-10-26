@@ -70,14 +70,13 @@ class DenoVM(QObject):
         # three runtime* properties used to call it on EVERY `changed` emit
         # (each download progress tick) on the GUI thread. Cache it.
         self._status_cache = None
-        # PO Token helper (bgutil-pot) — REQUIRED since v3.41.5, see app.core.pot
+        # PO Token helper (bgutil-pot) — optional and recommended; see
+        # app.core.pot. Its absence never blocks downloads.
         self._pot_busy = False
         self._pot_pct = 0
         self._pot_cancel = False
         self._pot_status = pot.status()
         self._pot_error = ""
-        # installAll(): deno first, then the PO Token helper, as one setup.
-        self._chain = False
         self._potProgress.connect(self._on_pot_progress)
         self._potDone.connect(self._on_pot_done)
         self._progress.connect(self._on_progress)
@@ -90,12 +89,12 @@ class DenoVM(QObject):
     def available(self):
         return self._available
 
-    # v3.41.5: the download engine is READY only when every required part is
-    # present: the JS runtime AND the PO Token helper. Every download gate
-    # checks this, not `available`.
+    # v1.0.2: only the JS runtime is required. The PO Token helper is an
+    # optional, recommended extra — every download gate checks this property,
+    # so a missing helper can never lock downloads.
     @Property(bool, notify=changed)
     def ready(self):
-        return self._available and bool(self._pot_status.get("installed"))
+        return self._available
 
     @Property(bool, notify=changed)
     def setupBusy(self):
@@ -149,12 +148,11 @@ class DenoVM(QObject):
             return tr("Downloading… {done}").format(done=done)
         return ""
 
-    # ── required-files summary (for the startup/first-download dialog) ───
+    # ── required-files summary (for the first-download dialog) ───────────
     # The YouTube download engine needs exactly one downloadable component:
     # the deno JS runtime (~40 MB). ffmpeg/ffprobe ship inside the install and
     # yt-dlp's solver script ships inside yt_dlp_ejs, so there is nothing else
-    # to fetch. Exposed as file counts (not hardcoded in QML) so the dialog can
-    # show "file X of Y" next to the byte progress.
+    # to fetch. The PO Token helper is offered separately and optionally.
     @Property(str, notify=changed)
     def fileName(self):
         return "deno.exe"
@@ -163,41 +161,30 @@ class DenoVM(QObject):
     def potFileName(self):
         return "bgutil-pot.exe" if sys.platform == "win32" else "bgutil-pot"
 
-    @Property(int, notify=changed)
-    def filesTotal(self):
-        return 2
-
     # ── actions ──────────────────────────────────────────────────────────
     @Slot()
     def requestInstall(self):
-        """A download point found deno missing — ask the UI to open the dialog.
-
-        If everything turns out to already be present (a user installed it out
-        of band), re-check and stay silent rather than opening a needless dialog.
-        v3.41.5: "everything" includes the required PO Token helper."""
+        """A download point found the runtime missing — ask the UI to open the
+        dialog. If it turns out to be present already (installed out of band),
+        re-check and stay silent rather than opening a needless dialog."""
         self._available = deno.deno_available()
         self._status_cache = None
         self._pot_status = pot.status()
         self.changed.emit()
-        if self.ready:
+        if self._available:
             return
         self.installRequested.emit()
 
     @Slot()
-    def installAll(self):
-        """Install every missing required component: deno, then bgutil-pot."""
+    def installRuntime(self):
+        """Install the required JS runtime (deno). The PO Token helper is a
+        separate, optional install — see installPot()."""
         if self._busy or self._pot_busy:
             return
         self._error = ""
-        self._pot_error = ""
         self._available = deno.deno_available()
-        self._pot_status = pot.status()
         if not self._available:
-            self._chain = True
             self.download()
-        elif not self._pot_status.get("installed"):
-            self._chain = False
-            self.installPot()
         else:
             self.changed.emit()
             self.finished.emit(True)
@@ -280,8 +267,7 @@ class DenoVM(QObject):
     @Slot()
     def cancel(self):
         """Abort an in-flight download — the worker sees the flag between
-        chunks and unwinds. Cancels the whole setup chain."""
-        self._chain = False
+        chunks and unwinds."""
         if self._busy:
             self._cancel = True
         if self._pot_busy:
@@ -389,18 +375,7 @@ class DenoVM(QObject):
             ok, err = False, tr("installed, but the app still can't find it")
         self._error = "" if ok or err == "cancelled" else (err or tr("Unknown error"))
         self._pot_status = pot.status()
-        chain, self._chain = self._chain, False
         self.changed.emit()
-        if ok and not self._pot_status.get("installed"):
-            # deno is done but the required PO Token helper is still missing:
-            # carry on with it as part of the same setup (or, outside a
-            # chain, just say what is still needed).
-            if chain:
-                self.installPot()
-            else:
-                self.toast.emit(tr("JavaScript runtime installed. The PO Token "
-                                   "helper is still required."), "info")
-            return
         if ok:
             self._announce_ready()
         elif err == "cancelled":
@@ -469,8 +444,8 @@ class DenoVM(QObject):
 
     @Slot(bool)
     def setPotEnabled(self, on):
-        """v3.41.5: the helper is required and can't be turned off. Kept so an
-        old QML binding doesn't error; it only clears a legacy "off"."""
+        """Kept so an old QML binding doesn't error. The helper is used
+        whenever installed; this only clears a legacy "off"."""
         try:
             pot.set_enabled(True)
         except Exception:                  # noqa: BLE001
@@ -485,6 +460,7 @@ class DenoVM(QObject):
         self._pot_pct = 0
         self._pot_cancel = False
         self._pot_error = ""
+        self._source = ""
         self.changed.emit()
 
         def worker():
@@ -501,36 +477,6 @@ class DenoVM(QObject):
     @Slot()
     def cancelPot(self):
         self._pot_cancel = True
-
-    @Slot(str)
-    def installPotFromFile(self, url):
-        """Offline install of bgutil-pot from a file the user already has."""
-        if self._pot_busy:
-            return
-        from app.core.utils import local_path_from_url
-        path = local_path_from_url(url)
-        self._pot_busy = True
-        self._pot_pct = 0
-        self._pot_error = ""
-        self.changed.emit()
-
-        def worker():
-            try:
-                ok, err = pot.install_from_file(path)
-            except Exception as exc:      # noqa: BLE001
-                ok, err = False, str(exc)
-            self._potDone.emit(ok, err)
-
-        threading.Thread(target=worker, daemon=True, name="pot-file").start()
-
-    @Slot(str)
-    def installFromAnyFile(self, url):
-        """The setup dialog's "From file…": the file goes to whichever required
-        component is still missing (deno first)."""
-        if not self._available:
-            self.installFromFile(url)
-        else:
-            self.installPotFromFile(url)
 
     @Slot()
     def uninstallPot(self):
@@ -556,10 +502,8 @@ class DenoVM(QObject):
             # warm the server now so the first download doesn't wait for it
             threading.Thread(target=pot.ensure_server, daemon=True,
                              name="pot-warm").start()
-            if self.ready:
-                self._announce_ready()
-            else:
-                self.toast.emit(tr("PO Token helper installed."), "success")
+            self.toast.emit(tr("PO Token helper installed — downloads will use "
+                               "it from now on."), "success")
         elif err == "cancelled":
             self.toast.emit(tr("Install cancelled."), "info")
         else:
