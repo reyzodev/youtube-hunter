@@ -4,6 +4,8 @@
 
 # YouTube Hunter
 
+**Language:** **English** · [فارسی](README.fa.md)
+
 **YouTube research, outlier detection, downloads and clip cutting — one Windows desktop app, plus a button inside YouTube itself.**
 
 [Install](docs/INSTALL.md) · [Browser extension](docs/EXTENSION.md) · [Build from source](#build-from-source) · [Changelog](CHANGELOG.md)
