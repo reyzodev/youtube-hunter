@@ -2637,11 +2637,75 @@ Item {
                                 }
                             }
 
+                            // ── smooth first paint ──
+                            // Cards used to be created in one go the moment the
+                            // results landed (a long frame) and then each faded
+                            // in on its own as its thumbnail arrived — a
+                            // trickle of cards. Now:
+                            //  1. slots are created a few per frame, while the
+                            //     grid is still invisible, and are never torn
+                            //     down again (a shorter page just hides the
+                            //     spare ones);
+                            //  2. the grid appears ONCE, whole, when the first
+                            //     two rows have their pictures (900 ms at most).
+                            property int _slots: 0
+                            property bool revealed: false
+                            readonly property string _sig: {
+                                const r = page._nicheRows
+                                if (!r.length) return "0"
+                                const f = r[0] || ({})
+                                return r.length + ":" + (f.archiveKey || f.videoId || f.thumbId || "")
+                            }
+                            function _firstRowsReady() {
+                                const n = Math.min(page._nicheRows.length, columns * 2)
+                                for (let i = 0; i < n; ++i) {
+                                    const c = nrep.itemAt(i)
+                                    if (!c || !c.thumbReady) return false
+                                }
+                                return true
+                            }
+                            function _tryReveal() {
+                                if (revealed) return
+                                if (page._nicheRows.length === 0) return
+                                if (_firstRowsReady()) { revealed = true; revealTimer.stop() }
+                            }
+                            function _rearm() {
+                                revealed = false
+                                if (page._nicheRows.length === 0) { revealTimer.stop(); return }
+                                revealTimer.restart()
+                                Qt.callLater(grid._tryReveal)
+                            }
+                            on_SigChanged: _rearm()
+                            Component.onCompleted: _rearm()
+                            Timer {
+                                id: revealTimer
+                                interval: 900
+                                onTriggered: grid.revealed = true
+                            }
+                            Timer {
+                                interval: 1
+                                repeat: true
+                                running: grid._slots < page._nicheRows.length
+                                onTriggered: {
+                                    grid._slots = Math.min(page._nicheRows.length, grid._slots + 6)
+                                    Qt.callLater(grid._tryReveal)
+                                }
+                            }
+                            // instant hide, soft show
+                            opacity: revealed ? 1 : 0
+                            Behavior on opacity {
+                                NumberAnimation { duration: grid.revealed ? 180 : 0; easing.type: Easing.OutCubic }
+                            }
+
                             Repeater {
+                                id: nrep
                                 // v3.44 perf: integer model + reused cards (see
                                 // ArchivePage) — a page flip re-binds 24 cards
                                 // instead of destroying and rebuilding them.
-                                model: page._nicheRows.length
+                                // v3.57: the count only ever GROWS (grid._slots),
+                                // so a shorter page or a smaller search never
+                                // destroys cards that the next one rebuilds.
+                                model: grid._slots
                                 // v15: the Search Archive "Signal" card, so a
                                 // result looks the same here and once it is
                                 // saved.
@@ -2653,16 +2717,28 @@ Item {
                                     // v3.52: no hover effects while scrolling
                                     // — see ArchiveVideoCard.scrollIdle.
                                     scrollIdle: !scroller.gliding
-                                    // cards land in a quick stagger (first ~12
-                                    // only) whenever a new video takes the slot.
-                                    // Ambient motion off = no entrance.
-                                    opacity: page._motion ? 0 : 1
-                                    on_RowKeyChanged: if (page._motion) { ncard.opacity = 0; ncardIn.restart() }
-                                    Component.onCompleted: if (page._motion) ncardIn.restart()
-                                    SequentialAnimation {
-                                        id: ncardIn
-                                        PauseAnimation { duration: Math.min(index, 10) * 14 }
-                                        NumberAnimation { target: ncard; property: "opacity"; to: 1; duration: Tokens.durMed; easing.type: Easing.OutCubic }
+                                    // v3.57: no per-card entrance — the whole
+                                    // grid fades in once (grid.revealed).
+                                    readonly property bool thumbReady: ncard._thumbnailAnnounced
+                                    visible: index < page._nicheRows.length
+                                    onThumbnailReady: grid._tryReveal()
+                                    // Painted only within one card-row of the
+                                    // viewport (same rule as the Search Archive
+                                    // grid): a card far off-screen costs a
+                                    // layered thumbnail + mask + effect pass for
+                                    // nothing. Opacity, not `visible`, keeps the
+                                    // layout geometry. y/height are read so the
+                                    // binding re-runs when the grid reflows.
+                                    opacity: {
+                                        const fl = scroller.contentItem
+                                        const vh = scroller.height
+                                        if (!fl || vh <= 0) return 1
+                                        const pad = ncard.height + 320
+                                        const _dep = ncard.y + grid.y + grid.height
+                                        const viewY = fl.contentY
+                                        const top = ncard.mapToItem(fl.contentItem, 0, 0).y
+                                        return (top + ncard.height > viewY - pad
+                                                && top < viewY + vh + pad) ? 1 : 0
                                     }
                                     Layout.preferredWidth: grid.cardW
                                     Layout.fillHeight: true

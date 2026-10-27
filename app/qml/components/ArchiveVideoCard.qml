@@ -52,9 +52,40 @@ C.GlassPanel {
     readonly property string _rowKey: (row && (row.archiveKey || row.videoId || row.thumbId)) || ""
     on_RowKeyChanged: {
         card._thumbnailAnnounced = false
+        // a different video: its picture has to earn its place again
+        card._pictureOn = false
+        card._syncPicture()
         Qt.callLater(card._settleThumb)
     }
+
+    // ── batched picture reveal (v1.0.1) ──
+    // A grid that opens cold gets its thumbnails back one by one, and each
+    // card used to fade its picture in the moment its own bytes landed: the
+    // first row read as cards being fired in one after another. The page can
+    // now HOLD the pictures (holdPicture) until every card on screen has its
+    // image, then release them in the same frame so the row lands as one.
+    // Once a card is showing the picture of its current row it keeps it, so a
+    // re-armed hold (page turn, filter change) never blinks a picture that is
+    // already up. Niche Finder never sets holdPicture: same behaviour as before.
+    //
+    // v1.0.1b: _pictureOn is a LATCH, so it is set imperatively by
+    // _syncPicture() rather than bound. As a binding it had to read its own
+    // latch, which Qt rightly reported as a binding loop.
+    property bool holdPicture: false
+    property bool _pictureOn: false
+    function _syncPicture() {
+        if (thumbImg.status !== Image.Ready) {
+            if (card._pictureOn) card._pictureOn = false
+            return
+        }
+        if (!card._pictureOn && !card.holdPicture)
+            card._pictureOn = true
+    }
+    onHoldPictureChanged: card._syncPicture()
     function _settleThumb() {
+        // a picture that came straight out of the pixmap cache (status never
+        // left Ready, so onStatusChanged won't fire)
+        card._syncPicture()
         // no picture at all, or one that came straight out of the pixmap cache
         // (status never left Ready, so onStatusChanged won't fire)
         if (!(row.thumbId && row.thumbId.length) || thumbImg.status === Image.Ready)
@@ -223,7 +254,7 @@ C.GlassPanel {
             }
             C.ThumbSkeleton {
                 anchors.fill: parent
-                active: (row.thumbId || "") !== "" && thumbImg.status !== Image.Ready
+                active: (row.thumbId || "") !== "" && !card._pictureOn
                         && thumbImg.status !== Image.Error
                 // a skeleton that keeps sweeping while its card slides past is
                 // pure motion for the eye and pure work for the renderer
@@ -267,12 +298,16 @@ C.GlassPanel {
                     // pointer has moved on.
                     Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
                     onStatusChanged: {
+                        card._syncPicture()
                         if (status === Image.Ready || status === Image.Error)
                             card.announceThumbnailReady()
                     }
                     // no thumbnail at all → settled straight away (an empty
                     // source while waiting for a width is NOT "ready")
-                    Component.onCompleted: if (!(row.thumbId && row.thumbId.length)) card.announceThumbnailReady()
+                    Component.onCompleted: {
+                        card._syncPicture()
+                        if (!(row.thumbId && row.thumbId.length)) card.announceThumbnailReady()
+                    }
                 }
                 Rectangle {
                     anchors.left: parent.left
@@ -320,7 +355,7 @@ C.GlassPanel {
                 source: mediaSrc
                 maskEnabled: true
                 maskSource: mediaMask
-                opacity: thumbImg.status === Image.Ready ? 1 : 0
+                opacity: card._pictureOn ? 1 : 0
                 // v3.53: the picture lands in 180 ms instead of 320. Paging a
                 // grid means 24 of these cross-fades at once — at durSlow the
                 // page spent a third of a second looking half-loaded, which

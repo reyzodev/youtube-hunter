@@ -70,7 +70,7 @@ Step-by-step install (30 seconds): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
 | **Channel & keyword scraper** | Pulls a channel's catalogue or a search query, with quota-aware pacing, sorting and continuation. Depth is adjustable — a quick look or a full sweep. |
 | **Outlier detection** | Scores every video against the channel's own baseline, so the 3×–30× videos surface instead of the ones with the most views. |
 | **Niche Finder** | Searches a topic across channels, widens the query automatically when a filter would return nothing, and ranks the channels worth studying. |
-| **Search Archive** | Every scrape is stored locally in SQLite — revisit, filter, sort and re-analyse without spending quota again. Cards paint only near the viewport, so long keyword and channel sections scroll smoothly. |
+| **Search Archive** | Every scrape is stored locally in SQLite — revisit, filter, sort and re-analyse without spending quota again. Cards paint only near the viewport, a cold open shows a skeleton instead of a black grid, and thumbnails land as one batch. |
 | **Snapshot Insights** | A channel brief: cadence, formats, length, title patterns, what the outliers have in common — plus a saved **Brief (Dossier)** view with confidence bands, intent, signals and experiments. |
 
 ### Creation
@@ -195,7 +195,7 @@ installer.iss             Inno Setup script (bundles the app, the extension, the
 
 ## Version
 
-**1.0.1** — the Scraper gains a fast lane with a live results board (outlier sort, title search, deep scan, published window, transcript and file-type toggles), saved Niche Scan cards are redesigned, AI Chat is now "Hunter", the title bar follows the project on Telegram, Settings builds its cards in the background, and Main.qml precompiles during startup. Search Archive now paints only the cards near the viewport and defers the heaviest hover effects while scrolling, so long keyword and channel sections stay smooth. The launch screen itself is unchanged from 1.0.0.
+**1.0.1** — the Scraper gains a fast lane with a live results board (outlier sort, title search, deep scan, published window, transcript and file-type toggles) and shows eight videos at a time with **Show more**; saved Niche Scan cards are redesigned; AI Chat is now "Hunter"; the title bar follows the project on Telegram; Settings builds its cards in the background; and Main.qml precompiles during startup, while the existing launch screen stays as it was. Search Archive paints only the cards near the viewport, opens cold sections behind a skeleton, releases thumbnails as one batch and defers the heaviest hover effects while scrolling; the Niche Finder grid gets the same viewport-only painting and a single whole-grid reveal. The Transcripts switch no longer blinks red.
 
 ## License
 

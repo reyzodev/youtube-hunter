@@ -121,7 +121,6 @@ Item {
     // v3.44 perf: the page's rows converted from the VM ONCE per change. Every
     // cell used to read Archive.rows itself, i.e. 24 full list conversions.
     readonly property var _rows: Archive.rows || []
-    function _rowKey(r) { return (r && (r.archiveKey || r.videoId || r.thumbId)) || "" }
     property int _specSeen: -2
     readonly property int _heroSize: Math.round(Math.max(30, Math.min(50, masterCol.width / 30)))
 
@@ -2312,13 +2311,43 @@ Item {
                     // wait for the cards all over again.
                     active: false
                     sourceComponent: deckComp
-                    Component.onCompleted: deckArm.start()
+                    // v1.0.1: armed the moment the page is actually in the
+                    // window (its own async build is over by definition then),
+                    // instead of a blind 1.5 s. The old fixed delay is what
+                    // most often left a freshly opened section looking at an
+                    // empty, black grid for 1-3 s while the 24 cards were
+                    // still being built.
+                    readonly property bool _inWindow: Window.window !== null
+                    on_InWindowChanged: if (_inWindow && !active) deckArm.start()
+                    Component.onCompleted: if (_inWindow) deckArm.start()
+                    // A section opened before the 1.5 s warm-up timer fired
+                    // used to wait for it, then the cards were built while the
+                    // user was already looking at an empty grid (1-3 s, then a
+                    // burst). The page exists and is on screen by then, so the
+                    // deck can be built right away.
+                    Connections {
+                        target: Archive
+                        function onIsDetailChanged() {
+                            if (Archive.isDetail && !deckLoader.active) {
+                                deckArm.stop()
+                                deckLoader.active = true
+                            }
+                        }
+                    }
+                    // The whole deck appears as ONE unit, and only once the
+                    // first rows' thumbnails are in (see grid.revealed).
+                    opacity: (item && item.revealed) ? 1 : 0
+                    // instant hide, soft show (a section switch must not show the
+                    // new cards fading OUT first)
+                    Behavior on opacity { NumberAnimation { duration: (item && item.revealed) ? 180 : 0; easing.type: Easing.OutCubic } }
                     Timer {
                         id: deckArm
-                        // Long enough that the page's own async loader has
-                        // long finished: arming during its incubation makes the
-                        // deck build synchronously and the page waits for it.
-                        interval: 1500
+                        // One short beat after the page landed in the window,
+                        // so its first paint goes out before the deck starts
+                        // taking its slices. (Arming DURING the page's own
+                        // incubation would make the deck build synchronously;
+                        // _inWindow above rules that out.)
+                        interval: 250
                         onTriggered: deckLoader.active = true
                     }
                     // While the deck is still incubating, reserve roughly the
@@ -2343,6 +2372,110 @@ Item {
                         visible: !Archive.detailIsEmpty
                         columnSpacing: Tokens.space4
                         rowSpacing: Tokens.space5
+
+                    // ── one-shot reveal ──
+                    // Cards used to fade in one by one as their own thumbnails
+                    // and the async-built cells arrived, which read as a burst
+                    // of cards being added (1-3 s on a cold open). Now the grid
+                    // stays invisible until the cards of the first two rows
+                    // have their pictures (or 900 ms passed), then fades in
+                    // once, complete.
+                    //
+                    // v1.0.1: two separate gates, because they answer two
+                    // different questions.
+                    //  · revealed — may the deck replace the skeleton stand-in
+                    //    (deckStandIn, below the column)? Yes once the cards ON
+                    //    SCREEN have their pictures, or after 450 ms at most:
+                    //    the stand-in covers the wait, so it is never a black
+                    //    hole any more, and the cards' text is ready at once.
+                    //  · picturesReleased — may the cards show their
+                    //    thumbnails? Held until every card on screen has one
+                    //    (cap 1.5 s), then released in ONE frame. Before, each
+                    //    picture faded in the moment its own bytes arrived, so
+                    //    on a cold open the first row lit up card by card.
+                    // "On screen" is the real viewport now, not "two rows":
+                    // the second row is usually below the fold, and waiting for
+                    // it only pushed the reveal into the timeout.
+                    property bool revealed: false
+                    property bool picturesReleased: true
+                    property int _shownId: -2
+                    property string _firstKey: ""
+                    function _screenReady() {
+                        const n = Math.min(page._rows.length, deckRep.count)
+                        let seen = 0
+                        for (let i = 0; i < n; ++i) {
+                            const c = deckRep.itemAt(i)
+                            if (!c) return false
+                            if (!c.inView) continue
+                            seen++
+                            if (!c.thumbReady) return false
+                        }
+                        // layout not placed yet: judge the first row instead
+                        if (seen === 0) {
+                            for (let j = 0; j < Math.min(n, columns); ++j) {
+                                const c2 = deckRep.itemAt(j)
+                                if (!c2 || !c2.thumbReady) return false
+                            }
+                        }
+                        return true
+                    }
+                    function _tryReveal() {
+                        if (!Archive.isDetail) return
+                        if (revealed && picturesReleased) return
+                        if (!_screenReady()) return
+                        revealed = true
+                        picturesReleased = true
+                        revealTimer.stop()
+                        pictureCap.stop()
+                    }
+                    function _rearmPictures() {
+                        picturesReleased = false
+                        pictureCap.restart()
+                        Qt.callLater(grid._tryReveal)
+                    }
+                    function _rearm() {
+                        revealed = false
+                        revealTimer.restart()
+                        _rearmPictures()
+                    }
+                    Timer {
+                        id: revealTimer
+                        interval: 450
+                        onTriggered: { grid.revealed = true; grid._tryReveal() }
+                    }
+                    Timer {
+                        id: pictureCap
+                        interval: 1500
+                        onTriggered: grid.picturesReleased = true
+                    }
+                    Component.onCompleted: {
+                        _shownId = Archive.detailId
+                        _firstKey = page._rows.length ? (page._rows[0].archiveKey || page._rows[0].videoId || "") : ""
+                        if (Archive.isDetail) _rearm()
+                    }
+                    Connections {
+                        target: Archive
+                        function onDetailChanged() {
+                            // detailChanged also fires on every live-stats tick;
+                            // only a different section re-arms the reveal.
+                            if (Archive.detailId === grid._shownId) return
+                            grid._shownId = Archive.detailId
+                            if (Archive.isDetail) grid._rearm()
+                            else { grid.revealed = false; grid.picturesReleased = true }
+                        }
+                        // A page turn / sort / filter inside the same section
+                        // puts new videos into the cards: batch their pictures
+                        // too. A live-stats tick keeps the same videos (same
+                        // first key) and must not touch anything.
+                        function onRowsChanged() {
+                            if (!Archive.isDetail) return
+                            const r = Archive.rows || []
+                            const k = r.length ? (r[0].archiveKey || r[0].videoId || "") : ""
+                            if (k === grid._firstKey) return
+                            grid._firstKey = k
+                            grid._rearmPictures()
+                        }
+                    }
 
                     readonly property real availW: detailCol.width
                     readonly property int minCardW: 330
@@ -2381,6 +2514,7 @@ Item {
                     }
 
                     Repeater {
+                        id: deckRep
                         // v3.44 perf: an INTEGER model. With the row list as
                         // the model, every page flip (and every star toggle /
                         // live-stats tick) destroyed all 24 cards and built 24
@@ -2404,7 +2538,6 @@ Item {
                         Item {
                             id: cell
                             readonly property var rowData: page._rows[index] || ({})
-                            readonly property string rowKey: page._rowKey(rowData)
                             visible: index < page._rows.length
                             Layout.preferredWidth: grid.cardW
                             Layout.preferredHeight: vcard.implicitHeight
@@ -2412,41 +2545,33 @@ Item {
                             Layout.alignment: Qt.AlignTop
                             implicitHeight: vcard.implicitHeight
 
-                            // A NEW SECTION arrives with a short stagger; turning
-                            // a page inside the same section only swaps the data.
-                            // Re-playing 24 full-card fades — each one a layer over
-                            // a card that already owns three — on every page turn is
-                            // what made paging read as "the grid is reloading".
-                            property int _arrivedGid: -2
-                            opacity: 0
-                            transform: Translate { id: cellRise; y: 12 }
-                            function arrive() {
-                                const gid = Archive.detailId
-                                if (!page._motion || gid === cell._arrivedGid) {
-                                    cellIn.stop(); cell.opacity = 1; cellRise.y = 0; return
-                                }
-                                cell._arrivedGid = gid
-                                cellIn.stop()
-                                cell.opacity = 0
-                                cellRise.y = 10
-                                cellIn.start()
+                            // v3.57: no per-cell entrance. Each cell used to fade/
+                            // rise on its own as it was built, so a cold open
+                            // showed cards trickling in. The deck now fades in
+                            // once as a whole (grid.revealed).
+                            readonly property bool thumbReady: vcard._thumbnailAnnounced
+
+                            // v1.0.1: where this cell sits in the scroll
+                            // content. mapToItem() records NO dependency on the
+                            // layout moving the cell, so the paint switch below
+                            // used to be computed once against stale positions
+                            // (often before the GridLayout had placed anything)
+                            // and only corrected when each card's own height
+                            // happened to change — cards of the first row then
+                            // popped in one after another. Reading y of every
+                            // ancestor up to the content makes it follow the
+                            // layout.
+                            readonly property real _top: {
+                                const fl = detailScroll.contentItem
+                                const deps = cell.y + deckLoader.y + detailCol.y + cell.height
+                                if (!fl || !fl.contentItem) return deps
+                                return cell.mapToItem(fl.contentItem, 0, 0).y
                             }
-                            Component.onCompleted: arrive()
-                            onRowKeyChanged: arrive()
-                            ParallelAnimation {
-                                id: cellIn
-                                // 8 ms per slot, capped at the first row and a
-                                // bit: a wave, not a queue — the whole grid has
-                                // landed in ~200 ms.
-                                SequentialAnimation {
-                                    PauseAnimation { duration: Math.min(index, 7) * 8 }
-                                    NumberAnimation { target: cell; property: "opacity"; to: 1; duration: 150; easing.type: Easing.OutCubic }
-                                }
-                                SequentialAnimation {
-                                    PauseAnimation { duration: Math.min(index, 7) * 8 }
-                                    NumberAnimation { target: cellRise; property: "y"; to: 0; duration: 200; easing.type: Easing.OutCubic }
-                                }
-                            }
+                            readonly property real _viewY: detailScroll.contentItem ? detailScroll.contentItem.contentY : 0
+                            readonly property bool inView: visible && detailScroll.height > 0
+                                                           && _top + height > _viewY
+                                                           && _top < _viewY + detailScroll.height
+
                             C.ArchiveVideoCard {
                                 id: vcard
                                 width: parent.width
@@ -2464,15 +2589,16 @@ Item {
                                 // register that dependency. Opacity, not
                                 // `visible`, so the Layout keeps its geometry.
                                 opacity: {
-                                    const fl = detailScroll.contentItem
                                     const vh = detailScroll.height
-                                    if (!fl || vh <= 0) return 1
+                                    if (!detailScroll.contentItem || vh <= 0) return 1
                                     const pad = grid._paintPad
-                                    const viewY = fl.contentY
-                                    const top = cell.mapToItem(fl.contentItem, 0, 0).y
+                                    const viewY = cell._viewY
+                                    const top = cell._top
                                     return (top + cell.height > viewY - pad
                                             && top < viewY + vh + pad) ? 1 : 0
                                 }
+                                // v1.0.1: pictures land together (see grid)
+                                holdPicture: !grid.picturesReleased
                                 // v3.52: no hover effects while the grid is
                                 // scrolling — see ArchiveVideoCard.scrollIdle.
                                 scrollIdle: !detailScroll.gliding
@@ -2481,6 +2607,7 @@ Item {
                                 cardWidth: grid.cardW
                                 onDownloadRequested: (vid, title, thumb) => qualityPicker.openFor(vid, title, thumb)
                                 onThumbDownloadRequested: (thumb, title, isShort) => page.saveThumb(thumb, title, isShort)
+                                onThumbnailReady: grid._tryReveal()
                             }
                         }
                     }
@@ -2508,6 +2635,63 @@ Item {
                         mono: true
                         font.pixelSize: Tokens.fontCaption
                         color: Theme.outline
+                    }
+                }
+            }
+
+            // ── cold-open stand-in (v1.0.1) ──
+            // Sits exactly over the deck's slot while the real cards are not
+            // on screen yet: either the deck is still being built (first
+            // section of the session) or it is waiting for its first pictures
+            // (grid.revealed). That gap used to be an empty, page-coloured
+            // hole, i.e. a black screen in the dark theme for 1-3 s. Skeleton
+            // cards with the same proportions as the real ones hold the shape
+            // instead, then cross-fade into the deck.
+            //
+            // On a warm switch (deck built, pictures cached) the deck is ready
+            // within a frame or two, so the stand-in waits 120 ms before it is
+            // even created: nobody sees it, and nobody pays for it.
+            Loader {
+                id: deckStandIn
+                readonly property bool _deckUp: !!(deckLoader.item && deckLoader.item.revealed)
+                readonly property bool wanted: Archive.isDetail && !Archive.detailIsEmpty
+                                               && page.visible && !_deckUp
+                property bool _late: false
+                onWantedChanged: {
+                    if (wanted) standInDelay.restart()
+                    else { standInDelay.stop(); _late = false }
+                }
+                Component.onCompleted: if (wanted) standInDelay.start()
+                Timer {
+                    id: standInDelay
+                    interval: 120
+                    onTriggered: deckStandIn._late = true
+                }
+                readonly property bool _show: wanted && (_late || !deckLoader.item)
+                x: detailCol.x
+                y: detailCol.y + deckLoader.y
+                width: detailCol.width
+                z: 2
+                opacity: _show ? 1 : 0
+                visible: opacity > 0.01
+                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                active: _show || opacity > 0.01
+                sourceComponent: Grid {
+                    width: deckStandIn.width
+                    columns: deckLoader._cols
+                    columnSpacing: Tokens.space4
+                    rowSpacing: Tokens.space5
+                    Repeater {
+                        // the first screen's worth: at most two rows
+                        model: Math.max(1, Math.min(deckLoader._cols * 2,
+                                                    page._rows.length > 0 ? page._rows.length : deckLoader._cols * 2))
+                        C.VideoCardSkeleton {
+                            width: deckLoader._cardW
+                            cardWidth: deckLoader._cardW
+                            running: deckStandIn._show
+                            // one diagonal wave across the grid
+                            delay: ((index % deckLoader._cols) + Math.floor(index / deckLoader._cols)) * 90
+                        }
                     }
                 }
             }

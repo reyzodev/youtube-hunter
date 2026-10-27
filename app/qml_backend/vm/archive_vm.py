@@ -74,6 +74,30 @@ from app.qml_backend.desktop_notifier import announce, announce_download
 _SORTS = NICHE_SORTS_UI
 
 
+def _scan_downloaded_ids():
+    """Video ids whose finished download still exists on disk.
+
+    Pure function (db read + file checks, no Qt), so it can run on a worker
+    thread: see ArchiveVM.refreshDownloaded."""
+    try:
+        rows = downloads_list()
+    except Exception:           # noqa: BLE001 — DB not ready yet
+        rows = []
+    fresh = set()
+    for r in rows:
+        try:
+            status = (r.get("status") or "").lower()
+        except AttributeError:
+            continue
+        if status not in ("complete", "done"):
+            continue
+        vid = (r.get("video_id") or "").strip()
+        path = (r.get("filepath") or "").strip()
+        if vid and path and os.path.isfile(path):
+            fresh.add(vid)
+    return fresh
+
+
 def _live_row_key(r):
     """The key live-refresh uses for a row: its archive key, else video id.
     A channel aggregate has neither of its own, so it resolves to its hero
@@ -167,6 +191,9 @@ class ArchiveVM(QObject):
     # onto the GUI thread before it touches the DB (see _on_dl_meta).
     _dlMeta = Signal(str, "QVariantMap")
     _thumbDone = Signal(str, str)          # (saved_path_or_"", error)
+    # v1.0.1: the finished-on-disk scan runs off the GUI thread when the page
+    # is shown (fresh video ids, scan token)
+    _dlScanned = Signal(list, int)
     # v3.43 live stats: worker → GUI thread
     liveChanged = Signal()
     _liveChunk = Signal(int, int, list)    # (group_id, token, fresh rows)
@@ -213,6 +240,8 @@ class ArchiveVM(QObject):
         # video_ids with a finished file on disk (any session) — the card's
         # Download button becomes Open for these.
         self._downloaded = set()
+        self._dl_scan_token = 0
+        self._dlScanned.connect(self._on_dl_scanned)
         self._refresh_downloaded(silent=True)
         # v3.44 perf: progress ticks arrive many times a second per download;
         # the cards only need ~10 fps, so downloadsChanged is coalesced.
@@ -629,29 +658,42 @@ class ArchiveVM(QObject):
         immediately reports "file couldn't be found". Rebuilt wholesale so
         entries removed on the Downloads page drop out here too. Emits
         downloadsChanged unless silent (init path)."""
-        try:
-            rows = downloads_list()
-        except Exception:           # noqa: BLE001 — DB not ready yet
-            rows = []
-        fresh = set()
-        for r in rows:
-            try:
-                status = (r.get("status") or "").lower()
-            except AttributeError:
-                continue
-            if status not in ("complete", "done"):
-                continue
-            vid = (r.get("video_id") or "").strip()
-            path = (r.get("filepath") or "").strip()
-            if vid and path and os.path.isfile(path):
-                fresh.add(vid)
-        self._downloaded = fresh
+        # a synchronous rebuild is the newest truth: drop any scan in flight
+        self._dl_scan_token += 1
+        self._downloaded = _scan_downloaded_ids()
         self._sync_page_downloaded(emit=not silent)
 
     @Slot()
     def refreshDownloaded(self):
-        """Re-read the finished-on-disk set — called when the page is shown."""
-        self._refresh_downloaded()
+        """Re-read the finished-on-disk set — called when the page is shown.
+
+        v1.0.1: off the GUI thread. One os.path.isfile() per finished download
+        ran inside the page switch; with a long history, or files on a drive
+        that has to spin up / a network share, that stalled the very first
+        frame of Search Archive for seconds. The cards keep the set they had
+        until the scan lands (it only flips Download / Open)."""
+        self._dl_scan_token += 1
+        token = self._dl_scan_token
+
+        def worker():
+            try:
+                fresh = sorted(_scan_downloaded_ids())
+            except Exception:       # noqa: BLE001 — best effort
+                return
+            try:
+                self._dlScanned.emit(fresh, token)
+            except RuntimeError:    # VM already gone (app closing)
+                pass
+
+        threading.Thread(target=worker, name="archive-downloaded-scan",
+                         daemon=True).start()
+
+    @Slot(list, int)
+    def _on_dl_scanned(self, fresh, token):
+        if token != self._dl_scan_token:
+            return                  # a newer scan / sync rebuild superseded it
+        self._downloaded = set(fresh)
+        self._sync_page_downloaded()
 
     @Slot(str)
     def openDownloaded(self, video_id):

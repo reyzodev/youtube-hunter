@@ -7,6 +7,39 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased: Search Archive — cold open without a black grid
+
+- The 24-card deck was armed by a blind 1.5 s timer after the page was
+  built, then incubated in slices (~1.6 s) and held at opacity 0 for up to
+  900 ms waiting for thumbnails. Opening a keyword / channel section early
+  in a session showed an empty, page-coloured (black in the dark theme) slot
+  for 1-3 s. The deck is now armed 250 ms after the page is actually in the
+  window, a `VideoCardSkeleton` stand-in covers the slot while it builds or
+  waits (and is skipped entirely on a warm cached switch), and the reveal cap
+  is 450 ms.
+- Thumbnails are released as a batch: `ArchiveVideoCard.holdPicture` keeps
+  every picture behind its skeleton until all cards on screen have theirs
+  (cap 1.5 s), then they land in one frame. `_pictureOn` is an imperative
+  latch set by `_syncPicture()` rather than a binding, which removes the
+  binding loop and stops the first row from appearing one card at a time.
+- The paint-culling switch now depends on the cell position (`cell.y`,
+  `deckLoader.y`, `detailCol.y`) instead of `mapToItem()` alone, so stale
+  positions no longer make the first row pop in individually.
+- Opening a section no longer replays the grid entrance: the entrance belongs
+  to the deck's first build, and a section switch re-binds the data in place.
+- `Archive.refreshDownloaded()` now scans finished downloads on a worker
+  thread and applies the result with a token, so a long history on a slow or
+  network drive cannot stall the first frame of Search Archive.
+
+## Unreleased: Niche Finder — smooth first paint
+
+- Result cards are created a few per frame while the grid is still invisible,
+  and the grid appears once, whole, when the first two rows have their
+  pictures (900 ms cap). A shorter page hides spare slots instead of
+  destroying them and rebuilding them on the next search.
+- Cards paint only within one card-row of the viewport, like Search Archive,
+  so a long result set no longer composites every card on every scroll frame.
+
 ## Unreleased: Search Archive — viewport-only card painting
 
 - Scrolling a section with 1,200+ videos painted all 24 cards every frame.
