@@ -3,7 +3,7 @@
 A trimmed copy of the project: everything needed to **run and read** the app,
 with the build output and the 139 MB ffprobe binary left out.
 
-**Version: 1.0.1** (internal 3.58) — rebranded from Niche Scope (new logo,
+**Version: 1.0.1** (internal 3.59) — rebranded from Niche Scope (new logo,
 `YouTubeHunter.exe`, `YouTubeHunter-Setup.exe`). Internals kept on purpose so existing installs keep
 working: the QML module is still `NicheScope`, the per-user runtime folder is
 still `NicheScope`, the config folder is still `%APPDATA%\YoutubeScrapperCyber`

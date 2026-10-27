@@ -136,6 +136,10 @@ NICHE_RPM_TABLE = [
 NICHE_RPM_DEFAULT = ("general", "General Audience", "public",
                      ((2.0, 5.0), (1.2, 3.0), (0.3, 0.9)), _SHORT_GEN)
 
+# Stable fallback for a genuine tie in detect_channel_niche — see the comment
+# at the tie-break itself.
+_NICHE_ORDER = {row[0]: i for i, row in enumerate(NICHE_RPM_TABLE)}
+
 # Audience-market multiplier, kept for display ("% of a US audience's
 # value") and as the source of the geographic tier below.
 COUNTRY_RPM_FACTOR = {
@@ -161,6 +165,12 @@ RPM_TO_CPM = 3.0
 # overstatement), while comparing raw views flips the other way for a
 # long-form channel that sprinkles Shorts. Revenue-weighing gets both right.
 SHORTS_LONG_VALUE_RATIO = 50.0
+
+# Shorts did not exist before this date, so a view earned earlier can only be
+# long-form — and a sub-3-minute upload from 2015 was a normal video, monetized
+# at the long-form rate, not a Short. Used both to classify fetched uploads and
+# to cap how much of a back catalogue that predates Shorts can be Shorts views.
+SHORTS_ERA_START = "2021-01-01T00:00:00Z"
 
 
 def rpm_tier_for_country(country):
@@ -325,15 +335,16 @@ def detect_channel_niche(title, description, keywords="", topics=None):
     the winning score: (key, label, icon, long_tiers, short_tiers, keywords,
     score) — or the general-audience default with score 0 when nothing matched.
     """
-    scores = {}     # niche key -> [weighted score, most specific match length]
+    scores = {}     # niche key -> [weighted score, best specificity, hit count]
 
     def _add(key, weight, specificity):
         cur = scores.get(key)
         if cur is None:
-            scores[key] = [weight, specificity]
+            scores[key] = [weight, specificity, 1]
         else:
             cur[0] += weight
             cur[1] = max(cur[1], specificity)
+            cur[2] += 1
 
     # 1) the authoritative topic signal
     for t in (topics or []):
@@ -360,9 +371,15 @@ def detect_channel_niche(title, description, keywords="", topics=None):
             _add(key, weight * n, len(kw))
 
     # Highest score wins; a tie goes to the niche whose best-matched keyword was
-    # the most specific (longest) — an order-independent tie-break, where the
-    # old code simply took whichever row came first in the table.
-    best = max(scores, key=lambda k: (scores[k][0], scores[k][1])) if scores else None
+    # the most specific (longest), then to the niche with more distinct matched
+    # words. A still-perfect tie falls back to the table's own order: it is
+    # arbitrary but FIXED. YouTube returns topicCategories in a varying order
+    # between identical requests, so leaving the last tie to insertion order
+    # made the same channel come out "Education" on one check and
+    # "Entertainment" on the next — a ~4x swing in the revenue band.
+    best = max(scores, key=lambda k: (scores[k][0], scores[k][1],
+                                      scores[k][2], -_NICHE_ORDER.get(k, 99))) \
+        if scores else None
     # A niche has to be EARNED. Below _MIN_NICHE_SCORE the only evidence was a
     # discounted generic word ("language" in an About section), and claiming
     # "Education" on that is a guess dressed as a finding — the general band is

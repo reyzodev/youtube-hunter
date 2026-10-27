@@ -24,10 +24,10 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from app.config import load_app_config
 from app.core.monetization import check_signals
 from app.core.niche.helpers import SHORT_MAX_SECONDS
-from app.core.rpm import SHORTS_LONG_VALUE_RATIO
+from app.core.rpm import SHORTS_ERA_START, SHORTS_LONG_VALUE_RATIO
 from app.core.rpm import detect_channel_niche, estimate_rpm
 from app.core.rpm import earnings_range, money_compact
-from app.core.utils import (days_since, hours_since, humanize_count,
+from app.core.utils import (days_since, humanize_count,
                             parse_iso8601_duration)
 from app.core.youtube_api import build_youtube_service, resolve_channel_id
 from app.crash import log_crash
@@ -255,9 +255,16 @@ class MonetizeVM(QObject):
     def _is_probably_short(v):
         secs = parse_iso8601_duration(
             v.get("contentDetails", {}).get("duration", ""))
-        # App-wide 3-minute line (SHORT_MAX_SECONDS): under 3 min is a Short,
-        # at or over is long-form — same rule as detect_short everywhere else.
-        return 0 < secs < SHORT_MAX_SECONDS
+        if not (0 < secs < SHORT_MAX_SECONDS):
+            return False
+        # A short video posted before Shorts existed was a normal upload and
+        # earned long-form ads. Duration alone would price a 2015 six-second
+        # clip at the Shorts pool rate; an unreadable date keeps the old
+        # duration-only answer rather than silently reclassifying everything.
+        age = days_since(v.get("snippet", {}).get("publishedAt", ""))
+        if age is None:
+            return True
+        return age <= (days_since(SHORTS_ERA_START) or 0.0)
 
     @staticmethod
     def _views_of(v):
@@ -294,7 +301,7 @@ class MonetizeVM(QObject):
         return ("short", True) if is_short else ("long", False)
 
     def _estimate_ypp(self, recent, total_views=None, channel_age_days=None,
-                      short_share=None):
+                      short_share=None, lifetime_short_share=None):
         """Rough public watch hours/year and Shorts views in 90 days — neither
         is exposed by any API, so both are projected from recent uploads.
 
@@ -309,6 +316,15 @@ class MonetizeVM(QObject):
         being watched keeps contributing. Still an estimate (it says "~" for a
         reason), but no longer a systematic undercount of exactly the channels
         the check is usually pointed at.
+
+        v1.4 — two shares, because the window is not the lifetime. The 90-day
+        slice of the back catalogue is priced with the CURRENT Shorts mix
+        (`short_share`, projected per format); the lifetime totals and the
+        lifetime-average watch hours use `lifetime_short_share`, which caps the
+        Shorts portion at the part of the channel's life in which Shorts could
+        have earned views. Using one recent-sample share for both is what priced
+        a decade of long-form watch time as Shorts on a channel that now posts
+        Shorts.
         """
         watch_sec_day = 0.0
         shorts_90d = 0.0
@@ -316,13 +332,15 @@ class MonetizeVM(QObject):
             views = self._views_of(v)
             dur = parse_iso8601_duration(
                 v.get("contentDetails", {}).get("duration", ""))
-            age_days = max(hours_since(
-                v.get("snippet", {}).get("publishedAt", "")) / 24, 1.0)
+            age_days = days_since(v.get("snippet", {}).get("publishedAt", ""))
+            if age_days is None:
+                continue               # undateable upload: no attributable rate
+            age_days = max(float(age_days), 1.0)
             # Share of this video's lifetime views earned inside the window.
             # Uniform accrual is a first-order model: a two-day-old video
             # counts in full, a two-year-old one counts its last 90 days.
             share = 1.0 if age_days <= 90 else min(1.0, 90.0 / age_days)
-            if dur and dur < SHORT_MAX_SECONDS:
+            if self._is_probably_short(v):
                 shorts_90d += views * share
             else:
                 watch_sec_day += (views * dur * 0.45) / age_days
@@ -347,20 +365,23 @@ class MonetizeVM(QObject):
         #    least one stretch cleared 10M — whatever last month looked like.
         if total_views and channel_age_days:
             share_s = 1.0 if short_share is None else max(0.0, min(1.0, short_share))
+            life_s = (share_s if lifetime_short_share is None
+                      else max(0.0, min(1.0, lifetime_short_share)))
             age = max(float(channel_age_days), 1.0)
             fetched = sum(self._views_of(v) for v in recent)
             catalogue = max(0.0, float(total_views) - fetched)
             out["shorts_90d"] += catalogue * share_s * min(1.0, 90.0 / age)
-            out["shorts_lifetime"] = float(total_views) * share_s
+            out["shorts_lifetime"] = float(total_views) * life_s
             out["shorts_avg_90d"] = out["shorts_lifetime"] * 90.0 / max(age, 90.0)
             # Long-form watch time over the channel's life, priced at the
             # fetched long-form uploads' own duration × the usual 45% retention.
             longs = [parse_iso8601_duration(
-                v.get("contentDetails", {}).get("duration", "")) for v in recent]
-            longs = [d for d in longs if d and d >= SHORT_MAX_SECONDS]
+                v.get("contentDetails", {}).get("duration", ""))
+                for v in recent if not self._is_probably_short(v)]
+            longs = [d for d in longs if d]
             if longs:
                 avg_dur = sum(longs) / len(longs)
-                life_hours = (float(total_views) * (1.0 - share_s)
+                life_hours = (float(total_views) * (1.0 - life_s)
                               * avg_dur * 0.45 / 3600.0)
                 out["watch_avg_year"] = life_hours * 365.0 / max(age, 365.0)
                 cat_hours = catalogue * (1.0 - share_s) * avg_dur * 0.45 / 3600.0
@@ -424,7 +445,8 @@ class MonetizeVM(QObject):
                 "ads_checked": ads_checked, "shorts_probe": bool(is_shorts)}
 
     def _verdict(self, subs, recent, mode, format_used, is_shorts, sig,
-                 total_views=None, channel_age_days=None, short_share=None):
+                 total_views=None, channel_age_days=None, short_share=None,
+                 lifetime_short_share=None):
         """Decide monetized / not, always answering, with a certainty score and
         an evidence checklist. Ported from the legacy algorithm.
 
@@ -502,7 +524,9 @@ class MonetizeVM(QObject):
         proof_hits = [c for c in checks if c["kind"] == "proof" and c["ok"]]
 
         # ODDS · the thresholds YouTube actually applies
-        est = self._estimate_ypp(recent, total_views, channel_age_days, short_share)
+        est = self._estimate_ypp(recent, total_views, channel_age_days,
+                                 short_share=short_share,
+                                 lifetime_short_share=lifetime_short_share)
         watch_hours, shorts_90d = est["watch_hours"], est["shorts_90d"]
         shorts_avg = est["shorts_avg_90d"]
         watch_avg = est["watch_avg_year"]
@@ -693,9 +717,14 @@ class MonetizeVM(QObject):
         #     taper (a 60-day-old video ~11%).
         # The recent uploads' LIFETIME views are excluded from the catalogue
         # base, so nothing is counted twice.
+        # The format is decided first: the next-30-days projection is split per
+        # format below, and the verdict needs to know which route to check.
+        format_used, is_shorts = self._detect_format(recent, mode)
+        revenue_format_used = format_used
+
         _P = 0.25                      # view-decay exponent (fitted shape)
-        recent_views = sum(self._views_of(v) for v in recent)
-        future30 = 0.0
+        future30_short = future30_long = 0.0
+        recent_short_views = recent_long_views = 0
         for v in recent:
             views = self._views_of(v)
             if views <= 0:
@@ -704,11 +733,22 @@ class MonetizeVM(QObject):
             if age is None:
                 continue               # undateable upload: not projectable
             age = max(float(age), 0.5)
-            future30 += views * (((age + 30.0) ** _P - age ** _P)
-                                 / (age ** _P))
-        catalogue_daily = 0.0
+            nxt = views * (((age + 30.0) ** _P - age ** _P)
+                           / (age ** _P))
+            # Each recent upload's next month belongs to that upload's OWN
+            # format, which is known exactly from its duration and date.
+            if self._is_probably_short(v):
+                future30_short += nxt
+                recent_short_views += views
+            else:
+                future30_long += nxt
+                recent_long_views += views
+        recent_views = recent_short_views + recent_long_views
+        future30 = future30_short + future30_long
         age_days = days_since(snip.get("publishedAt"))
-        if age_days is not None and total_views > recent_views:
+        catalogue_views = max(0.0, float(total_views) - recent_views)
+        catalogue_daily = 0.0
+        if age_days is not None and catalogue_views:
             # Lifetime average over the channel's whole age, for the videos
             # OUTSIDE the recent list. days_since(), NOT hours_since(): the
             # channel's own publishedAt can be unreadable (fractional seconds,
@@ -716,19 +756,11 @@ class MonetizeVM(QObject):
             # — billions of views a month for a channel doing a fraction of
             # that. Unreadable → the catalogue term is dropped rather than
             # guessed; the recent uploads still carry the estimate.
-            catalogue_daily = ((total_views - recent_views)
-                               / max(age_days, 30.0))
+            catalogue_daily = catalogue_views / max(age_days, 30.0)
         daily = catalogue_daily + future30 / 30.0
         monthly, yearly = daily * 30.0, daily * 30.0 * 12.0
 
         # revenue priced off niche + audience market (RPM, not one flat CPM)
-        # Fixed: split Shorts vs long-form views instead of pricing every view
-        # at one format's RPM. Pricing 8M Shorts views at a long-form $5 RPM
-        # overstates by ~100x (the bug behind "$46K/mo for a Shorts channel"
-        # that external checkers priced at a few hundred). Each side is now
-        # priced at its own pool rate and summed.
-        format_used, is_shorts = self._detect_format(recent, mode)
-        revenue_format_used = format_used
         branding = (item.get("brandingSettings", {}).get("channel", {}) or {})
         # Hand the RAW topicCategories through, not their words appended to the
         # description. They are YouTube's own niche label for the channel and
@@ -744,20 +776,39 @@ class MonetizeVM(QObject):
             topics=topics)
         rpm_short = estimate_rpm(niche_row, snip.get("country", ""), True)
         rpm_long = estimate_rpm(niche_row, snip.get("country", ""), False)
-        # view-share per format from recent uploads (view-weighted, not
-        # count-weighted). Forced modes lock the share; auto falls back to
-        # the detected dominant format when there is no recent data.
+        # ── Shorts vs long-form share of the PROJECTED views ─────────────
+        # The old model took the recent-50 Shorts share and applied it to every
+        # projected view, back catalogue included. On a channel that has pivoted
+        # to Shorts that priced decades of long-form views at the Shorts pool
+        # rate — MrBeast (81.5% of his recent views are Shorts) came out at
+        # $494K/month, while the same views at his long-form band are worth
+        # ~$1.3M — and it flattered the reverse case, an old long-form channel
+        # that now posts Shorts. Two facts fix it:
+        #   * the next 30 days of the recent uploads are split by each video's
+        #     OWN format, which is known exactly (future30_short/_long);
+        #   * a back catalogue that predates Shorts cannot contain Shorts
+        #     views, so the sample's share is capped by the fraction of the
+        #     channel's life that falls inside the Shorts era.
+        sample_share = ((recent_short_views / recent_views) if recent_views
+                        else (1.0 if revenue_format_used == "short" else 0.0))
         if mode == "short":
-            short_share = 1.0
+            short_share = lifetime_short_share = 1.0
         elif mode == "long":
-            short_share = 0.0
-        elif recent:
-            sv = sum(self._views_of(v) for v in recent if self._is_probably_short(v))
-            lv = sum(self._views_of(v) for v in recent if not self._is_probably_short(v))
-            tot = sv + lv
-            short_share = (sv / tot) if tot else (1.0 if revenue_format_used == "short" else 0.0)
+            short_share = lifetime_short_share = 0.0
         else:
-            short_share = 1.0 if revenue_format_used == "short" else 0.0
+            era_fraction = 1.0
+            if age_days is not None:
+                era_fraction = min(
+                    1.0, (days_since(SHORTS_ERA_START) or 0.0)
+                    / max(float(age_days), 1.0))
+            cat_short_share = sample_share * era_fraction
+            daily_short = catalogue_daily * cat_short_share + future30_short / 30.0
+            daily_long = (catalogue_daily * (1.0 - cat_short_share)
+                          + future30_long / 30.0)
+            short_share = (daily_short / daily) if daily else sample_share
+            lifetime_short_share = (
+                (recent_short_views + catalogue_views * cat_short_share)
+                / total_views if total_views else sample_share)
         # The verdict needs two page scrapes; do them ONCE here and cache the
         # result, so a language switch can rebuild every translated string
         # without touching YouTube again (see _assemble / retranslate).
@@ -777,6 +828,7 @@ class MonetizeVM(QObject):
             "signals": signals,
             "daily": daily, "monthly": monthly, "yearly": yearly,
             "short_share": short_share,
+            "lifetime_short_share": lifetime_short_share,
             "channel_age_days": age_days,
             "revenue_format_used": revenue_format_used,
             "rpm_short": rpm_short, "rpm_long": rpm_long,
@@ -860,7 +912,9 @@ class MonetizeVM(QObject):
                                      ctx["is_shorts"], ctx["signals"],
                                      total_views=total_views,
                                      channel_age_days=ctx.get("channel_age_days"),
-                                     short_share=short_share)
+                                     short_share=short_share,
+                                     lifetime_short_share=ctx.get(
+                                         "lifetime_short_share"))
 
         thumbs = snip.get("thumbnails", {})
         thumb_url = (thumbs.get("high") or thumbs.get("medium")

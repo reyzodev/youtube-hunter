@@ -7,6 +7,28 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased: Monetize Checker — revenue priced per format, not per sample
+
+- The Shorts/long-form split was taken from the last 50 uploads and applied to
+  **every** projected view, back catalogue included. On a channel that now
+  posts Shorts that priced decades of long-form views at the Shorts pool rate:
+  MrBeast (81.5% of his recent views are Shorts) read $494K/month when the same
+  views at his long-form band are worth ~$1.3M; Nas Daily read $10K/month
+  against ~$200K. The next 30 days are now split by each upload's **own**
+  format, and the back catalogue by a Shorts share capped at the part of the
+  channel's life in which Shorts existed at all.
+- A sub-3-minute upload published **before Shorts existed** is long-form, not a
+  Short. The duration-only rule was pricing a 2015 six-second clip at the
+  Shorts pool rate.
+- YouTube returns `topicCategories` in a varying order, and a tied niche score
+  fell back to whichever topic arrived first: the same channel could read
+  "Education" (≈$7 RPM) on one check and "Entertainment" (≈$1.65) on the next.
+  Ties now break on match specificity, then match count, then a fixed table
+  order — the same inputs always give the same band.
+- The Partner-Program estimate uses the current projected Shorts share for its
+  90-day window and a lifetime Shorts share for lifetime averages, instead of
+  one recent-sample share for both.
+
 ## Unreleased: Monetize Checker — seconds, not minutes
 
 - A long-form check fetched the channel page and then four watch pages **one
