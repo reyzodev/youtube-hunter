@@ -7,6 +7,26 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased: Monetize Checker — seconds, not minutes
+
+- A long-form check fetched the channel page and then four watch pages **one
+  after another**. Each of those pages is ~1.4 MB, so on a slow connection one
+  check could sit for 3-5 minutes doing nothing but waiting. The channel page
+  and every video probe now start together (`check_signals`) and the check
+  waits for the slowest request instead of the sum.
+- The pages are requested with `Accept-Encoding: gzip`: measured on a watch
+  page, 1,426,904 bytes of HTML travel as 334,224 bytes — **4.3x less data**.
+  A proxy that mangles the stream falls back to the raw bytes instead of
+  losing the page. The same fetch backs the channel avatar and video-identity
+  lookups in Downloads, which get the smaller transfer too.
+- Two video probes per check instead of four (a Shorts channel: two Shorts
+  plus one long-form upload, instead of four plus three). Ads, Super Thanks
+  and mid-roll breaks are still read, and the checklist names how many videos
+  were actually checked.
+- Scraped signals are cached for 20 minutes, so re-checking the same channel —
+  or switching the UI language — makes no page request at all. A failed fetch
+  is never cached, so a network hiccup retries on the next check.
+
 ## Unreleased: Search Archive — cold open without a black grid
 
 - The 24-card deck was armed by a blind 1.5 s timer after the page was

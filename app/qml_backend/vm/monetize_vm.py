@@ -22,8 +22,7 @@ import traceback
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.config import load_app_config
-from app.core.monetization import (check_channel_page_signals,
-                                   check_video_monetization_signal)
+from app.core.monetization import check_signals
 from app.core.niche.helpers import SHORT_MAX_SECONDS
 from app.core.rpm import SHORTS_LONG_VALUE_RATIO
 from app.core.rpm import detect_channel_niche, estimate_rpm
@@ -369,55 +368,56 @@ class MonetizeVM(QObject):
         return out
 
     def _gather_signals(self, channel_id, recent, is_shorts):
-        """The two page scrapes the verdict needs — run ONCE per check.
+        """The page scrapes the verdict needs — run ONCE per check.
 
         Kept separate from the verdict so that a LANGUAGE SWITCH can rebuild
         every translated string from these already-gathered numbers without
         hitting YouTube again (see _verdict / _assemble / retranslate). Returns
         plain numbers only — no translated text — so it is safe to cache.
-        """
-        page = check_channel_page_signals(channel_id)
 
+        Two video probes, not four, and they run at the same time as the
+        channel page (check_signals) instead of after it. Each of these pages
+        is ~1.4 MB of HTML (gzipped to ~330 KB on the wire), so a long-form
+        channel used to cost five full page loads one after another — which is
+        exactly where a check could sit for minutes. Two probes still cover the
+        signals that matter: ads, Super Thanks and mid-roll breaks.
+        """
         def _dur(v):
             return parse_iso8601_duration(
                 v.get("contentDetails", {}).get("duration", ""))
 
         longs = [v for v in recent if _dur(v) > 240]
         shorts = [v for v in recent if self._is_probably_short(v)]
-        super_thanks = midrolls = ads_seen = 0
-        ads_checked = 0
-        checked_any = False
 
-        def probe(v, as_short, count_ads):
-            nonlocal super_thanks, midrolls, ads_seen, ads_checked, checked_any
-            vid = v.get("id")
-            if not vid:
-                return
-            sig = check_video_monetization_signal(vid, as_short)
+        # (row, as_short, count_ads) — see the v1.3 note below for the split.
+        if not is_shorts:
+            check_list = (longs or recent)[:2]
+            probe_rows = [(v, False, True) for v in check_list]
+        else:
+            # A Short has no ad slot of its own: Shorts ads play BETWEEN
+            # Shorts in the feed and the revenue is pooled, so the player
+            # response of a Short never carries adPlacements, however long it
+            # is "watched". Probing Shorts for ads could only ever say NOT
+            # FOUND. The Shorts are still read for Super Thanks (that one does
+            # exist on Shorts); the ad probe goes to the channel's own
+            # long-form uploads, where an ad slot is real evidence.
+            check_list = (shorts or recent)[:2]
+            probe_rows = [(v, True, False) for v in check_list]
+            probe_rows += [(v, False, True) for v in longs[:1]]
+        probe_rows = [(v, a, c) for v, a, c in probe_rows if v.get("id")]
+
+        page, sigs = check_signals(
+            channel_id, [(v["id"], a) for v, a, _ in probe_rows])
+
+        super_thanks = midrolls = ads_seen = ads_checked = 0
+        checked_any = False
+        for (_row, _as_short, count_ads), sig in zip(probe_rows, sigs):
             checked_any = checked_any or sig["ok"]
             super_thanks += 1 if sig.get("super_thanks") else 0
             if count_ads:
                 ads_checked += 1
                 midrolls += 1 if sig.get("midroll") else 0
                 ads_seen += 1 if sig.get("ads") else 0
-
-        if not is_shorts:
-            check_list = (longs or recent)[:4]
-            for v in check_list:
-                probe(v, False, True)
-        else:
-            # v1.3 — a Short has no ad slot of its own: Shorts ads play BETWEEN
-            # Shorts in the feed and the revenue is pooled, so the player
-            # response of a Short never carries adPlacements, however long it
-            # is "watched". Probing four Shorts for ads could only ever say
-            # NOT FOUND. The Shorts are still read for Super Thanks (that one
-            # does exist on Shorts); the ad probe goes to the channel's own
-            # long-form uploads, where an ad slot is real evidence.
-            check_list = (shorts or recent)[:4]
-            for v in check_list:
-                probe(v, True, False)
-            for v in longs[:3]:
-                probe(v, False, True)
         return {"page": page, "checked_any": checked_any,
                 "super_thanks": super_thanks, "midrolls": midrolls,
                 "ads_seen": ads_seen, "n_checked": max(1, len(check_list)),
