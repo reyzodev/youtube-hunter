@@ -79,6 +79,15 @@ Item {
     // A delete / clear-all can shrink the list under the current page.
     onClipsPageCountChanged: if (clipsPage > clipsPageCount - 1) clipsPage = clipsPageCount - 1
 
+    // live extension cuts on the strip (running count, for the tally + label)
+    readonly property int extStripLive: {
+        var n = 0
+        var list = Cutter.extCuts
+        for (var i = 0; i < list.length; ++i)
+            if (list[i].phase === "running") n++
+        return n
+    }
+
     // 0 source · 1 segment · 2 export — drives the header tracker.
     readonly property int _stage: Cutter.hasResult || Cutter.cutting ? 2
                                 : Cutter.hasInfo ? 1 : 0
@@ -159,6 +168,9 @@ Item {
     }
     function _previewClip() {
         if (!Cutter.hasInfo || Cutter.endSec <= Cutter.startSec) return
+        // A live preview has no random access (see _syncSound), so it just
+        // plays the live edge — the timeline still picks the window to cut.
+        if (Cutter.isLive) { previewPlayer.play(); return }
         previewPlayer.position = Cutter.startSec * 1000
         page._clipPreview = true
         previewPlayer.play()
@@ -178,14 +190,14 @@ Item {
     // before the In) carries the other edge along, keeping the clip's length,
     // rather than collapsing the clip to zero.
     function _markIn() {
-        if (!page._armed) return
+        if (!page._armed || Cutter.isLive) return
         var p = Math.round(page._posSec)
         var len = Math.max(1, page._clipLen)
         if (p >= Cutter.endSec) page._setRange(p, Math.min(Cutter.durationSec, p + len))
         else Cutter.startSec = p
     }
     function _markOut() {
-        if (!page._armed) return
+        if (!page._armed || Cutter.isLive) return
         var p = Math.round(page._posSec)
         var len = Math.max(1, page._clipLen)
         if (p <= Cutter.startSec) page._setRange(Math.max(0, p - len), Math.max(1, p))
@@ -297,6 +309,9 @@ Item {
     Timer { id: soundCooldown; interval: 900; repeat: false }
     function _syncSound(force) {
         if (!page._splitAudio) return
+        // Live: neither rendition can seek, so the sound simply starts with
+        // the picture and both ride the live edge.
+        if (Cutter.isLive) return
         var v = previewPlayer.position
         var d = Math.abs(previewSound.position - v)
         if (force || d > page._driftMs) {
@@ -320,6 +335,7 @@ Item {
             }
         }
         function onPositionChanged() {
+            if (Cutter.isLive) return
             if (!page._playing) {
                 // Scrubbing while paused: keep the sound parked on the frame.
                 if (Math.abs(previewSound.position - previewPlayer.position) > 40)
@@ -348,6 +364,7 @@ Item {
     Connections {
         target: previewPlayer
         function onPositionChanged() {
+            if (Cutter.isLive) return
             if (page._clipPreview
                     && previewPlayer.position >= Cutter.endSec * 1000) {
                 if (page._loop && Cutter.endSec > Cutter.startSec) {
@@ -363,9 +380,10 @@ Item {
         function onErrorOccurred(error, errorString) {
             page._clipPreview = false
             // Expired/blocked URLs just need a fresh URL — the VM re-resolves.
-            if (error === MediaPlayer.ResourceError
-                    || error === MediaPlayer.NetworkError
-                    || error === MediaPlayer.AccessDeniedError) {
+            if (Cutter.mode === 0
+                    && (error === MediaPlayer.ResourceError
+                        || error === MediaPlayer.NetworkError
+                        || error === MediaPlayer.AccessDeniedError)) {
                 page._previewFailed = false
                 page._previewError = ""
                 Cutter.refreshPreview()
@@ -1297,15 +1315,19 @@ Item {
                         background: null
                         leftPadding: 0
                         verticalAlignment: TextInput.AlignVCenter
-                        // Re-bind after Enter: typing breaks the `text:` binding,
-                        // so without this later timeline drags would stop
-                        // updating the box.
-                        onAccepted: {
+                        // Re-bind after commit: typing breaks the `text:`
+                        // binding, so without this later timeline drags would
+                        // stop updating the box. editingFinished also covers
+                        // clicking away — a typed time used to be dropped when
+                        // the user went straight for Cut.
+                        onEditingFinished: {
                             if (ec.isStart) Cutter.setStartText(text)
                             else Cutter.setEndText(text)
                             text = Qt.binding(function () { return ec.edgeLabel })
-                            page._seekEdge(ec.which)
-                            timeField.focus = false
+                            if (timeField.activeFocus) {
+                                page._seekEdge(ec.which)
+                                timeField.focus = false
+                            }
                         }
                         Keys.onEscapePressed: {
                             text = Qt.binding(function () { return ec.edgeLabel })
@@ -1640,6 +1662,210 @@ Item {
                     }
                 }
 
+                // ── live cuts started from the browser extension ──
+                // The corner card only appears while the app is hidden. With
+                // the window open, an extension cut must still be VISIBLE —
+                // title, range, progress, cancel — right here.
+                C.GlassPanel {
+                    id: extStrip
+                    Layout.fillWidth: true
+                    radius_: Tokens.radiusLg
+                    visible: Cutter.extCuts.length > 0
+                    implicitHeight: extCol.implicitHeight + Tokens.space3 * 2
+
+                    ColumnLayout {
+                        id: extCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Tokens.space3
+                        spacing: Tokens.space2
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Tokens.space2
+                            Rectangle {
+                                width: 8; height: 8; radius: 4
+                                Layout.alignment: Qt.AlignVCenter
+                                color: extStripLive > 0 ? Theme.error : Theme.secondary_container
+                                SequentialAnimation on opacity {
+                                    running: extStripLive > 0 && page.visible
+                                    loops: Animation.Infinite
+                                    alwaysRunToEnd: true
+                                    NumberAnimation { to: 0.25; duration: 520; easing.type: Easing.InOutQuad }
+                                    NumberAnimation { to: 1.0; duration: 520; easing.type: Easing.InOutQuad }
+                                }
+                            }
+                            C.AppText {
+                                text: I18n.rtl ? I18n.tr("From the browser extension")
+                                               : I18n.tr("FROM THE BROWSER EXTENSION")
+                                weight: Tokens.weightBold
+                                font.pixelSize: Tokens.fontMicro
+                                font.letterSpacing: I18n.rtl ? 0 : 1.1
+                                color: Theme.on_surface_var
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+                            Item { Layout.fillWidth: true }
+                            C.AppText {
+                                text: extStripLive > 0
+                                      ? I18n.tr("{n} cutting").replace("{n}", extStripLive)
+                                      : I18n.tr("{n} done").replace("{n}", Cutter.extCuts.length - extStripLive)
+                                mono: true
+                                font.pixelSize: Tokens.fontMicro
+                                color: Theme.outline
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+                        }
+
+                        Repeater {
+                            model: Cutter.extCuts
+                            delegate: Rectangle {
+                                id: extRow
+                                required property var modelData
+                                readonly property bool _running: modelData.phase === "running"
+                                Layout.fillWidth: true
+                                implicitHeight: 58
+                                radius: Tokens.radiusMd
+                                color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.04 : 0.03)
+                                border.width: 1
+                                border.color: extRow._running
+                                              ? U.withAlpha(Theme.primary, 0.35) : Theme.border
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: Tokens.space2
+                                    anchors.rightMargin: Tokens.space2
+                                    spacing: Tokens.space3
+
+                                    Rectangle {
+                                        Layout.preferredWidth: 64
+                                        Layout.preferredHeight: 40
+                                        Layout.alignment: Qt.AlignVCenter
+                                        radius: Tokens.radiusSm
+                                        color: Theme.surface_high
+                                        clip: true
+                                        Image {
+                                            anchors.fill: parent
+                                            source: extRow.modelData.thumbId !== ""
+                                                    ? "image://thumbs/" + extRow.modelData.thumbId : ""
+                                            fillMode: Image.PreserveAspectCrop
+                                            visible: status === Image.Ready
+                                        }
+                                        C.IconGlyph {
+                                            anchors.centerIn: parent
+                                            name: "scissors"; size: 16
+                                            glyphColor: Theme.outline
+                                            visible: !extRow._running
+                                        }
+                                        // live scan line: says "this is happening now"
+                                        Rectangle {
+                                            visible: extRow._running
+                                            width: parent.width * 0.35
+                                            height: 2
+                                            radius: 1
+                                            color: Theme.error
+                                            SequentialAnimation on x {
+                                                running: extRow._running && page.visible
+                                                loops: Animation.Infinite
+                                                NumberAnimation { from: -extRow.width * 0.35; to: extRow.width; duration: 1600; easing.type: Easing.InOutQuad }
+                                            }
+                                            anchors.bottom: parent.bottom
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 3
+                                        C.AppText {
+                                            Layout.fillWidth: true
+                                            text: extRow.modelData.title
+                                            weight: Tokens.weightDemiBold
+                                            font.pixelSize: Tokens.fontCaption + 1
+                                            color: Theme.text_strong
+                                            elide: Text.ElideRight
+                                        }
+                                        C.AppText {
+                                            Layout.fillWidth: true
+                                            text: (extRow.modelData.rangeText !== "" ? extRow.modelData.rangeText + "  ·  " : "")
+                                                  + (extRow.modelData.phase === "success"
+                                                     ? I18n.tr("Saved")
+                                                       + (extRow.modelData.sizeText !== "" ? "  ·  " + extRow.modelData.sizeText : "")
+                                                     : extRow.modelData.phase === "error"
+                                                       ? (extRow.modelData.message !== "" ? extRow.modelData.message : I18n.tr("Failed"))
+                                                       : extRow.modelData.stage)
+                                            mono: true
+                                            font.pixelSize: Tokens.fontMicro
+                                            color: extRow.modelData.phase === "error" ? Theme.error
+                                                   : extRow.modelData.phase === "success" ? Theme.secondary_container
+                                                   : Theme.on_surface_var
+                                            elide: Text.ElideRight
+                                        }
+                                        Rectangle {
+                                            visible: extRow._running
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 3
+                                            radius: 1.5
+                                            color: Theme.surface_high
+                                            Rectangle {
+                                                width: parent.width * Math.max(0, Math.min(1, extRow.modelData.pct / 100))
+                                                height: parent.height
+                                                radius: 1.5
+                                                color: Theme.primary
+                                                Behavior on width { NumberAnimation { duration: Tokens.durFast } }
+                                            }
+                                        }
+                                    }
+
+                                    C.AppText {
+                                        visible: extRow._running
+                                        text: extRow.modelData.pct + "%"
+                                        mono: true
+                                        weight: Tokens.weightBold
+                                        font.pixelSize: Tokens.fontCaption
+                                        color: Theme.text_strong
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+                                    C.PrimaryButton {
+                                        visible: extRow._running
+                                        variant: "ghost"
+                                        text: I18n.tr("Cancel")
+                                        implicitHeight: 34
+                                        Layout.alignment: Qt.AlignVCenter
+                                        onClicked: Cutter.cancelExtCut(extRow.modelData.id)
+                                    }
+                                    C.PrimaryButton {
+                                        visible: !extRow._running && extRow.modelData.path !== ""
+                                        variant: "ghost"
+                                        iconName: "play_arrow"
+                                        text: I18n.tr("Play")
+                                        implicitHeight: 34
+                                        Layout.alignment: Qt.AlignVCenter
+                                        onClicked: {
+                                            var info = Cutter.extCutPlayInfo(extRow.modelData.id)
+                                            if (info && info.fileUrl) clipPlayer.play(info)
+                                        }
+                                    }
+                                    AbstractButton {
+                                        id: extRowClose
+                                        visible: !extRow._running
+                                        implicitWidth: 30
+                                        implicitHeight: 30
+                                        Layout.alignment: Qt.AlignVCenter
+                                        onClicked: Cutter.dismissExtCut(extRow.modelData.id)
+                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                        background: Item { }
+                                        contentItem: C.IconGlyph {
+                                            name: "close"; size: 15
+                                            glyphColor: extRowClose.hovered ? Theme.text_strong : Theme.outline
+                                            anchors.centerIn: parent
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── source dock ──
                 C.GlassPanel {
                     id: sourceDock
@@ -1762,7 +1988,7 @@ Item {
                                         text: Cutter.link
                                         onTextChanged: Cutter.link = text
                                         onAccepted: if (!Cutter.probing) Cutter.fetchInfo()
-                                        enabled: !Cutter.cutting
+                                        enabled: !Cutter.cutting && !Cutter.probing
                                         placeholderText: "https://www.youtube.com/watch?v=…"
                                         placeholderTextColor: Theme.outline
                                         color: Theme.on_surface
@@ -2797,6 +3023,12 @@ Item {
                                           : I18n.tr("Preview without sound")
                                 }
                                 InfoChip {
+                                    glyph: "smart_display"
+                                    tint: Theme.primary
+                                    text: Cutter.isLive
+                                          ? I18n.tr("Live — DVR buffer ({d})").replace("{d}", Cutter.durationText) : ""
+                                }
+                                InfoChip {
                                     glyph: "bolt"
                                     text: Cutter.mode === 0 && Cutter.durationSec >= 3600
                                           ? I18n.tr("Light preview for long video") : ""
@@ -3071,8 +3303,13 @@ Item {
                                         Layout.preferredWidth: 1
                                         implicitHeight: 64
                                         text: modelData.label
-                                        checkable: true
-                                        checked: Cutter.qualityIndex === index && !Cutter.audioOnly
+                                        // checkable would let AbstractButton
+                                        // toggle its own `checked`, breaking
+                                        // the binding: a click on the selected
+                                        // tile cleared its tick while the VM
+                                        // still used that quality.
+                                        checkable: false
+                                        readonly property bool isOn: Cutter.qualityIndex === index && !Cutter.audioOnly
                                         enabled: !Cutter.cutting
                                         hoverEnabled: true
                                         opacity: enabled ? 1 : 0.5
@@ -3088,15 +3325,15 @@ Item {
                                         Behavior on scale { NumberAnimation { duration: Tokens.durFast } }
                                         background: Rectangle {
                                             radius: Tokens.radiusMd
-                                            color: qTile.checked ? U.withAlpha(Theme.primary, 0.13)
+                                            color: qTile.isOn ? U.withAlpha(Theme.primary, 0.13)
                                                    : qTile.hovered ? U.hoverTint(Theme.surface_low, Theme.isDark)
                                                    : Theme.surface_low
-                                            border.width: qTile.checked ? 2 : 1
-                                            border.color: qTile.checked ? Theme.primary
+                                            border.width: qTile.isOn ? 2 : 1
+                                            border.color: qTile.isOn ? Theme.primary
                                                         : qTile.hovered ? U.withAlpha(Theme.primary, 0.35) : Theme.border
                                             Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
                                             Rectangle {
-                                                visible: qTile.checked
+                                                visible: qTile.isOn
                                                 anchors.right: parent.right
                                                 anchors.top: parent.top
                                                 anchors.margins: 5
@@ -3122,7 +3359,7 @@ Item {
                                                         mono: true
                                                         weight: Tokens.weightExtraBold
                                                         font.pixelSize: Tokens.fontBody
-                                                        color: qTile.checked ? Theme.primary : Theme.text_strong
+                                                        color: qTile.isOn ? Theme.primary : Theme.text_strong
                                                     }
                                                     Rectangle {
                                                         visible: qTile.tier !== ""
@@ -3216,19 +3453,19 @@ Item {
                                 id: aOnly
                                 Layout.fillWidth: true
                                 implicitHeight: 52
-                                checkable: true
-                                checked: Cutter.audioOnly
+                                checkable: false
+                                readonly property bool isOn: Cutter.audioOnly
                                 enabled: !Cutter.cutting
                                 opacity: enabled ? 1 : 0.5
                                 onClicked: Cutter.setAudioOnly(true)
                                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                                 background: Rectangle {
                                     radius: Tokens.radiusMd
-                                    color: aOnly.checked ? U.withAlpha(Theme.primary, 0.13)
+                                    color: aOnly.isOn ? U.withAlpha(Theme.primary, 0.13)
                                            : aOnly.hovered ? U.hoverTint(Theme.surface_low, Theme.isDark)
                                            : Theme.surface_low
-                                    border.width: aOnly.checked ? 2 : 1
-                                    border.color: aOnly.checked ? Theme.primary
+                                    border.width: aOnly.isOn ? 2 : 1
+                                    border.color: aOnly.isOn ? Theme.primary
                                                 : aOnly.hovered ? U.withAlpha(Theme.primary, 0.35) : Theme.border
                                 }
                                 contentItem: RowLayout {
@@ -3236,7 +3473,7 @@ Item {
                                     C.IconGlyph {
                                         Layout.leftMargin: Tokens.space3
                                         name: "music"; size: 18
-                                        glyphColor: aOnly.checked ? Theme.primary : Theme.on_surface_var
+                                        glyphColor: aOnly.isOn ? Theme.primary : Theme.on_surface_var
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true
@@ -3244,7 +3481,7 @@ Item {
                                         C.AppText {
                                             text: I18n.tr("Audio only")
                                             weight: Tokens.weightBold
-                                            color: aOnly.checked ? Theme.primary : Theme.text_strong
+                                            color: aOnly.isOn ? Theme.primary : Theme.text_strong
                                         }
                                         C.AppText {
                                             text: I18n.tr("No picture, just the sound")
@@ -3752,7 +3989,9 @@ Item {
                     id: dockTally
                     width: 12; height: 12; radius: 6
                     anchors.verticalCenter: parent.verticalCenter
-                    color: Cutter.cutting ? Theme.error : Cutter.canCut ? Theme.primary : Theme.outline
+                    color: Cutter.cutPaused ? Theme.warn
+                           : Cutter.cutting ? Theme.error
+                           : Cutter.canCut ? Theme.primary : Theme.outline
                     Rectangle {
                         anchors.centerIn: parent
                         width: 24; height: 24; radius: 12
@@ -3771,10 +4010,14 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 0
                     C.AppText {
-                        text: Cutter.cutting ? I18n.tr("Cutting…") : I18n.tr("Clip length")
+                        text: Cutter.cutPaused ? I18n.tr("Paused")
+                              : Cutter.cutting ? I18n.tr("Cutting…")
+                              : I18n.tr("Clip length")
                         weight: Tokens.weightDemiBold
                         font.pixelSize: Tokens.fontMicro
-                        color: Cutter.cutting ? Theme.error : Theme.on_surface_var
+                        color: Cutter.cutPaused ? Theme.warn
+                               : Cutter.cutting ? Theme.error
+                               : Theme.on_surface_var
                     }
                     C.AppText {
                         text: Cutter.cutting && Cutter.cutPct > 0 ? Cutter.cutPct + "%" : page._fmt(page._clipLen * 1000)
@@ -3877,6 +4120,15 @@ Item {
             }
             C.PrimaryButton {
                 variant: "ghost"
+                iconName: Cutter.cutPaused ? "play_arrow" : "pause"
+                text: Cutter.cutPaused ? I18n.tr("Resume") : I18n.tr("Pause")
+                visible: Cutter.cutting
+                implicitHeight: 52
+                Layout.alignment: Qt.AlignVCenter
+                onClicked: Cutter.cutPaused ? Cutter.resumeCut() : Cutter.pauseCut()
+            }
+            C.PrimaryButton {
+                variant: "ghost"
                 text: I18n.tr("Cancel")
                 visible: Cutter.cutting
                 implicitHeight: 52
@@ -3891,9 +4143,11 @@ Item {
             C.PrimaryButton {
                 id: cutBtn
                 iconName: "scissors"
-                text: Cutter.cutting
-                      ? (Cutter.cutPct > 0 ? I18n.tr("Cutting…") + "  " + Cutter.cutPct + "%" : I18n.tr("Cutting…"))
-                      : I18n.tr("Cut & Download")
+                text: Cutter.cutPaused
+                      ? I18n.tr("Paused")
+                      : Cutter.cutting
+                        ? (Cutter.cutPct > 0 ? I18n.tr("Cutting…") + "  " + Cutter.cutPct + "%" : I18n.tr("Cutting…"))
+                        : I18n.tr("Cut & Download")
                 enabled: Cutter.canCut
                 implicitHeight: 52
                 implicitWidth: Math.max(220, contentItem.implicitWidth + Tokens.space6 * 2)

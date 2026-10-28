@@ -2146,10 +2146,19 @@ class _ProgressAggregator:
         stream's estimate landed — 100 belongs to the finished file on disk.
         """
         self._finished += 1
-        if self._finished >= self.expected:
+        if self.all_finished():
             self._floor = max(self._floor, 99)
         return self._floor
 
+    def all_finished(self):
+        """True once every expected stream has completed.
+
+        yt-dlp fires a `finished` hook per stream, so on an adaptive pick the
+        video stream finishing is NOT the end of the transfer. Callers use this
+        to keep saying "merging" for the real end of the download instead of
+        announcing it while the audio half is still arriving.
+        """
+        return self._finished >= self.expected
 
 
 # ── output format (container / audio codec) ─────────────────────────────
@@ -2802,7 +2811,8 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
             pct = progress.note_finished()
             if on_progress:
                 on_progress(pct)
-            _status(tr("Merging…"))          # ffmpeg mux still to come
+            if progress.all_finished():
+                _status(tr("Merging…"))      # ffmpeg mux still to come
 
 
 
@@ -3306,20 +3316,24 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                 # from zero ("downloads twice") and then sat on
                 # "Downloading 100%" while still running — 100 belongs to the
                 # finished file on disk (_on_dl_done), never to an in-flight
-                # row. Progress stays pinned at 99; the row keeps its
-                # "Merging…" indeterminate state until the worker returns.
-                # Detailed codec messages are also suppressed for the same
-                # reason: they overwrote the "Merging…" text the VMs and QML
-                # match on to show the indeterminate merge state.
-                _status(tr("Merging…"))
+                # row. Progress stays pinned at 99; the row keeps its merging
+                # state until the worker returns. The phase TEXT is let
+                # through: a VP9/AV1 → H.264 re-encode is long, and a generic
+                # "Merging…" made it look stuck (the same complaint the MP3
+                # conversion had). The row is already marked merging, so a
+                # different text here only updates the live line.
+                # Progress goes FIRST: _on_dl_progress persists
+                # status="downloading", so a tick sent after "Merging…" flipped
+                # the row back to a determinate 99% and hid the phase text.
                 if on_progress:
                     try:
                         on_progress(99)
                     except Exception:   # noqa: BLE001 — progress is best-effort
                         pass
+                _status(tr("Merging…"))
 
-                def _conv_status(_t):
-                    return None
+                def _conv_status(text):
+                    _status(text)
 
                 def _conv_progress(_p):
                     return None

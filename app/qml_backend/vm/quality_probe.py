@@ -20,9 +20,11 @@ whose height caps still resolve server-side, so the download stays possible and
 only the size/availability detail is lost.
 """
 
+import os
+import re
 import threading
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 
 from app.config import load_app_config
 from app.core.audio_tracks import audio_tracks_from_formats
@@ -55,11 +57,76 @@ def _size_text(n):
             else f"{v:.1f} {units[i]}")
 
 
-def _row(preset, size=None, exact=False):
+def _saved_fields(hit):
+    """The four `saved*` row fields for a file already on disk, all empty when
+    this quality has not been downloaded for this video."""
+    hit = hit or {}
+    return {
+        "saved": bool(hit),
+        "savedPath": hit.get("path", ""),
+        "savedUrl": hit.get("url", ""),
+        "savedSizeText": _size_text(hit.get("size") or 0),
+    }
+
+
+def saved_files(video_id):
+    """Base quality key → the file this video already has on disk.
+
+    Downloads are named "<title> [<id>] <qualitykey>.<ext>" (see download.py's
+    outtmpl), so one scan of the downloads folder answers "which of these
+    qualities do we already have?" without touching the database — including
+    files downloaded by an older build, which is exactly the case the picker
+    must recognise. A dubbed pick appends its language to the key
+    ("1080p ar"), so files are filed under the key's first token: the picker
+    asks about qualities, and the language is extra detail, not a different
+    rung.
+    """
+    vid = (video_id or "").strip()
+    if not vid:
+        return {}
+    try:
+        from app.core.utils import video_download_dir
+        folder = video_download_dir()
+        names = os.listdir(folder)
+    except OSError:
+        return {}
+    pat = re.compile(r"\[" + re.escape(vid) + r"\]\s*([^.\[\]]*)")
+    out = {}
+    for name in names:
+        low = name.lower()
+        # ".part"/".ytdl" is a transfer still in progress — marking it as
+        # "already downloaded" would offer a truncated file to the player.
+        if ".part" in low or low.endswith(".ytdl"):
+            continue
+        m = pat.search(name)
+        if not m:
+            continue
+        key = m.group(1).strip().lower()
+        if not key:
+            continue
+        path = os.path.join(folder, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        base = key.split()[0]
+        prev = out.get(base)
+        # Several dubs of one tier can sit on disk; the picker only claims
+        # "we have this quality", so the largest file is the representative.
+        if prev is None or size > prev["size"]:
+            out[base] = {"key": key, "path": path, "size": size,
+                         "url": QUrl.fromLocalFile(path).toString()}
+    return out
+
+
+def _row(preset, size=None, exact=False, saved=None):
     """One picker row. `size` None means "not probed" — the row is still
     offered, it just carries no size. `exact` marks a real reported filesize;
-    anything else is an estimate and must be shown as one."""
-    return {
+    anything else is an estimate and must be shown as one. `saved` is a
+    saved_files() entry: the same quality already exists on this device."""
+    row = {
         "key": preset["key"],
         "label": tr(preset["label"]),
         # Once probed, say what will ACTUALLY be fetched ("1920×1080 · 60fps ·
@@ -75,12 +142,36 @@ def _row(preset, size=None, exact=False):
         "sizeBytes": int(size or 0),
         "isAudio": bool(preset.get("audio_only")),
     }
+    row.update(_saved_fields(saved))
+    return row
 
 
 def default_quality_rows():
     """The full preset ladder, sizeless. What a ViewModel's `qualityOptions`
     returns and what the picker shows if a probe fails."""
     return [_row(p) for p in DOWNLOAD_QUALITY_PRESETS]
+
+
+def _apply_saved(rows, saved, top_key=""):
+    """Mark which rows this device already has a file for.
+
+    "Best" and the top real tier are the same download wearing two names: the
+    crown row downloads (and is written as) the top resolution, while the
+    generic "Best" preset writes "best" on disk. So a file saved under either
+    name marks both rows — otherwise the picker would say "not saved" for a
+    file the user can see in their folder. `top_key` is the highest real tier
+    ("" when the probe failed and the ladder is generic).
+    """
+    best_hit = saved.get("best")
+    for row in rows:
+        key = row.get("key")
+        hit = saved.get(key)
+        if hit is None and key == "best":
+            hit = best_hit or (saved.get(top_key) if top_key else None)
+        elif hit is None and top_key and key == top_key:
+            hit = best_hit
+        row.update(_saved_fields(hit))
+    return rows
 
 
 class QualityProbeVM(QObject):
@@ -306,7 +397,12 @@ class QualityProbeVM(QObject):
         if not ok:
             log_crash("QualityProbeVM: no rows: " + str(err))
             return None, err or "probe failed"
-        return [_row(p, p.get("size"), p.get("size_exact")) for p in opts], ""
+        rows = [_row(p, p.get("size"), p.get("size_exact")) for p in opts]
+        # Rows arrive preset-ordered (best first), so the first real video
+        # tier is the video's top — the tier the crown column stands for.
+        top_key = next((r["key"] for r in rows
+                        if not r.get("isAudio") and r.get("key") != "best"), "")
+        return _apply_saved(rows, saved_files(self._video_id), top_key), ""
 
     def _recompute(self):
         """Re-size the rows for a new output format, from the cached
@@ -443,7 +539,10 @@ class QualityProbeVM(QObject):
             self._probed = True
             self._error = ""
         else:
-            self._rows = default_quality_rows()
+            # The probe failed, but what is already on disk is still known:
+            # the generic ladder keeps its saved markers.
+            self._rows = _apply_saved(default_quality_rows(),
+                                      saved_files(self._video_id))
             self._probed = False
             self._error = error or "probe failed"
             self._limited = False

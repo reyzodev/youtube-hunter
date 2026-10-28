@@ -117,7 +117,14 @@ Item {
     }
     function _statusLine(row, live, pct) {
         var k = page._kind(row.status)
-        if (k === "merging") return I18n.tr("Merging…")
+        if (k === "merging") {
+            // At 99% the engine is muxing or converting. Its live phase text
+            // ("Converting to MP3…") names the long silent step; showing only
+            // a generic "Merging…" made a 10–30 s audio conversion look like a
+            // stuck download.
+            var phase = live ? (live.text || "") : ""
+            return phase !== "" ? phase : I18n.tr("Merging…")
+        }
         if (k === "active") {
             var moving = pct > 0 || (live && (live.doneText || "") !== "")
             if (!moving) {

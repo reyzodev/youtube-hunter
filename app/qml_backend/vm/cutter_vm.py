@@ -14,15 +14,16 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import traceback
 
-from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from app.config import load_app_config
 from app.core.cutter import (
-    DOWNLOAD_CANCELLED, cut_file, cut_link, extract_clip_thumb, fmt_clock,
-    parse_clock, probe_file_with_error, probe_link)
+    DOWNLOAD_CANCELLED, clean_error, cut_file, cut_link, extract_clip_thumb,
+    fmt_clock, parse_clock, probe_file_with_error, probe_link)
 from app.core.db.clips import (
     clips_add, clips_clear, clips_delete, clips_list, clips_update_channel)
 from app.core.db.ideas import DATA_DB_PATH
@@ -69,6 +70,7 @@ class CutterVM(QObject):
     progressChanged = Signal()         # live cut percentage
     labelsChanged = Signal()           # UI language changed
     clipsChanged = Signal()            # persisted clips history changed
+    extCutsChanged = Signal()          # extension-started cuts (live strip)
     toast = Signal(str, str)           # (message, kind)
     audioChanged = Signal()            # v1.2: dub list / picked dub
     # worker → GUI bridges (queued automatically across threads)
@@ -113,10 +115,19 @@ class CutterVM(QObject):
         self._preview_av1 = False
         self._preview_px = 0
         self._preview_refreshed = False
+        # Link whose silent preview refresh is in flight — its result must not
+        # overwrite a preview that a newer probe already applied.
+        self._preview_src = ""
         # True when YouTube only showed 360p-or-less for this read (throttled
         # extraction) — the page banners a fix instead of pretending 360p is
         # all the video has.
         self._thin = False
+        # True when the link is a live stream: the page's timeline is the DVR
+        # buffer and the cut maps the pick by its distance from the live edge.
+        self._live = False
+        # When that buffer length was measured (time.time()) — the buffer
+        # slides, so the cut adds this age to every distance-to-edge.
+        self._live_ts = 0.0
         # v1.2: audio languages of a dubbed video + the user's pick
         # ("" = original). The preview plays the picked language too.
         self._audio_tracks = []
@@ -130,6 +141,7 @@ class CutterVM(QObject):
         # cut run state
         self._cutting = False
         self._cancel = False
+        self._pause = False
         self._cut_pct = 0
         self._cut_written = 0
         self._result_path = ""
@@ -141,6 +153,9 @@ class CutterVM(QObject):
 
         # persisted clips history (survives page switches + restarts)
         self._clips = []
+        # cuts started from the browser extension, shown live on this page
+        self._ext_cuts = {}
+        self._ext_cancel = None
         # source video's channel identity (link mode), recorded with each clip
         self._channel = {}
         # background lane for clip covers + channel backfill (one thread,
@@ -186,10 +201,19 @@ class CutterVM(QObject):
 
     @link.setter
     def link(self, v):
-        v = v or ""
-        if v != self._link:
-            self._link = v
-            self.changed.emit()
+        self._apply_link(v)
+
+    def _apply_link(self, text):
+        text = text or ""
+        if text == self._link:
+            return
+        self._link = text
+        if self._has_info:
+            # The probed duration, range and quality list describe the link
+            # that was read. Keeping them let Cut stay enabled and run on the
+            # NEW link with the old video's numbers.
+            self._reset_info(tr("Read the new link to see its length."))
+        self.changed.emit()
 
     @Slot()
     def pasteLink(self):
@@ -199,8 +223,7 @@ class CutterVM(QObject):
         if not text:
             self.toast.emit(tr("Clipboard is empty."), "error")
             return
-        self._link = text
-        self.changed.emit()
+        self._apply_link(text)
 
     @Property(str, notify=changed)
     def filePath(self):
@@ -237,6 +260,8 @@ class CutterVM(QObject):
         self._preview_px = 0
         self._preview_refreshed = False
         self._thin = False
+        self._live = False
+        self._live_ts = 0.0
         self._audio_tracks = []
         self._audio_track = ""
         self._vfmt = "mp4"
@@ -248,6 +273,9 @@ class CutterVM(QObject):
         self._channel = {}
         self._result_path = ""
         self._result_label = ""
+        # cutDetail is a separate notify group: without this the dock kept
+        # showing the previous clip's size after "New clip"/re-probe.
+        self.progressChanged.emit()
         self._set_status(status, "muted")
 
     def _set_status(self, text, kind="muted"):
@@ -331,6 +359,12 @@ class CutterVM(QObject):
         except (TypeError, ValueError):
             px = 0
         return f"{px}p" if px > 0 else ""
+
+    @Property(bool, notify=changed)
+    def isLive(self):
+        """A live stream: the timeline is YouTube's DVR buffer and the cut
+        is interpreted as \"this window, N seconds before the live edge\"."""
+        return self._mode == 0 and self._has_info and self._live
 
     @Property(bool, notify=changed)
     def thinProbe(self):
@@ -610,7 +644,7 @@ class CutterVM(QObject):
                 self._probed.emit(ok, info, err)
             except Exception as exc:  # noqa: BLE001 — surfaced, not raised
                 log_crash("CutterVM probe failed:\n" + traceback.format_exc())
-                self._probed.emit(False, {}, str(exc))
+                self._probed.emit(False, {}, clean_error(str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -657,13 +691,20 @@ class CutterVM(QObject):
         except (TypeError, ValueError):
             self._preview_px = 0
         self._thin = bool(info.get("thin"))
+        self._live = bool(info.get("live"))
+        self._live_ts = time.time() if self._live else 0.0
         self._preview_refreshed = False
         self._preview_refreshing = False
         self._channel = dict(info.get("channel") or {})
         self._fetch_channel_avatar()
         self._start = 0.0
         self._end = dur
-        if self._thin:
+        if self._live:
+            self._set_status(
+                tr("Live — pick a window from the buffer. The last "
+                   "{d} of stream are cuttable.").format(d=fmt_clock(dur)),
+                "ok")
+        elif self._thin:
             self._set_status(
                 tr("Only 360p was visible — YouTube limited this read. "
                    "See the Quality section below to unlock HD."), "warn")
@@ -682,6 +723,12 @@ class CutterVM(QObject):
     @Property(bool, notify=changed)
     def cutting(self):
         return self._cutting
+
+    @Property(bool, notify=changed)
+    def cutPaused(self):
+        """A running cut is holding its place: ffmpeg is frozen in the OS,
+        nothing is lost, Resume continues from the same frame."""
+        return self._cutting and self._pause
 
     @Property(int, notify=progressChanged)
     def cutPct(self):
@@ -752,6 +799,7 @@ class CutterVM(QObject):
 
         self._cutting = True
         self._cancel = False
+        self._pause = False
         self._cut_pct = 0
         self._cut_written = 0
         self._result_path = ""
@@ -761,6 +809,8 @@ class CutterVM(QObject):
         self.changed.emit()
         self.progressChanged.emit()
         mode, start, end = self._mode, self._start, self._end
+        live_dvr = self._duration if self._live else 0.0
+        live_age = max(0.0, time.time() - self._live_ts) if self._live_ts else 0.0
         path, link = self._file_path, (self._link or "").strip()
         audio_lang = self._audio_track if mode == 0 else ""
         self.toast.emit(
@@ -791,29 +841,67 @@ class CutterVM(QObject):
                         on_progress=lambda p, w: self._cutProgress.emit(p, w),
                         proxy_url=proxy, cookies_browser=cookies,
                         should_cancel=lambda: self._cancel,
+                        should_pause=lambda: self._pause,
                         on_resolved=lambda px, lbl: self._cutResolved.emit(
                             px, lbl),
                         audio_lang=audio_lang,
                         output_format=self._output_format,
-                        audio_only=self._audio_only)
+                        audio_only=self._audio_only,
+                        live_dvr=live_dvr, live_probe_age=live_age)
                 else:
                     ok, msg, fp = cut_file(
                         path, start, end, target,
                         on_status=lambda t: self._cutStatus.emit(t),
                         on_progress=lambda p, w: self._cutProgress.emit(p, w),
                         should_cancel=lambda: self._cancel,
+                        should_pause=lambda: self._pause,
                         output_format=self._output_format,
                         audio_only=self._audio_only)
                 self._cutDone.emit(ok, msg, fp)
             except Exception as exc:  # noqa: BLE001
                 log_crash("CutterVM cut failed:\n" + traceback.format_exc())
-                self._cutDone.emit(False, str(exc), "")
+                self._cutDone.emit(False, clean_error(str(exc)), "")
 
         threading.Thread(target=worker, daemon=True).start()
 
     @Slot()
+    def pauseCut(self):
+        """Hold the running cut exactly where it is. The worker freezes the
+        OS process (or parks its transfer), so no work is lost and Resume
+        continues from the same frame — the job never fails on a pause."""
+        if not self._cutting or self._cancel or self._pause:
+            return
+        self._pause = True
+        self._set_status(
+            tr("Paused — press Resume to continue from here."), "warn")
+        self.toast.emit(tr("Cut paused."), "info")
+        self.changed.emit()
+        live = notifier()
+        if live is not None:
+            try:
+                live.live_update("cut", stage=tr("Paused"))
+            except Exception:
+                pass
+
+    @Slot()
+    def resumeCut(self):
+        if not self._cutting or not self._pause:
+            return
+        self._pause = False
+        self._set_status(tr("Cutting…"), "muted")
+        self.toast.emit(tr("Cut resumed."), "info")
+        self.changed.emit()
+        live = notifier()
+        if live is not None:
+            try:
+                live.live_update("cut", stage=tr("Cutting…"))
+            except Exception:
+                pass
+
+    @Slot()
     def cancelCut(self):
         if self._cutting:
+            self._pause = False
             self._cancel = True
             self._set_status(tr("Stopping…"), "warn")
 
@@ -839,6 +927,7 @@ class CutterVM(QObject):
         url = (self._link or "").strip()
         if not url:
             return
+        self._preview_src = url
         self._preview_refreshing = True
         cfg = load_app_config()
         proxy = (cfg.get("ai_proxy", "") or "").strip()
@@ -872,6 +961,11 @@ class CutterVM(QObject):
     @Slot(bool, str, bool, bool, int, str)
     def _on_preview_ready(self, ok, url, has_audio, is_av1, px, audio_url=""):
         self._preview_refreshing = False
+        src, self._preview_src = self._preview_src, ""
+        if src and src != (self._link or "").strip():
+            # A refresh for the PREVIOUS link finished after a newer probe; its
+            # URLs are not this video's. Drop it instead of overwriting.
+            return
         if ok and url:
             self._preview_url = url
             self._preview_audio_url = audio_url or ""
@@ -921,6 +1015,7 @@ class CutterVM(QObject):
     def _on_cut_done(self, ok, message, filepath):
         self._cutting = False
         self._cancel = False
+        self._pause = False
         # v3.41: a live card still on screen becomes the "done" notice itself
         live = notifier()
         consumed = False
@@ -1289,6 +1384,131 @@ class CutterVM(QObject):
                 subprocess.Popen(["xdg-open", target])
         except Exception as e:        # noqa: BLE001
             self.toast.emit(tr("Could not open: {e}").format(e=e), "error")
+
+    # ── cuts started from the browser extension, live on this page ─────
+    # The desktop card only appears while the app is in the background; when
+    # the window is open the user needs to SEE the extension's cut running
+    # (title, range, progress, cancel) right here on the Cutter page.
+
+    def set_ext_cut_cancel(self, cancel_fn):
+        """WebBridge hands over its cancel hook (extension jobs live there)."""
+        self._ext_cancel = cancel_fn
+
+    @Property("QVariantList", notify=extCutsChanged)
+    def extCuts(self):
+        return list(self._ext_cuts.values())
+
+    def note_ext_cut(self, job, kind, data):
+        """Mirror one extension-cut event (GUI thread, called by WebBridge)."""
+        if not job:
+            return
+        data = dict(data or {})
+        row = self._ext_cuts.get(job)
+        if kind == "begin":
+            try:
+                start = float(data.get("start") or 0)
+                end = float(data.get("end") or 0)
+            except (TypeError, ValueError):
+                start = end = 0.0
+            vid = str(data.get("vid") or "")
+            title = str(data.get("title") or tr("Untitled"))
+            row = {
+                "id": job, "title": title, "videoId": vid,
+                "rangeText": (f"{fmt_clock(start)} → {fmt_clock(end)}"
+                              if end > start else ""),
+                "thumbId": (_thumb_id(
+                    f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg")
+                    if vid else ""),
+                "pct": 0, "stage": tr("Cutting…"), "phase": "running",
+                "path": "", "fileName": "", "sizeText": "", "message": "",
+            }
+            self.toast.emit(tr("The browser extension is cutting — {t}").format(
+                t=title), "info")
+        if row is None:
+            return
+        if kind == "update":
+            if "pct" in data:
+                try:
+                    row["pct"] = max(0, min(100, int(data.get("pct") or 0)))
+                except (TypeError, ValueError):
+                    pass
+            if data.get("stage"):
+                row["stage"] = str(data["stage"])
+        elif kind == "finish":
+            outcome = str(data.get("outcome") or "error")
+            row["phase"] = outcome
+            row["stage"] = {"success": tr("Saved"),
+                            "stopped": tr("Stopped")}.get(outcome,
+                                                          tr("Failed"))
+            if outcome == "success":
+                path = str(data.get("path") or "")
+                row["path"] = path if os.path.isfile(path) else ""
+                row["fileName"] = os.path.basename(path) if path else ""
+                try:
+                    row["sizeText"] = (_size_text(file_size_of(path))
+                                       if path else "")
+                except Exception:         # noqa: BLE001 — cosmetic
+                    row["sizeText"] = ""
+                row["pct"] = 100
+                if row["fileName"]:
+                    self.toast.emit(tr("Extension clip saved — {f}").format(
+                        f=row["fileName"]), "success")
+            else:
+                row["message"] = str(data.get("message") or "")
+                if outcome == "error":
+                    self.toast.emit(row["message"]
+                                    or tr("The extension cut failed."), "error")
+            # Nothing to act on anymore after half a minute: let the strip
+            # go back to its resting state on its own.
+            QTimer.singleShot(30000, lambda j=job: self._drop_ext_cut(j))
+        self._ext_cuts[job] = row
+        self.extCutsChanged.emit()
+
+    def _drop_ext_cut(self, job):
+        if self._ext_cuts.pop(job, None) is not None:
+            self.extCutsChanged.emit()
+
+    @Slot(str)
+    def cancelExtCut(self, job):
+        row = self._ext_cuts.get(job)
+        if row is None or row.get("phase") != "running":
+            return
+        if callable(self._ext_cancel):
+            try:
+                self._ext_cancel(job)
+                row["stage"] = tr("Stopping…")
+                self.extCutsChanged.emit()
+            except Exception:             # noqa: BLE001 — cancel is best-effort
+                pass
+
+    @Slot(str)
+    def dismissExtCut(self, job):
+        row = self._ext_cuts.get(job)
+        if row is not None and row.get("phase") != "running":
+            self._drop_ext_cut(job)
+
+    @Slot(str, result="QVariantMap")
+    def extCutPlayInfo(self, job):
+        """VideoPlayer payload for a finished extension clip (same shape as
+        clipPlayInfo)."""
+        row = self._ext_cuts.get(job) or {}
+        path = row.get("path") or ""
+        if not path or not os.path.isfile(path):
+            self.toast.emit(tr("The file couldn't be found — it may have been "
+                               "moved or deleted."), "error")
+            return {}
+        url = QUrl.fromLocalFile(path).toString()
+        return {
+            "videoId": row.get("videoId") or "",
+            "title": row.get("title") or tr("Untitled"),
+            "filePath": path,
+            "fileUrl": url,
+            "thumbId": row.get("thumbId") or "",
+            "channelTitle": " · ".join(x for x in (
+                tr("Clip"), row.get("rangeText") or "") if x),
+            "qualities": [{"label": tr("Clip"), "key": "", "filePath": path,
+                           "fileUrl": url}],
+        }
 
     @Slot()
     def newClip(self):

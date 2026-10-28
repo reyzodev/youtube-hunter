@@ -2101,8 +2101,16 @@ class NicheVM(QObject):
         if self._ignore_tick(video_id):
             return
         entry = self._downloads.get(video_id) or {}
+        merging = text == tr("Merging…")
+        if merging:
+            # Mirror the post-processing state into the Downloads-page row, or
+            # it kept saying "downloading" with a determinate 99% bar while the
+            # mux / MP3 conversion ran (only DownloadsVM used to write this).
+            # The old speed/ETA belong to the finished transfer, not to this.
+            downloads_upsert(video_id, status="merging", create_if_missing=False)
         self._set_download(video_id, entry.get("state", "running"),
-                           entry.get("pct", 0), text)
+                           entry.get("pct", 0), text,
+                           **({"speed": 0.0, "eta": 0} if merging else {}))
 
     @Slot(str, int)
     def _on_dl_progress(self, video_id, pct):

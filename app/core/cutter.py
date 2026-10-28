@@ -16,6 +16,7 @@ is keyframe precision (the cut lands on the nearest seek point, typically
 within a couple of seconds) rather than frame accuracy.
 """
 
+import contextlib
 import os
 import re
 import subprocess
@@ -42,6 +43,41 @@ from app.i18n import tr
 _CUT_CAPS = (2160, 1440, 1080, 720, 480, 360)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\[\d+(?:;\d+)*m")
+
+# yt-dlp's FFmpegFD.available() checks PATH only (its source carries a
+# "TODO: Fix path for ffmpeg" against ffmpeg_location), so a partial /
+# section download is refused as "ffmpeg is not installed" even though the
+# engine resolved the bundled binary. Stage the directory on PATH for the
+# duration of the section attempt — ref-counted, because two cuts can run at
+# once and restoring a snapshot would strip the other thread's entry.
+_PATH_LOCK = threading.Lock()
+_PATH_DEPTH = 0
+_PATH_SAVED = ""
+
+
+@contextlib.contextmanager
+def _ffmpeg_on_path(ffmpeg_dir):
+    global _PATH_DEPTH, _PATH_SAVED
+    if not ffmpeg_dir:
+        yield
+        return
+    with _PATH_LOCK:
+        if _PATH_DEPTH == 0:
+            _PATH_SAVED = os.environ.get("PATH", "")
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + _PATH_SAVED
+        _PATH_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _PATH_LOCK:
+            _PATH_DEPTH -= 1
+            if _PATH_DEPTH <= 0:
+                _PATH_DEPTH = 0
+                if _PATH_SAVED:
+                    os.environ["PATH"] = _PATH_SAVED
+                else:
+                    os.environ.pop("PATH", None)
+                _PATH_SAVED = ""
 
 
 def clean_error(text):
@@ -466,6 +502,435 @@ def _pick_preview(formats, duration=0.0):
     return f["url"], bool(audio_url), is_av1, px, audio_url
 
 
+# ── live streams ───────────────────────────────────────────────────────────
+# A live stream has no duration and ships only HLS. Cutting it means cutting
+# a window OUT OF THE DVR BUFFER (YouTube keeps roughly the last hour as 5 s
+# segments), not recording the live edge: the user picks the moment, we fetch
+# only those segments. The page's timeline is that buffer, so a selection is
+# interpreted as "this much before the live edge" and stays correct while the
+# window slides.
+
+def _is_hls(f):
+    proto = str(f.get("protocol") or "").lower()
+    return "m3u8" in proto or proto.startswith("hls")
+
+
+def _hls_headers(f):
+    hdr = {"User-Agent": _UA}
+    for k, v in (f.get("http_headers") or {}).items():
+        if v:
+            hdr[str(k)] = str(v)
+    return hdr
+
+
+def _fetch_text(url, headers=None, proxy_url="", timeout=15):
+    """Fetch a small text resource (an HLS playlist). stdlib only, browser
+    UA, optional proxy — the same client-side rules as the rest of the app."""
+    import urllib.request
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": _UA})
+    handlers = []
+    if proxy_url:
+        p = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
+        handlers.append(urllib.request.ProxyHandler({"http": p, "https": p}))
+    opener = urllib.request.build_opener(*handlers)
+    with opener.open(req, timeout=timeout) as resp:
+        return resp.read(2 * 1024 * 1024).decode("utf-8", "replace")
+
+
+def _parse_hls_media(text, base_url=""):
+    """(segments, total) of a MEDIA playlist, or ([], 0) for a master one.
+
+    segments = [(duration_s, absolute_url), ...] in playback order; `total`
+    is the full DVR span they cover."""
+    import urllib.parse
+    segs = []
+    total = 0.0
+    dur = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#EXTINF:"):
+            try:
+                dur = float(line[8:].split(",", 1)[0].split()[0])
+            except (ValueError, IndexError):
+                dur = None
+        elif not line.startswith("#"):
+            if dur is not None:
+                segs.append((dur, urllib.parse.urljoin(base_url or "", line)))
+                total += dur
+                dur = None
+    return segs, total
+
+
+def _resolve_hls_media(url, hdr, proxy_url=""):
+    """(segments, total, media_url) for `url`, following ONE master-playlist
+    level (a variant URL is often handed to us as a master)."""
+    text = _fetch_text(url, hdr, proxy_url)
+    segs, total = _parse_hls_media(text, url)
+    if segs:
+        return segs, total, url
+    import urllib.parse
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            vurl = urllib.parse.urljoin(url, line)
+            vtext = _fetch_text(vurl, hdr, proxy_url)
+            vsegs, vtotal = _parse_hls_media(vtext, vurl)
+            if vsegs:
+                return vsegs, vtotal, vurl
+            break
+    return [], 0.0, url
+
+
+def _live_video_formats(formats):
+    out = []
+    for f in formats or []:
+        if not f.get("url") or not _is_hls(f):
+            continue
+        if (f.get("vcodec") or "none") == "none":
+            continue
+        if _fmt_short_side(f):
+            out.append(f)
+    return out
+
+
+def _live_audio_formats(formats):
+    # yt-dlp's live HLS audio renditions carry NO codec string at all
+    # (vcodec "none", acodec None), so "no video" is the reliable marker.
+    out = []
+    for f in formats or []:
+        if not f.get("url") or not _is_hls(f):
+            continue
+        if (f.get("vcodec") or "none") == "none":
+            out.append(f)
+    return out
+
+
+def _live_caps(formats):
+    """Heights a live stream ships, desc (same bucketing as _available_caps)."""
+    seen = set()
+    for f in _live_video_formats(formats):
+        px = _fmt_short_side(f)
+        for cap in _CUT_CAPS:
+            if px and px >= cap * 0.9:
+                seen.add(cap)
+                break
+    return sorted(seen, reverse=True)
+
+
+def _pick_live_preview(formats, langs=None):
+    """(url, audio_url, px, is_av1) for a live stream's in-page preview.
+
+    Qt plays live HLS (verified), but the picture and the sound are separate
+    renditions, so both URLs are returned; the page's split-audio sync handles
+    the rest. ≤1080p, AVC first (see _preview_codec_rank)."""
+    cands = []
+    for f in _live_video_formats(formats):
+        px = _fmt_short_side(f) or 0
+        if not px:
+            continue
+        prog = (f.get("acodec") or "none") != "none"
+        cands.append((px, prog, f))
+    limit = PREVIEW_MAX_PX + _PREVIEW_PX_SLACK
+    pool = [t for t in cands if t[0] <= limit] or cands
+    if not pool:
+        return "", "", 0, False
+    px, prog, f = max(
+        pool,
+        key=lambda t: (t[0], _preview_codec_rank(t[2]), 1 if t[1] else 0))
+    is_av1 = _preview_codec_rank(f) <= -2
+    audio_url = ""
+    if not prog:
+        auds = _live_audio_formats(formats)
+        if auds:
+            auds = _original_audio_only(auds)
+            audio_url = max(auds, key=_audio_preview_rank)["url"]
+    return f["url"], audio_url, px, is_av1
+
+
+def _live_dvr_len(formats, hdr=None, proxy_url=""):
+    """Total seconds in the DVR buffer right now (0 = couldn't read it)."""
+    cands = _live_video_formats(formats)
+    if not cands:
+        return 0.0
+    # the lightest rendition: the playlist text is all we need
+    f = min(cands, key=lambda x: _fmt_short_side(x) or 0)
+    try:
+        _segs, total, _u = _resolve_hls_media(
+            f["url"], _hls_headers(f), proxy_url)
+        return float(total or 0.0)
+    except Exception:                 # noqa: BLE001 — probe keeps going
+        return 0.0
+
+
+def _live_window(segments, win_start, win_end):
+    """Segments covering [win_start, win_end] plus the start of the first one.
+
+    Only segments that BEGIN at/after `win_start` are taken: stream copy can
+    only start on a keyframe, and every HLS segment starts on one. A partial
+    first segment would either be dropped by ffmpeg (losing the window) or
+    start on non-key frames (a frozen/blocky first seconds), so the window
+    snaps forward by at most one segment (~5 s)."""
+    picked = []
+    first = 0.0
+    cum = 0.0
+    for dur, url in segments:
+        seg_start, seg_end = cum, cum + dur
+        if seg_start >= win_start - 0.001 and seg_start < win_end - 0.05:
+            if not picked:
+                first = seg_start
+            picked.append((dur, url))
+        cum = seg_end
+    return picked, first
+
+
+def _write_live_playlist(path, segments):
+    """A local VOD playlist over already-published DVR segments, so ffmpeg
+    fetches exactly those segments and can seek inside them."""
+    longest = max((d for d, _ in segments), default=1.0)
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3",
+             f"#EXT-X-TARGETDURATION:{max(1, int(longest) + (1 if longest != int(longest) else 0))}",
+             "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
+    for dur, url in segments:
+        lines.append(f"#EXTINF:{dur:.3f},")
+        lines.append(url)
+    lines.append("#EXT-X-ENDLIST")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _is_live_info(info):
+    """True when this read is a running (or just-ended) live stream."""
+    status = str((info or {}).get("live_status") or "").lower()
+    if status in ("is_live", "post_live"):
+        return True
+    if status in ("was_live", "not_live", "is_upcoming"):
+        return False
+    # Older yt-dlp payloads carry only `is_live`. A duration means the read
+    # already resolved to a finished VOD, which the normal path handles.
+    try:
+        return bool(info.get("is_live")) and float(info.get("duration") or 0) <= 0
+    except (TypeError, ValueError):
+        return bool(info.get("is_live"))
+
+
+def _cut_live_hls(info, height_cap, start, end, dvr_at_probe,
+                  target_dir, on_status=None, on_progress=None,
+                  should_cancel=None, should_pause=None, audio_lang="",
+                  output_format="mp4", audio_only=False, on_resolved=None,
+                  proxy_url="", probe_age=0.0):
+    """Cut [start, end) — coordinates on the page's DVR timeline — out of a
+    live stream's buffer. Returns (ok, message_or_CANCELLED, filepath)."""
+    def _status(text):
+        if on_status:
+            on_status(text)
+
+    formats = info.get("formats") or []
+    proxy = (proxy_url or "").strip()
+    if not proxy:
+        try:
+            from app.config import load_app_config
+            proxy = (load_app_config().get("ai_proxy", "") or "").strip()
+        except Exception:             # noqa: BLE001 — optional
+            proxy = ""
+
+    muxed = False
+    if audio_only:
+        v_fmt = None
+        auds = _original_audio_only(_live_audio_formats(formats), audio_lang)
+        a_fmt = max(auds, key=_audio_preview_rank, default=None)
+        if a_fmt is None:
+            return False, tr("This stream has no audio track to cut."), ""
+        px = 0
+        label = tr("Audio only")
+    else:
+        cands = _live_video_formats(formats)
+        if not cands:
+            return False, tr("This stream has no downloadable video stream."), ""
+        want = int(height_cap or 0)
+        pool = cands
+        if want:
+            fit = [f for f in cands if (_fmt_short_side(f) or 0) <= want * 1.1]
+            pool = fit or cands
+        v_fmt = max(
+            pool,
+            key=lambda f: (_fmt_short_side(f) or 0, _preview_codec_rank(f),
+                           1 if (f.get("acodec") or "none") == "none" else 0))
+        px = _fmt_short_side(v_fmt) or 0
+        prog = (v_fmt.get("acodec") or "none") != "none"
+        muxed = prog
+        a_fmt = None
+        if not prog:
+            auds = _original_audio_only(_live_audio_formats(formats), audio_lang)
+            a_fmt = max(auds, key=_audio_preview_rank, default=None)
+        label = f"{px}p" if px else tr("best")
+
+    def _report():
+        if on_resolved:
+            try:
+                on_resolved(int(px or 0), label)
+            except Exception:         # noqa: BLE001 — reporting only
+                pass
+
+    _status(tr("Reading the live buffer…"))
+    try:
+        v_segs, v_total, _vu = (None, 0.0, "")
+        if v_fmt is not None:
+            v_segs, v_total, _vu = _resolve_hls_media(
+                v_fmt["url"], _hls_headers(v_fmt), proxy)
+        a_segs, a_total, _au = (None, 0.0, "")
+        if a_fmt is not None:
+            a_segs, a_total, _au = _resolve_hls_media(
+                a_fmt["url"], _hls_headers(a_fmt), proxy)
+    except Exception as exc:          # noqa: BLE001 — network/stale URL
+        return False, tr("Couldn't read the live stream's buffer.") + (
+            " " + _friendly_or_clean(str(exc)) if str(exc) else ""), ""
+
+    segs, total = ((a_segs, a_total) if audio_only else (v_segs, v_total))
+    if not segs or total <= 0:
+        return False, tr("Couldn't read the live stream's buffer."), ""
+
+    # The selection is in probe-time DVR coordinates [0, dvr_at_probe]. By
+    # cut time the buffer slid forward, so honour it as "this window, N and M
+    # seconds before the live edge" — the same content, not the same offsets.
+    try:
+        probe_len = float(dvr_at_probe or 0)
+    except (TypeError, ValueError):
+        probe_len = 0.0
+    if probe_len <= 0:
+        probe_len = total
+    # Time the user spent between the probe and pressing Cut: the buffer slid
+    # by that much, so every age grows by it. Without this, a minute of
+    # hesitation silently turned into a minute of a DIFFERENT moment.
+    try:
+        elapsed = max(0.0, float(probe_age or 0.0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    start_age = max(0.0, probe_len - float(start)) + elapsed
+    end_age = min(probe_len, max(0.0, probe_len - float(end))) + elapsed
+    win_start = max(0.0, total - start_age)
+    win_end = min(total, total - end_age)
+
+    def _miss_msg():
+        # Two very different misses, two different fixes: a window at the
+        # live edge is not published yet (wait), an old one slid out of the
+        # buffer (pick closer to now).
+        if start_age < 20.0:
+            return tr("That window is right at the live edge and isn't "
+                      "published yet — wait a few seconds, then cut.")
+        return tr("That moment has already left the live buffer — pick a "
+                  "window closer to now.")
+
+    if win_end - win_start < 1.0:
+        return False, _miss_msg(), ""
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as exc:
+        return False, str(exc), ""
+
+    vid = info.get("id") or "live"
+    title = info.get("title") or tr("Live stream")
+    tag = clip_tag(start, end)
+    if audio_only:
+        ext = str(output_format or "m4a").lower()
+        if ext not in ("mp3", "m4a", "opus", "wav", "flac"):
+            ext = "m4a"
+    else:
+        ext = "mkv" if str(output_format).lower() == "mkv" else "mp4"
+    stem = (f"{sanitize_filename(title)} [clip {tag}] [{vid}] {label}"
+            f" [{tr('live')}]")
+    out_path = _unique_path(target_dir, f"{stem}.{ext}")
+
+    _status(tr("Cutting {a} → {b} from the live buffer …").format(
+        a=fmt_clock(start), b=fmt_clock(end)))
+
+    try:
+        ffmpeg = _ffmpeg_exe()
+    except Exception as exc:          # noqa: BLE001
+        return False, str(exc), ""
+
+    with tempfile.TemporaryDirectory(prefix="niche_live_") as tmp:
+        v_path = os.path.join(tmp, "video.m3u8")
+        a_path = os.path.join(tmp, "audio.m3u8")
+        v_pick, v_first = (None, 0.0)
+        a_pick, a_first = (None, 0.0)
+        if not audio_only:
+            v_pick, v_first = _live_window(segs, win_start, win_end)
+            if not v_pick:
+                return False, _miss_msg(), ""
+            _write_live_playlist(v_path, v_pick)
+        if a_segs:
+            a_pick, a_first = _live_window(a_segs, win_start, win_end)
+            if a_pick:
+                _write_live_playlist(a_path, a_pick)
+            else:
+                a_pick = None
+        if audio_only:
+            if not a_pick:
+                return False, _miss_msg(), ""
+            _write_live_playlist(a_path, a_pick)
+
+        # Both renditions are cut from their own local playlist, whose clock
+        # starts at ITS first picked segment. A shared absolute start (`base`)
+        # keeps the pair aligned: each input is seeked by the distance from
+        # its own start, and both seeks land on segment boundaries.
+        base = a_first if audio_only else max(
+            v_first, a_first if a_pick else v_first)
+        seek_v = max(0.0, base - v_first)
+        seek_a = max(0.0, base - a_first)
+        seg_len = win_end - base
+        if seg_len < 0.5:
+            return False, _miss_msg(), ""
+
+        # No `-user_agent`/`-headers` here: the inputs are LOCAL playlists, and
+        # those options belong to the http protocol, so ffmpeg rejects them on
+        # a file input ("Option user_agent not found"). Live segment URLs are
+        # signed and self-authenticating — MEASURED: the CDN serves them to a
+        # bare Lavf/python UA (200), and ffmpeg fetches them fine without any
+        # header (verified against the 24/7 stream).
+        # The whitelist is an INPUT option: it must be repeated for every
+        # input, else the second (audio) playlist falls back to the HLS
+        # demuxer's default 'file,crypto,data' and blocks every https segment
+        # ("Protocol 'https' not on whitelist") — an input that opens but
+        # yields nothing.
+        in_flags = ["-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+                    "-allowed_extensions", "ALL"]
+        args = [ffmpeg, "-hide_banner", "-y"]
+        args += in_flags + ["-ss", f"{seek_a if audio_only else seek_v:.3f}",
+                            "-i", a_path if audio_only else v_path]
+        if not audio_only and a_pick:
+            args += in_flags + ["-ss", f"{seek_a:.3f}", "-i", a_path]
+            args += ["-map", "0:v:0", "-map", "1:a:0"]
+        elif audio_only:
+            args += ["-map", "0:a:0", "-vn"]
+        else:
+            args += ["-map", "0:v:0"]
+            if muxed:
+                args += ["-map", "0:a:0?"]
+        args += ["-t", f"{seg_len:.3f}"]
+        if audio_only:
+            codecs = {"mp3": ["-c:a", "libmp3lame", "-b:a", "192k"],
+                      "m4a": ["-c:a", "aac", "-b:a", "192k"],
+                      "opus": ["-c:a", "libopus", "-b:a", "128k"],
+                      "wav": ["-c:a", "pcm_s16le"],
+                      "flac": ["-c:a", "flac"]}
+            args += codecs.get(ext.lower(), codecs["mp3"])
+        else:
+            args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+            if ext == "mp4":
+                args += ["-movflags", "+faststart"]
+        args += ["-progress", "pipe:1", "-nostats", "-v", "error"]
+
+        ok, msg = _run_ffmpeg_cut(args, seg_len, out_path, on_progress,
+                                  should_cancel, should_pause)
+        if ok:
+            _report()
+            return True, out_path, out_path
+        return False, msg, ""
+
+
 def probe_link(url, proxy_url="", cookies_browser=""):
     """What a link offers the cutter. Blocking — call on a worker thread.
 
@@ -476,6 +941,8 @@ def probe_link(url, proxy_url="", cookies_browser=""):
     4K). `thin` is True when
     YouTube only showed 360p-or-less (throttled read — see above), so the
     page can offer a fix instead of presenting 360p as the whole story.
+    A live stream sets `live` True and reports the DVR buffer's length as
+    `duration` — that buffer IS the page's timeline (see _cut_live_hls).
     Direct stream URLs are deliberately NOT returned — they expire within
     hours, so cut_link() re-resolves them fresh at cut time.
     """
@@ -495,6 +962,43 @@ def probe_link(url, proxy_url="", cookies_browser=""):
             msg = f"{msg} {_cookie_hint()}"
         return False, {}, msg
     formats = info.get("formats") or []
+
+    # ── live stream: the timeline is the DVR buffer, not a fixed duration ──
+    if _is_live_info(info):
+        live_caps = _live_caps(formats)
+        if not live_caps and not _live_audio_formats(formats):
+            return False, {}, tr("This live stream has no downloadable video stream.")
+        dvr = _live_dvr_len(formats, proxy_url=proxy_url)
+        if dvr <= 0:
+            return False, {}, tr(
+                "Couldn't read this live stream's buffer — check the link and "
+                "try again.")
+        p_url, p_audio_url, p_px, p_av1 = _pick_live_preview(formats)
+        quals = [{"key": 0, "height": 0, "label": tr("Best quality"),
+                  "sub": tr("highest available")}]
+        for cap in live_caps:
+            quals.append({"key": cap, "height": cap, "label": f"{cap}p",
+                          "sub": tr("live · direct")})
+        return True, {
+            "video_id": info.get("id") or "",
+            "title": info.get("title") or tr("Live stream"),
+            # The buffer's length right now: the page's timeline. The cut
+            # re-maps the chosen window by its distance from the live edge.
+            "duration": dvr,
+            "thumb_url": info.get("thumbnail") or "",
+            "qualities": quals,
+            "preview_url": p_url,
+            "preview_has_audio": bool(p_audio_url),
+            "preview_audio_url": p_audio_url,
+            "preview_is_av1": p_av1,
+            "preview_px": p_px,
+            "thin": False,
+            "live": True,
+            "audio_tracks": [],
+            "preview_audio_by_lang": {},
+            "channel": channel_meta_from_info(info),
+        }, ""
+
     caps = _available_caps(formats)
     if not caps:
         return False, {}, tr("This video has no downloadable video stream.")
@@ -1020,10 +1524,149 @@ def _unique_path(folder, filename):
     return candidate
 
 
-def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
+def _suspend_pid(pid, suspend):
+    """Freeze / thaw one process in place (Windows: NtSuspendProcess).
+
+    A paused cut must stop EXACTLY where it is. Killing the job and starting
+    it over would lose the finished work, re-resolve URLs that may have
+    expired and re-download — which is why pausing used to fail the whole cut.
+    Suspension keeps the decoder, its buffers and the open HTTP range request
+    intact, so Resume simply continues from the same frame."""
+    if not pid:
+        return
+    if sys.platform != "win32":
+        try:
+            import signal
+            os.kill(int(pid), signal.SIGSTOP if suspend else signal.SIGCONT)
+        except Exception:             # noqa: BLE001 — pause is best-effort
+            pass
+        return
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        ntdll = ctypes.windll.ntdll
+        # PROCESS_SUSPEND_RESUME — the only access NtSuspendProcess needs.
+        handle = k32.OpenProcess(0x0800, False, int(pid))
+        if not handle:
+            return
+        try:
+            if suspend:
+                ntdll.NtSuspendProcess(handle)
+            else:
+                ntdll.NtResumeProcess(handle)
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:                 # noqa: BLE001 — pause is best-effort
+        pass
+
+
+def _suspend_ffmpeg_children(suspend):
+    """Freeze / thaw every ffmpeg THIS process spawned.
+
+    yt-dlp runs a section transfer through its OWN child ffmpeg and reports
+    progress only between large steps; suspending the child is the only way a
+    pause takes effect there. Toolhelp32 keeps the engine stdlib-only (no
+    psutil dependency)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PE32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        k32 = ctypes.windll.kernel32
+        snap = k32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        if snap in (0, -1):
+            return
+        try:
+            entry = _PE32()
+            entry.dwSize = ctypes.sizeof(_PE32)
+            me = os.getpid()
+            ok = k32.Process32First(snap, ctypes.byref(entry))
+            while ok:
+                name = (entry.szExeFile or b"").decode("mbcs", "ignore").lower()
+                if entry.th32ParentProcessID == me and "ffmpeg" in name:
+                    _suspend_pid(entry.th32ProcessID, suspend)
+                ok = k32.Process32Next(snap, ctypes.byref(entry))
+        finally:
+            k32.CloseHandle(snap)
+    except Exception:                 # noqa: BLE001 — pause is best-effort
+        pass
+
+
+class _PauseGate:
+    """The pause switch shared by every phase of one cut.
+
+    ffmpeg phases are frozen at the OS level (see _suspend_pid); phases with
+    no child to freeze (the yt-dlp transfer) call wait() and stop advancing.
+    Cancel always wins over pause, so stopping a paused cut can't hang."""
+    __slots__ = ("_pause", "_cancel")
+
+    def __init__(self, should_pause=None, should_cancel=None):
+        self._pause = should_pause
+        self._cancel = should_cancel
+
+    def cancelled(self):
+        return bool(self._cancel and self._cancel())
+
+    def paused(self):
+        return (not self.cancelled()) and bool(self._pause and self._pause())
+
+    def wait(self):
+        """Block while paused. Returns immediately once the user cancels."""
+        while self.paused():
+            try:
+                import time as _time
+                _time.sleep(0.12)
+            except Exception:         # noqa: BLE001
+                return
+
+
+@contextlib.contextmanager
+def _freeze_ffmpeg_children_while_paused(gate):
+    """Keep yt-dlp's child ffmpeg frozen for as long as the user holds pause
+    (covers the section transfer and the merge step)."""
+    stop = threading.Event()
+
+    def _mon():
+        frozen = False
+        while not stop.wait(0.15):
+            want = gate.paused()
+            if want != frozen:
+                _suspend_ffmpeg_children(want)
+                frozen = want
+        if frozen:
+            _suspend_ffmpeg_children(False)
+
+    th = threading.Thread(target=_mon, daemon=True)
+    th.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        th.join(timeout=2)
+
+
+def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel,
+                    should_pause=None):
     """Run one ffmpeg cut. `args` ends right before the output path; progress
     is time-based (out_time_ms vs the segment length) plus live bytes written.
+    Pausing suspends the process in place (no data lost, resume continues).
     Returns (ok, message)."""
+    gate = _PauseGate(should_pause, should_cancel)
     cmd = args + [out_path]
     if on_progress:
         on_progress(0, 0)
@@ -1069,6 +1712,30 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
         t = threading.Thread(target=_drain, daemon=True)
         t.start()
 
+        # Pause: freeze ffmpeg in place rather than killing it, so Resume
+        # continues from the same frame and the work done so far is kept.
+        paused_now = {"s": False}
+
+        def _pause_monitor():
+            frozen = False
+            while proc.poll() is None:
+                want = gate.paused()
+                if want != frozen:
+                    _suspend_pid(proc.pid, want)
+                    frozen = want
+                    paused_now["s"] = want
+                if frozen:
+                    # A paused process is silent BY DESIGN: hold the stall
+                    # clock so the watchdog can't kill a deliberate pause.
+                    last_io["t"] = _time.monotonic()
+                if done_evt.wait(0.12):
+                    break
+            if frozen:
+                _suspend_pid(proc.pid, False)
+
+        pm = threading.Thread(target=_pause_monitor, daemon=True)
+        pm.start()
+
         def _watchdog():
             while True:
                 try:
@@ -1079,12 +1746,13 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
                     break
                 if should_cancel is not None and should_cancel():
                     stalled["flag"] = "cancel"
+                    _suspend_pid(proc.pid, False)   # a frozen process ignores terminate
                     try:
                         proc.terminate()
                     except Exception:  # noqa: BLE001
                         pass
                     break
-                if _time.monotonic() - last_io["t"] > 150:
+                if not paused_now["s"] and _time.monotonic() - last_io["t"] > 150:
                     stalled["flag"] = True
                     try:
                         proc.terminate()
@@ -1107,6 +1775,7 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
             for line in (proc.stdout or []):
                 last_io["t"] = _time.monotonic()
                 if should_cancel is not None and should_cancel():
+                    _suspend_pid(proc.pid, False)
                     try:
                         proc.terminate()
                     except Exception:  # noqa: BLE001
@@ -1155,8 +1824,10 @@ def _run_ffmpeg_cut(args, seg_len, out_path, on_progress, should_cancel):
         done_evt.set()
         t.join(timeout=5)
         w.join(timeout=5)
+        pm.join(timeout=2)
         err_tail = (errs[0] if errs else "")[-1500:]
     except Exception as exc:          # noqa: BLE001
+        _suspend_pid(proc.pid, False)
         try:
             proc.kill()
         except Exception:             # noqa: BLE001
@@ -1644,7 +2315,7 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                           title, vid, tag, want_px, on_status=None,
                           on_progress=None, proxy_url="",
                           cookies_browser="", should_cancel=None,
-                          audio_lang="", video_kbps=0):
+                          audio_lang="", video_kbps=0, should_pause=None):
     """Fetch-then-cut fallback for tiers the fast HTTP-seek path can't do.
 
     yt-dlp itself downloads the requested tier — with its own per-client
@@ -1660,6 +2331,8 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
     def _status(text):
         if on_status:
             on_status(text)
+
+    gate = _PauseGate(should_pause, should_cancel)
 
     cap = int(height_cap or 2160)
     if cap <= 0 or cap > 2160:
@@ -1706,9 +2379,38 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
     cookies_added = bool(cookies_browser)
 
     import time as _time
-    dl_state = {"pct": -1, "at": 0.0}
+    dl_state = {"pct": -1, "at": 0.0, "bands": {},
+                "done_base": 0, "done_last": 0, "key": ""}
+
+    def _band(info, key):
+        """(start, width) of the 0–78 transfer band for one stream.
+
+        An adaptive pick downloads video and audio as two sequential streams,
+        each reporting its own 0→100. Mapping both onto 0–78 pinned the bar at
+        78% for the whole audio half (and reset after the video), so the first
+        stream gets 70 points and the small audio tail the last 8 — reversed
+        when the audio stream comes first. A progressive (single-file) pick
+        keeps the whole band.
+        """
+        known = dl_state["bands"].get(key)
+        if known is not None:
+            return known
+        v_only = ((info.get("vcodec") or "none") != "none"
+                  and (info.get("acodec") or "none") == "none")
+        a_only = ((info.get("acodec") or "none") != "none"
+                  and (info.get("vcodec") or "none") == "none")
+        if not dl_state["bands"]:
+            band = (0, 70 if v_only else (8 if a_only else 78))
+        else:
+            used = max(s + w for s, w in dl_state["bands"].values())
+            band = (used, max(1, 78 - used))
+        dl_state["bands"][key] = band
+        return band
 
     def _hook(d):
+        # Paused: hold the transfer here (fragment workers park at the next
+        # hook) instead of aborting the download. Cancel unblocks at once.
+        gate.wait()
         if should_cancel is not None and should_cancel():
             from yt_dlp.utils import DownloadCancelled
             raise DownloadCancelled("stopped by user")
@@ -1722,14 +2424,25 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                             or d.get("total_bytes_estimate") or 0)
             except (TypeError, ValueError):
                 total = 0
-            pct = int(done * 78 / total) if total else 0
+            info = d.get("info_dict") or {}
+            key = str(info.get("format_id") or d.get("filename") or "single")
+            band_start, band_width = _band(info, key)
+            # The raw byte counter restarts at the audio stream; carry the
+            # finished stream's bytes so the size readout only ever grows.
+            if key != dl_state["key"]:
+                dl_state["done_base"] += dl_state["done_last"]
+                dl_state["done_last"] = 0
+                dl_state["key"] = key
+            dl_state["done_last"] = max(dl_state["done_last"], done)
+            frac = min(1.0, done / total) if total else 0.0
+            pct = band_start + int(frac * band_width)
             pct = max(0, min(78, pct))
             now = _time.monotonic()
             if pct > dl_state["pct"] and (now - dl_state["at"] >= 0.4
                                           or pct >= 78):
                 dl_state["pct"], dl_state["at"] = pct, now
                 if on_progress:
-                    on_progress(pct, done)
+                    on_progress(pct, dl_state["done_base"] + dl_state["done_last"])
 
     try:
         ffmpeg = _ffmpeg_exe()
@@ -1765,13 +2478,13 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                 _cut_args(ffmpeg, src, None, start, seg_len, "mp4",
                           video_reencode=True, vcodec_args=enc_args)
                 + ["-map", "0:v:0", "-map", "0:a:0?"],
-                seg_len, out_path, _prog2, should_cancel)
+                seg_len, out_path, _prog2, should_cancel, should_pause)
             if ok or msg == DOWNLOAD_CANCELLED:
                 return ok, msg, out_path
         ok, msg = _run_ffmpeg_cut(
             _cut_args(ffmpeg, src, None, start, seg_len, "mp4", audio_reencode=True)
             + ["-map", "0:v:0", "-map", "0:a:0?"],
-            seg_len, out_path, _prog2, should_cancel)
+            seg_len, out_path, _prog2, should_cancel, should_pause)
         return ok, msg, out_path
 
     # v1.0.1 — SECTION FIRST. The fallback used to download the WHOLE video
@@ -1807,24 +2520,29 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
             try:
                 for mode in modes:
                     run = dict(opts)
-                    if mode == "section":
-                        run["download_ranges"] = download_range_func(
-                            None, [(float(start), float(end))])
-                        run["force_keyframes_at_cuts"] = True
-                        run["external_downloader_args"] = {"ffmpeg_o": [
-                            *encoders[0][1], "-c:a", "aac", "-b:a", "192k",
-                            "-movflags", "+faststart"]}
-                        _status(tr("Fetching only {a} → {b} at {q}…").format(
-                            a=fmt_clock(start), b=fmt_clock(end), q=f"{cap}p"))
-                    else:
-                        _status(tr("Downloading the {q} file, then cutting…")
-                                .format(q=f"{cap}p"))
                     try:
-                        with yt_dlp.YoutubeDL(run) as ydl:
-                            inf = ydl.extract_info(url, download=True)
-                            reqs = inf.get("requested_downloads") or []
-                            src = ((reqs[0].get("filepath") if reqs else None)
-                                   or ydl.prepare_filename(inf))
+                        if mode == "section":
+                            run["download_ranges"] = download_range_func(
+                                None, [(float(start), float(end))])
+                            run["force_keyframes_at_cuts"] = True
+                            run["external_downloader_args"] = {"ffmpeg_o": [
+                                *encoders[0][1], "-c:a", "aac", "-b:a", "192k",
+                                "-movflags", "+faststart"]}
+                            _status(tr("Fetching only {a} → {b} at {q}…").format(
+                                a=fmt_clock(start), b=fmt_clock(end),
+                                q=f"{cap}p"))
+                        else:
+                            _status(tr("Downloading the {q} file, then cutting…")
+                                    .format(q=f"{cap}p"))
+                        # FFmpegFD is only selected for a section download when
+                        # yt-dlp can see ffmpeg on PATH (see _ffmpeg_on_path).
+                        with _ffmpeg_on_path(ffmpeg_dir if mode == "section" else ""):
+                            with _freeze_ffmpeg_children_while_paused(gate):
+                                with yt_dlp.YoutubeDL(run) as ydl:
+                                    inf = ydl.extract_info(url, download=True)
+                                    reqs = inf.get("requested_downloads") or []
+                                    src = ((reqs[0].get("filepath") if reqs else None)
+                                           or ydl.prepare_filename(inf))
                     except Exception as exc:  # noqa: BLE001
                         if (mode == "section" and not _is_bot_or_403(str(exc))
                                 and not (should_cancel and should_cancel())):
@@ -1902,11 +2620,18 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
 def cut_link(url, height_cap, start, end, target_dir, on_status=None,
              on_progress=None, proxy_url="", cookies_browser="",
              should_cancel=None, on_resolved=None, audio_lang="",
-             output_format="mp4", audio_only=False):
+             output_format="mp4", audio_only=False, should_pause=None,
+             live_dvr=0.0, live_probe_age=0.0):
     """Cut [start, end) out of a YouTube link at ≤ height_cap (0 = best
     available, up to 4K) into `target_dir`. Blocking — call on a worker thread.
     `on_progress(pct, written_bytes)`; `on_resolved(height_px, label)` reports
-    the quality actually cut. Returns (ok, message_or_CANCELLED, filepath)."""
+    the quality actually cut. `should_pause` freezes the running job in
+    place (same position on resume); `should_cancel` stops it for good.
+    For a LIVE stream `start`/`end` are DVR-timeline seconds, `live_dvr` is
+    the buffer length the page measured at probe time and `live_probe_age`
+    how long ago that was — the buffer slides, so the pick is mapped by its
+    distance from the live edge plus that age (see _cut_live_hls).
+    Returns (ok, message_or_CANCELLED, filepath)."""
     # v1.0.2: YouTube cuts need the required JS runtime, same as a normal
     # download. The PO Token helper stays optional and is used when present.
     from app.core.runtime_deps import download_engine_missing
@@ -1940,6 +2665,17 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
         if saw_cookie and "cookie" not in msg.lower():
             msg = f"{msg} {_cookie_hint()}"
         return False, msg, ""
+
+    # A live stream has no duration and ships HLS only — it is cut from the
+    # DVR buffer instead (see the live-stream section above).
+    if _is_live_info(info):
+        return _cut_live_hls(
+            info, height_cap, start, end, live_dvr, target_dir,
+            on_status=on_status, on_progress=on_progress,
+            should_cancel=should_cancel, should_pause=should_pause,
+            audio_lang=audio_lang, output_format=output_format,
+            audio_only=audio_only, on_resolved=on_resolved,
+            proxy_url=proxy_url, probe_age=live_probe_age)
     try:
         dur = float(info.get("duration") or 0)
     except (TypeError, ValueError):
@@ -1999,12 +2735,20 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
 
     vid = info.get("id") or "video"
     title = info.get("title") or tr("Untitled")
-    label = (tr("Audio only") if audio_only else (f"{got_px}p" if got_px else (
-        f"{int(height_cap)}p" if height_cap else tr("best"))))
     tag = clip_tag(start, end)
-    stem = (f"{sanitize_filename(title)} [clip {tag}] "
-            f"[{vid}] {label}"
-            + (f" [{audio_lang}]" if audio_lang else ""))
+
+    def _label_for(px):
+        if audio_only:
+            return tr("Audio only")
+        return f"{int(px)}p" if px else (
+            f"{int(height_cap)}p" if height_cap else tr("best"))
+
+    label = _label_for(got_px)
+
+    def _stem_for(px):
+        return (f"{sanitize_filename(title)} [clip {tag}] "
+                f"[{vid}] {_label_for(px)}"
+                + (f" [{audio_lang}]" if audio_lang else ""))
 
     def _report(px, lbl):
         if on_resolved:
@@ -2032,7 +2776,7 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
             on_status=on_status, on_progress=on_progress,
             proxy_url=proxy_url, cookies_browser=cookies_browser,
             should_cancel=should_cancel, audio_lang=audio_lang,
-            video_kbps=v_kbps)
+            video_kbps=v_kbps, should_pause=should_pause)
 
     # An explicit 4K/1440p pick whose tier is not even VISIBLE right now must
     # not silently arrive as a lower tier: go straight to the fetch-then-cut
@@ -2055,8 +2799,9 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
                 "{top}p.").format(want=want, top=top), ""
         return False, msg_f or tr("No playable stream at that quality."), ""
 
-    def _out_for(ext):
-        return _unique_path(target_dir, f"{stem}.{ext or 'mp4'}")
+    def _out_for(ext, px=None):
+        return _unique_path(target_dir,
+                            f"{_stem_for(int(px or 0) or got_px)}.{ext or 'mp4'}")
 
     _status(tr("Cutting {a} → {b} …").format(a=fmt_clock(start),
                                              b=fmt_clock(end)))
@@ -2087,7 +2832,7 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
                           output_format if audio_only else "mp4",
                           video_reencode=not audio_only, audio_only=audio_only,
                           vcodec_args=enc_args),
-                seg_len, out_path, on_progress, should_cancel)
+                seg_len, out_path, on_progress, should_cancel, should_pause)
             if ok:
                 _report(int(got_px or 0), label)
                 return True, out_path, out_path
@@ -2106,14 +2851,19 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
         if idx > 0:
             _status(tr("Retrying with another stream ({i}/{n}) …").format(
                 i=idx + 1, n=len(cands)))
-        out_path = _out_for(output_format if audio_only else (output_format or ext))
+        out_path = _out_for(output_format if audio_only else (output_format or ext),
+                            px)
         ok, msg = _run_ffmpeg_cut(
             _cut_args(ffmpeg, v_url, a_url, start, seg_len,
                       output_format if audio_only else (output_format or ext),
                       audio_only=audio_only),
-            seg_len, out_path, on_progress, should_cancel)
+            seg_len, out_path, on_progress, should_cancel, should_pause)
         if ok:
-            _report(int(got_px or 0), label)
+            # Name and report THIS stream's resolution: a later candidate is
+            # often a lower tier (the top one expired), and reusing the first
+            # pick's label wrote a 720p file called "1080p".
+            use_px = int(px or got_px or 0)
+            _report(use_px, _label_for(use_px))
             return True, out_path, out_path
         if msg == DOWNLOAD_CANCELLED:
             return False, msg, ""
@@ -2137,7 +2887,7 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
             ok, msg = _run_ffmpeg_cut(
                 _cut_args(ffmpeg, v_url, a_url, start, seg_len, "mp4",
                           audio_reencode=True),
-                seg_len, out_path, on_progress, should_cancel)
+                seg_len, out_path, on_progress, should_cancel, should_pause)
             if ok:
                 _report(int(got_px or 0), label)
                 return True, out_path, out_path
@@ -2162,12 +2912,14 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
                     fresh_direct, height_cap, limit=2, audio_lang=audio_lang)
                 if fcands:
                     v_url, a_url, ext, _px = fcands[0]
-                    out_path = _out_for(ext)
+                    out_path = _out_for(ext, _px)
                     ok, msg = _run_ffmpeg_cut(
                         _cut_args(ffmpeg, v_url, a_url, start, seg_len, ext),
-                        seg_len, out_path, on_progress, should_cancel)
+                        seg_len, out_path, on_progress, should_cancel,
+                        should_pause)
                     if ok:
-                        _report(int(got_px or 0), label)
+                        use_px = int(_px or got_px or 0)
+                        _report(use_px, _label_for(use_px))
                         return True, out_path, out_path
                     if msg == DOWNLOAD_CANCELLED:
                         return False, msg, ""
@@ -2192,9 +2944,12 @@ def cut_link(url, height_cap, start, end, target_dir, on_status=None,
 
 
 def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
-             should_cancel=None, output_format="mp4", audio_only=False):
+             should_cancel=None, output_format="mp4", audio_only=False,
+             should_pause=None):
     """Cut [start, end) out of a LOCAL file (original quality, stream copy).
-    Blocking — call on a worker thread. Returns (ok, message, filepath)."""
+    Blocking — call on a worker thread. `should_pause` freezes the running
+    job in place (resume continues from the same frame). Returns
+    (ok, message, filepath)."""
     def _status(text):
         if on_status:
             on_status(text)
@@ -2243,7 +2998,7 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
         ok, msg = _run_ffmpeg_cut(
             _cut_args(ffmpeg, path, None, start, seg_len, output_format,
                       audio_only=True),
-            seg_len, out_path, on_progress, should_cancel)
+            seg_len, out_path, on_progress, should_cancel, should_pause)
         if ok:
             return True, out_path, out_path
         return False, msg, ""
@@ -2254,7 +3009,7 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
                 _cut_args(ffmpeg, path, None, start, seg_len, output_format,
                           video_reencode=True, vcodec_args=enc_args)
                 + ["-map", "0:v:0", "-map", "0:a:0?"],
-                seg_len, out_path, on_progress, should_cancel)
+                seg_len, out_path, on_progress, should_cancel, should_pause)
             if ok:
                 return True, out_path, out_path
             if msg == DOWNLOAD_CANCELLED:
@@ -2267,7 +3022,7 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
              "-t", f"{seg_len:.3f}", "-map", "0:v:0", "-map", "0:a:0?",
              "-c", "copy", "-avoid_negative_ts", "make_zero",
              "-progress", "pipe:1", "-nostats", "-v", "error"],
-            seg_len, out_path, on_progress, should_cancel)
+            seg_len, out_path, on_progress, should_cancel, should_pause)
         if ok or msg == DOWNLOAD_CANCELLED:
             return (True, out_path, out_path) if ok else (False, msg, "")
         ok, msg = _run_ffmpeg_cut(
@@ -2277,7 +3032,7 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
              "-row-mt", "1", "-crf", "30", "-b:v", "0",
              "-c:a", "libopus", "-b:a", "128k",
              "-progress", "pipe:1", "-nostats", "-v", "error"],
-            seg_len, out_path, on_progress, should_cancel)
+            seg_len, out_path, on_progress, should_cancel, should_pause)
         return (True, out_path, out_path) if ok else (False, msg, "")
     # No encoder available (or the source defeated it): fall back to stream
     # copy, which keeps the original codecs. Still keyframe-approximate — that
@@ -2288,12 +3043,16 @@ def cut_file(path, start, end, target_dir, on_status=None, on_progress=None,
             "-ss", f"{pre:.3f}", "-i", path,
             "-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}",
             "-c", "copy",
+            # Video + first audio only: a source with subtitle/data streams
+            # (mov_text, bin_data, chapters) cannot be copied into mp4/mkv
+            # alongside them, and ffmpeg failed the whole cut on it.
+            "-map", "0:v:0", "-map", "0:a:0?",
             "-avoid_negative_ts", "make_zero",
             "-progress", "pipe:1", "-nostats", "-v", "error"]
     if output_format == "mp4":
         args += ["-movflags", "+faststart"]
     ok, msg = _run_ffmpeg_cut(args, seg_len, out_path,
-                              on_progress, should_cancel)
+                              on_progress, should_cancel, should_pause)
     if not ok:
         return False, msg, ""
     return True, out_path, out_path

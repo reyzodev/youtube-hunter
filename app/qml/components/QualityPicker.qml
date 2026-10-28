@@ -144,6 +144,38 @@ Dialog {
         return r.label
     }
 
+    // A quality this device already has: play it right here, with every other
+    // saved quality of the video in the player's gear menu so switching does
+    // not need a trip back through the picker.
+    function _playSaved(row) {
+        if (!row || !row.savedUrl) return
+        var byUrl = {}, qs = []
+        for (var i = 0; i < root.rows.length; ++i) {
+            var r = root.rows[i]
+            if (!r || !r.saved || !r.savedUrl) continue
+            var e = byUrl[r.savedUrl]
+            if (!e) {
+                e = { label: root._shortLabel(r), key: r.key,
+                      filePath: r.savedPath, fileUrl: r.savedUrl }
+                byUrl[r.savedUrl] = e
+                qs.push(e)
+            } else if (e.key === "best" && r.key !== "best") {
+                // "best" and the top tier are one file on disk; name it by its
+                // resolution, which is what the gear menu should say.
+                e.label = root._shortLabel(r)
+                e.key = r.key
+            }
+        }
+        savedPlayer.play({
+            videoId: root.videoId,
+            title: root.videoTitle,
+            fileUrl: row.savedUrl,
+            isAudio: !!row.isAudio,
+            thumbId: root.thumbId,
+            qualities: qs
+        })
+    }
+
     // The probe narrows the list; seed the pick once the real rows land and
     // keep the user's choice after that (a format switch also re-emits).
     Connections {
@@ -547,6 +579,26 @@ Dialog {
                                 size: 17
                                 glyphColor: col.picked ? Theme.on_primary : Theme.on_surface_var
                             }
+
+                            // Already on this device — a quiet check, so the
+                            // ladder answers "what do I already have?" at a
+                            // glance instead of only after picking a column.
+                            Rectangle {
+                                visible: !!col.r.saved
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: Tokens.space1
+                                width: 18
+                                height: 18
+                                radius: 9
+                                color: col.picked ? Theme.on_primary : Theme.secondary_container
+                                C.IconGlyph {
+                                    anchors.centerIn: parent
+                                    name: "check"
+                                    size: 11
+                                    glyphColor: col.picked ? Theme.primary : Theme.surface
+                                }
+                            }
                         }
 
                         C.AppText {
@@ -643,6 +695,38 @@ Dialog {
                     color: Theme.on_surface_var
                     elide: Text.ElideRight
                     Layout.fillWidth: true
+                }
+                // Already downloaded: the marker's whole point is to open the
+                // file, so the play action lives right on the selected pick.
+                RowLayout {
+                    visible: !QualityProbe.busy && !!root._sel && !!root._sel.saved
+                    Layout.fillWidth: true
+                    Layout.topMargin: Tokens.space1
+                    spacing: Tokens.space2
+                    C.IconGlyph {
+                        name: "check_circle"
+                        size: 15
+                        glyphColor: Theme.secondary_container
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    C.AppText {
+                        text: !!root._sel && (root._sel.savedSizeText || "") !== ""
+                              ? I18n.tr("Already downloaded — {s} on this device").replace("{s}", root._sel.savedSizeText)
+                              : I18n.tr("Already downloaded — saved on this device")
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.secondary_container
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    C.PrimaryButton {
+                        variant: "ghost"
+                        iconName: "play_arrow"
+                        text: I18n.tr("Play")
+                        implicitHeight: 32
+                        implicitWidth: 96
+                        Layout.alignment: Qt.AlignVCenter
+                        onClicked: root._playSaved(root._sel)
+                    }
                 }
                 // A failed probe means this is the generic ladder, not this
                 // video's formats — say so on the pick itself.
@@ -835,4 +919,8 @@ Dialog {
             }
         }
     }
+
+    // Plays a saved quality without leaving the picker: it opens over the
+    // dialog, and closing it lands back on the ladder.
+    C.VideoPlayer { id: savedPlayer; objectName: "pickerPlayer" }
 }

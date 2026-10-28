@@ -7,6 +7,41 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Cutter: pause stays put, live streams cut, and the picker knows what you already own
+
+- **Pause no longer kills the cut.** Pausing used to stop reading ffmpeg's
+  progress while the muxer kept running; the bar froze and the job ended as a
+  truncated failure. The whole worker tree is now actually suspended in place
+  (Windows `NtSuspendProcess` on yt-dlp and its ffmpeg children, plus a
+  cooperative gate for the Python phases), the stall watchdog ignores paused
+  time, and Resume continues from the same byte — verified on a 1080p
+  re-encode and on a live-buffer cut.
+- **Live streams are cuttable.** Paste a live link and the timeline becomes
+  YouTube's DVR buffer (≈60 min): pick a window, and the cut is served from the
+  locally stitched HLS segments with stream copy — no re-encode, no waiting on
+  the live edge. The selection is remembered as "this window, N seconds before
+  the live edge", so a stream that keeps sliding while you decide still delivers
+  the moment you picked; a window that has already slid out of the buffer, or
+  one right at the edge that is not published yet, says which of the two it is.
+  The quality list, audio tracks and the IP/VPN note all come from the same
+  probe as a normal video.
+- **Cuts started in the browser extension are visible in the app.** The Cutter
+  page's strip lists extension cuts live — progress, pause/resume, cancel and
+  Play — and the desktop live card still takes over when the window is closed.
+  They share the same job store, so a pause in either place is the same pause.
+- **The quality dialog says which qualities you already have.** Each ladder
+  column whose file is already on disk wears a check, and choosing it shows
+  "Already downloaded — 48.2 MB on this device" with a **Play** button that
+  opens the in-app player right there, with every other saved quality of that
+  video in its gear menu. Files are matched from the downloads folder by
+  `[video-id]` + quality key, so downloads from older builds count too; "Best"
+  and the top resolution are recognised as the same file. Markers also appear
+  when the probe fails, so the existing files are never hidden by a bad network.
+- **Downloads: the last silent step says what it is doing.** A VP9/AV1 → H.264
+  remux or an MP3 conversion held the row at "Merging…" for 10-30 s; the live
+  phase text ("Converting to MP3…") now replaces it in the Downloads list as
+  well, instead of the row dropping back to a determinate 99 % "downloading".
+
 ## Unreleased: Monetize Checker — revenue priced per format, not per sample
 
 - The Shorts/long-form split was taken from the last 50 uploads and applied to

@@ -317,6 +317,21 @@ class WebBridge(QObject):
         self._revealPathReq.connect(self._on_reveal_path)
         self._cutEvent.connect(self._on_cut_event)
         self._ctlReq.connect(self._on_ctl)
+        # The Cutter page's live strip cancels through the same job store the
+        # extension's own /v1/cut/cancel uses.
+        if self._cutter is not None:
+            try:
+                self._cutter.set_ext_cut_cancel(self.cancel_cut_job)
+            except Exception:             # noqa: BLE001 — display only
+                pass
+
+    def cancel_cut_job(self, job):
+        """Cancel one extension cut (called from the app's live strip)."""
+        j = self.cuts.get(job)
+        if j is not None and j.get("state") in ("starting", "running"):
+            self.cuts.update(job, cancel=True)
+            return True
+        return False
 
     # ── pending starts (handler thread ↔ GUI thread) ────────────────────
     def mark_pending(self, video_id):
@@ -488,7 +503,8 @@ class WebBridge(QObject):
             except Exception:             # noqa: BLE001
                 pass
         self._cutEvent.emit(job, "begin", {"title": title, "vid": vid,
-                                           "start": start, "end": end})
+                                           "start": start, "end": end,
+                                           "channel": str(channel or "")})
 
         def worker():
             from app.core.cutter import cut_link
@@ -608,6 +624,12 @@ class WebBridge(QObject):
         key = "ext-cut:" + job
         n = self._notifier
         try:
+            # Mirror the job onto the Cutter page's live strip: when the app
+            # window is open the desktop card never shows (_can_show wants the
+            # app in the background), and the extension cut used to be
+            # invisible in-app.
+            if self._cutter is not None and kind in ("begin", "update", "finish"):
+                self._cutter.note_ext_cut(job, kind, data)
             if kind == "begin" and n is not None:
                 n.live_begin(key, "cut", title=data.get("title") or tr("Untitled"),
                              thumb_url=f"https://i.ytimg.com/vi/{data.get('vid')}/mqdefault.jpg",

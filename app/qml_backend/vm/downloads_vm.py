@@ -503,6 +503,9 @@ class DownloadsVM(QObject):
             self.toast.emit(tr("This item has no video URL."), "error")
             return
         if dlp.is_running(video_id):
+            # Silent here looked broken: the picker closes and nothing happens
+            # (typical while a just-deleted row still finishes post-processing).
+            self.toast.emit(tr("This video is already downloading."), "info")
             return
 
         quality = (DOWNLOAD_QUALITY_PRESETS[quality_index]
@@ -685,7 +688,10 @@ class DownloadsVM(QObject):
         if tr("Merging…") == text:
             # UPDATE-ONLY: a row the user deleted must not be re-created here.
             downloads_upsert(video_id, status="merging", create_if_missing=False)
-            dlp.publish(video_id, text=text, structural=True)
+            # The transfer's last speed/ETA must not outlive the transfer: the
+            # row otherwise showed "4.2 MB/s · 2m 10s left" frozen through the
+            # whole mux / conversion.
+            dlp.publish(video_id, text=text, structural=True, speed=0.0, eta=0)
         else:
             dlp.publish(video_id, text=text)
 
@@ -818,7 +824,14 @@ class DownloadsVM(QObject):
         # A user stop is not a failure. Park the row as "stopped" at the percent
         # it reached so the row offers a play button to resume, rather than
         # showing a scary "failed" state or vanishing.
-        if message == DOWNLOAD_CANCELLED or was_cancelling:
+        # A stop/pause pressed while yt-dlp was muxing or converting is too
+        # late: those post-processors never poll the cancel flag, so the worker
+        # returns ok=True with the finished file. Parking the row "stopped"
+        # with no filepath orphaned that file on disk and made Resume download
+        # everything again — report it as the completed download it is. A
+        # deleted row still stays deleted (the upsert below never re-creates).
+        finished_late = bool(ok and filepath and intent != "delete")
+        if (message == DOWNLOAD_CANCELLED or was_cancelling) and not finished_late:
             if intent == "delete":
                 downloads_delete(video_id)
             else:
@@ -971,7 +984,10 @@ class DownloadsVM(QObject):
                 if not m:
                     continue
                 full = os.path.join(folder, name)
-                if not os.path.isfile(full):
+                low = name.lower()
+                # ".part"/".ytdl" is a transfer still in progress: offering it
+                # in the player's quality menu opened a truncated file.
+                if not os.path.isfile(full) or ".part" in low or low.endswith(".ytdl"):
                     continue
                 key = m.group(1).strip().lower()
                 label = _QUALITY_KEY_LABELS.get(key) or (key.upper() if key
