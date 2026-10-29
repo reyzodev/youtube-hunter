@@ -35,7 +35,8 @@ from app.core.ai.profiles import resolve as resolve_ai_route, is_ready as ai_rou
 from app.core.ai.clients import AIClient, api_mode_for
 from app.core.ai.insights import generate_insights, parse_insights_response
 from app.core.analysis.snapshot import (build_snapshot, duration_label,
-                                        recency_label, verdict_line,
+                                        lift_group_label, lift_label,
+                                        recency_label, size_label, verdict_line,
                                       DURATION_BUCKETS as _DURATION_BUCKETS,
                                       RECENCY_BUCKETS as _RECENCY_BUCKETS)
 from app.core.db.insights import (insights_delete, insights_get, insights_list,
@@ -451,8 +452,17 @@ class InsightsVM(QObject):
         tuple crosses into QML as a positional list, and `modelData[1]` in a
         delegate is the kind of thing that breaks silently the day the tuple
         grows a third element."""
-        chips = ((self._snap or {}).get("topics") or {}).get("chips", []) or []
-        return [{"label": label, "count": count} for label, count in chips]
+        topics = (self._snap or {}).get("topics") or {}
+        chips = topics.get("chips", []) or []
+        lifts = topics.get("lifts") or {}
+        out = []
+        for label, count in chips:
+            lift = (lifts.get(label) or {}).get("lift")
+            out.append({"label": label, "count": count,
+                        # v1.0.2: does this term CARRY views, or is it just common?
+                        "lift": float(lift) if lift else 0.0,
+                        "liftText": ("%.1f×" % lift) if lift else ""})
+        return out
 
     @Property(str, notify=snapshotChanged)
     def topicsSource(self):
@@ -504,6 +514,110 @@ class InsightsVM(QObject):
                 "sharePct": "%d%%" % int((channel.get("share") or 0) * 100),
             })
         return out
+
+    # ── v1.0.2 "what earns" (demand side) ───────────────────────────────
+    @Property("QVariantList", notify=snapshotChanged)
+    def earnRows(self):
+        """Every choice with enough videos on both sides, strongest first.
+
+        v1.0.3: built by app.core.analysis.earn_read, which adds the plain-
+        language read (pct / verdict / strength / sentence) on top of the
+        original fields (`pos` on a log2 scale clamped to ¼×…4×, `flat` for
+        readings too close to 1× to act on)."""
+        from app.core.analysis.earn_read import earn_rows
+        lifts = (self._snap or {}).get("lifts") or {}
+        return earn_rows(lifts, lift_group_label, lift_label)
+
+    @Property("QVariantMap", notify=snapshotChanged)
+    def earnPlan(self):
+        """v1.0.3: the three cards over the chart — do more of / skip /
+        doesn't matter — so the panel opens on advice, not on a chart."""
+        from app.core.analysis.earn_read import earn_plan, earn_rows
+        lifts = (self._snap or {}).get("lifts") or {}
+        return earn_plan(earn_rows(lifts, lift_group_label, lift_label))
+
+    @Property(str, notify=snapshotChanged)
+    def earnBaseText(self):
+        base = ((self._snap or {}).get("lifts") or {}).get("base_daily")
+        return (humanize_count(base) + tr("/day")) if base else "—"
+
+    @Property(int, notify=snapshotChanged)
+    def earnDatedRows(self):
+        return int(((self._snap or {}).get("lifts") or {}).get("rows") or 0)
+
+    # ── v1.0.2 "can a newcomer get in?" (entry side) ────────────────────
+    @Property("QVariantList", notify=snapshotChanged)
+    def entryLadder(self):
+        """Channel-size tiers, smallest first: how many videos each tier placed
+        in this set, their typical views/day, and how many beat the set."""
+        snap = self._snap or {}
+        base = (snap.get("lifts") or {}).get("base_daily")
+        tiers = snap.get("size_tiers") or []
+        most = max([t.get("rows") or 0 for t in tiers] + [1])
+        out = []
+        for t in tiers:
+            daily = t.get("median_daily")
+            out.append({
+                "label": size_label(t["key"]),
+                "rows": int(t.get("rows") or 0),
+                "frac": (t.get("rows") or 0) / most,
+                "daily": (humanize_count(daily) + tr("/day")) if daily else "—",
+                "beat": int(t.get("beat_daily") or 0),
+                "dated": int(t.get("dated_rows") or 0),
+                "vsTypical": ("%.1f×" % (daily / base)) if (daily and base) else "",
+                "strong": bool(daily and base and daily >= base),
+            })
+        return out
+
+    @Property("QVariantMap", notify=snapshotChanged)
+    def entry(self):
+        """Newcomers (channels under a year old) and the panel's verdict.
+
+        verdict: "open" newcomers / small channels demonstrably beat the set ·
+                 "closed" nobody small or new made the list ·
+                 "rare" they are present but rarely keep up ·
+                 "unknown" not enough public data to say."""
+        snap = self._snap or {}
+        new = snap.get("newcomers") or {}
+        sized = int(snap.get("sized_rows") or 0)
+        aged = int(new.get("aged_rows") or 0)
+        small_beat = int(snap.get("small_beat_median") or 0)
+        small_rows = int(snap.get("small_rows") or 0)
+        if sized < 5 and aged < 5:
+            verdict = "unknown"
+        elif new.get("beat_typical", 0) >= 1 or small_beat >= 2:
+            verdict = "open"
+        elif small_rows == 0 and not new.get("rows"):
+            verdict = "closed"
+        else:
+            verdict = "rare"
+        best = new.get("best") or None
+        months = int((best or {}).get("channel_age_days") or 0) // 30
+        return {
+            "verdict": verdict,
+            "verdictText": {
+                "open": tr("Newcomers get in"),
+                "rare": tr("Possible, rarely"),
+                "closed": tr("Incumbents only"),
+                "unknown": tr("Not enough data"),
+            }[verdict],
+            "agedRows": aged,
+            "newRows": int(new.get("rows") or 0),
+            "newChannels": int(new.get("channels") or 0),
+            "newBeat": int(new.get("beat_typical") or 0),
+            "newDated": int(new.get("dated_rows") or 0),
+            "newDaily": (humanize_count(new["median_daily"]) + tr("/day")
+                         if new.get("median_daily") else "—"),
+            "hasBest": bool(best),
+            "bestTitle": (best or {}).get("title", ""),
+            "bestChannel": (best or {}).get("channel_title", ""),
+            "bestThumb": _thumb_id((best or {}).get("thumbnail_url", "")),
+            "bestUrl": (best or {}).get("video_url", ""),
+            "bestDaily": (humanize_count(best["daily"]) + tr("/day")) if best else "",
+            "bestAge": (tr("{m} mo old channel").format(m=max(1, months)) if best else ""),
+            "bestSubs": (humanize_count(best["subscriber_count"]) + " " + tr("subs")
+                         if best and best.get("subscriber_count") else ""),
+        }
 
     # ── v3.39.8 "shape of the set" redesign ─────────────────────────────
     # Unlike durationMix / recencyMix these keep EVERY bucket, in order, empty
@@ -577,9 +691,10 @@ class InsightsVM(QObject):
             ("tags", tr("Tags")),
             ("captions", tr("Captions")),
             ("channel_baseline", tr("Channel average (outlier baseline)")),
+            ("channel_age", tr("Channel creation date")),
         ]
-        return [{"label": label, "value": "%d / %d" % (coverage[key], total),
-                 "frac": coverage[key] / total}
+        return [{"label": label, "value": "%d / %d" % (coverage.get(key, 0), total),
+                 "frac": coverage.get(key, 0) / total}
                 for key, label in labels]
 
     # ── the written brief ────────────────────────────────────────────────

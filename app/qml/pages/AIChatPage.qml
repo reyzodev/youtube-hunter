@@ -22,7 +22,7 @@ import "../Utils.js" as U
 //   * Colour — Graphite + the live accent used as a studio TALLY LIGHT only:
 //     live state, outliers, the send key. Mint = ready, amber = missing
 //     transcript, tertiary = the model.
-//   * Signature — the sigil (C.HunterSigil): the Hunter crest in HUD brackets
+//   * Signature — the mark (C.HunterAvatar, v1.0.4; was C.HunterSigil): the Hunter crest on an accent tile
 //     that breathes when idle, hunts while thinking, locks on while streaming.
 //   * Multitool — the + unfolds every way to bring data in (Niche Finder,
 //     Archive, a YouTube link, files, Google Drive, images).
@@ -185,6 +185,120 @@ Item {
 
     // ═══ small building blocks ═══
     component Hairline: Rectangle { color: Theme.border; implicitWidth: 1; implicitHeight: 1 }
+
+    // v1.0.4: size of Hunter's mark in the message header (was 28)
+    readonly property int _avatarSize: 30
+
+    // v1.0.4: does this text read right-to-left? Decided by its first strong
+    // letter (Persian/Arabic/Hebrew -> true, Latin -> false), skipping markdown
+    // marks, digits and emoji, exactly the way Text picks its own alignment.
+    // The UI chrome stays English; only Hunter's header row follows the answer.
+    function _isRtl(s) {
+        s = String(s || "")
+        var n = Math.min(s.length, 600)
+        for (var i = 0; i < n; i++) {
+            var c = s.charCodeAt(i)
+            if ((c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF))
+                return true
+            if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || (c >= 0xC0 && c <= 0x024F))
+                return false
+        }
+        return false
+    }
+    function _partsRtl(parts) {
+        if (!parts) return false
+        for (var i = 0; i < parts.length; i++) {
+            var p = parts[i]
+            if (p && p.type !== "ideas" && p.type !== "next" && p.text) return page._isRtl(p.text)
+        }
+        return false
+    }
+    // before the first token of a live answer, follow the question's language
+    readonly property bool _liveRtl: Chat.streamText !== ""
+                                     ? _isRtl(Chat.streamText)
+                                     : (_lastUserIdx >= 0 && _msgs[_lastUserIdx] ? _isRtl(_msgs[_lastUserIdx].text) : false)
+
+    // v1.0.4: the line next to Hunter's mark on every answer —
+    //   Hunter  [● free / gemini-3.8-flash]  01:25
+    // The model sits in a quiet mono chip (route prefix dimmed) instead of a
+    // run of grey text, so the name leads and the meta reads as meta.
+    component AuthorMeta: Row {
+        id: am
+        property string model: ""
+        property string time: ""
+        property bool live: false
+        // RTL answer: Hunter on the right, then the model chip, then the time
+        property bool rtl: false
+        layoutDirection: rtl ? Qt.RightToLeft : Qt.LeftToRight
+        readonly property int _cut: model.lastIndexOf("/")
+        readonly property string _route: _cut > 0 ? model.substring(0, _cut) : ""
+        readonly property string _name: _cut > 0 ? model.substring(_cut + 1) : model
+        spacing: 8
+        anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+        LayoutMirroring.enabled: false
+
+        C.AppText {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Hunter"
+            weight: Tokens.weightExtraBold
+            font.pixelSize: Tokens.fontLabel
+            font.letterSpacing: -0.2
+            color: Theme.text_strong
+        }
+        Rectangle {
+            visible: am.model !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            implicitHeight: 22
+            implicitWidth: chipRow.implicitWidth + 16
+            radius: Tokens.radiusPill
+            color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.045 : 0.035)
+            border.width: 1
+            border.color: Theme.border
+            Row {
+                id: chipRow
+                anchors.centerIn: parent
+                spacing: 6
+                // the model id is Latin; it always reads left-to-right
+                layoutDirection: Qt.LeftToRight
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 6; height: 6; radius: 3
+                    color: am.live ? Theme.primary : Theme.secondary_container
+                    SequentialAnimation on opacity {
+                        running: am.live && am.visible
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.3; duration: 600; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.0; duration: 600; easing.type: Easing.InOutSine }
+                    }
+                }
+                C.AppText {
+                    visible: am._route !== ""
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: am._route + " /"
+                    mono: true
+                    font.pixelSize: Tokens.fontMicro
+                    color: Theme.outline
+                }
+                C.AppText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: am._name
+                    mono: true
+                    font.pixelSize: Tokens.fontMicro
+                    weight: Tokens.weightMedium
+                    color: Theme.on_surface_var
+                    elide: Text.ElideRight
+                    width: Math.min(implicitWidth, 260)
+                }
+            }
+        }
+        C.AppText {
+            visible: am.time !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            text: am.time
+            font.pixelSize: Tokens.fontCaption
+            color: Theme.outline
+        }
+    }
 
     component Pill: Rectangle {
         id: pill
@@ -926,7 +1040,7 @@ Item {
                             PathLine { x: 0; y: 0 }
                         }
                     }
-                    C.HunterSigil {
+                    C.HunterAvatar {
                         id: heroLens
                         anchors.centerIn: parent
                         size: Math.round(Math.max(96, Math.min(150, empty.height * 0.22)))
@@ -1136,27 +1250,27 @@ Item {
                 Column {
                     id: aiCol
                     visible: modelData.role === "assistant"
+                    readonly property bool rtl: modelData.role === "assistant" && page._partsRtl(modelData.parts)
                     width: chatCol.colW
                     x: (msgList.width - width) / 2
                     y: 4
                     spacing: 10
                     Row {
+                        // v1.0.4: a Persian answer puts the header on the right:
+                        // mark, then "Hunter", then the model
+                        layoutDirection: aiCol.rtl ? Qt.RightToLeft : Qt.LeftToRight
+                        x: aiCol.rtl ? aiCol.width - width : 0
                         spacing: 10
-                        // v3.40.7: every past answer used to build its own lens (4 Shapes,
-                        // curve-rendered) — the same idle picture ten times over. Now they
-                        // all sample ONE shared texture; software renderer keeps the real one.
+                        // v3.40.7: every past answer used to build its own mark (several
+                        // curve-rendered Shapes) — the same idle picture ten times over. Now
+                        // they all sample ONE shared texture; software renderer keeps the real one.
+                        // v1.0.4: the mark is the accent app-tile (C.HunterAvatar).
                         Loader {
-                            width: 28; height: 28
+                            width: page._avatarSize; height: page._avatarSize
                             anchors.verticalCenter: parent.verticalCenter
                             sourceComponent: page._gpu ? lensStamp : lensReal
                         }
-                        C.AppText { text: "Hunter"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: (modelData.model ? modelData.model + " · " : "") + modelData.time
-                            color: Theme.outline
-                            font.pixelSize: Tokens.fontCaption
-                        }
+                        AuthorMeta { model: modelData.model || ""; time: modelData.time || ""; rtl: aiCol.rtl }
                     }
                     Repeater {
                         model: modelData.role === "assistant" ? modelData.parts : []
@@ -1240,6 +1354,8 @@ Item {
                     Pill { visible: modelData.stopped === true; icon: "stop_circle"; text: I18n.tr("Stopped") }
                     Row {
                         spacing: 2
+                        layoutDirection: aiCol.rtl ? Qt.RightToLeft : Qt.LeftToRight
+                        x: aiCol.rtl ? aiCol.width - width : 0
                         opacity: (mHover.hovered || mrow.isLast) && modelData.error === "" ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
                         Ghost { glyph: "content_copy"; text: I18n.tr("Copy"); onClicked: Chat.copyMessage(modelData.id) }
@@ -1261,9 +1377,10 @@ Item {
                     spacing: 10
                     Row {
                         spacing: 10
-                        C.HunterSigil { size: 28; mode: Chat.phase; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText { text: "Hunter"; weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong; anchors.verticalCenter: parent.verticalCenter }
-                        C.AppText { anchors.verticalCenter: parent.verticalCenter; text: Chat.modelName; color: Theme.outline; font.pixelSize: Tokens.fontCaption }
+                        layoutDirection: page._liveRtl ? Qt.RightToLeft : Qt.LeftToRight
+                        x: page._liveRtl ? liveCol.width - width : 0
+                        C.HunterAvatar { size: page._avatarSize; mode: Chat.phase; anchors.verticalCenter: parent.verticalCenter }
+                        AuthorMeta { model: Chat.modelName || ""; time: ""; live: true; rtl: page._liveRtl }
                     }
                     Column {
                         visible: Chat.phase === "thinking"
@@ -1312,18 +1429,20 @@ Item {
         }
 
         // v3.40.7: the one idle lens every past answer shows (rendered once)
-        C.HunterSigil { id: lensMaster; size: 28; mode: "idle"; x: -200; y: -200; visible: page._gpu }
+        // v1.0.4: the mark is now the accent tile (C.HunterAvatar). Idle, it runs
+        // no animation at all, so the shared texture is effectively a still.
+        C.HunterAvatar { id: lensMaster; size: page._avatarSize; mode: "idle"; x: -200; y: -200; visible: page._gpu }
         ShaderEffectSource {
             id: lensTex
             sourceItem: page._gpu ? lensMaster : null
             hideSource: true
             live: true
-            width: 28; height: 28
-            textureSize: Qt.size(28 * Screen.devicePixelRatio, 28 * Screen.devicePixelRatio)
+            width: page._avatarSize; height: page._avatarSize
+            textureSize: Qt.size(page._avatarSize * Screen.devicePixelRatio, page._avatarSize * Screen.devicePixelRatio)
             visible: false
         }
         Component { id: lensStamp; ShaderEffect { property variant source: lensTex } }
-        Component { id: lensReal; C.HunterSigil { size: 28; mode: "idle" } }
+        Component { id: lensReal; C.HunterAvatar { size: page._avatarSize; mode: "idle" } }
 
         // v3.40.6: frozen picture of the previous chat, cross-faded away on a
         // switch. Declared after the thread but before the dock/header, so the
@@ -1991,7 +2110,7 @@ Item {
         Column {
             anchors.centerIn: parent
             spacing: 18
-            C.HunterSigil { anchors.horizontalCenter: parent.horizontalCenter; size: 140; mode: dropZone.containsDrag ? "streaming" : "idle" }
+            C.HunterAvatar { anchors.horizontalCenter: parent.horizontalCenter; size: 140; mode: dropZone.containsDrag ? "streaming" : "idle" }
             C.AppText { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.tr("Drop it and Hunter reads it"); weight: Tokens.weightExtraBold; font.pixelSize: Tokens.fontDisplay; color: Theme.text_strong }
             C.AppText { anchors.horizontalCenter: parent.horizontalCenter; text: "CSV · XLSX · PDF · DOCX · SRT · PNG/JPG — 40 MB"; mono: true; font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
         }

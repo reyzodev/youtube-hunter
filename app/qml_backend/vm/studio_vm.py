@@ -242,13 +242,13 @@ class StudioVM(QObject):
         idea_id = int(idea_id)
         records = content_lab_ideas_by_ids([idea_id])
         if not records:
-            self.toast.emit(tr("That blueprint is no longer saved."), "error")
+            self.toast.emit(tr("That greenlight is no longer saved."), "error")
             return
         raw = records[0]
         script = raw.get("full_script")
         if not isinstance(script, list) or not script:
             self.toast.emit(
-                tr("This blueprint has no script yet — rebuild it in full first."),
+                tr("This greenlight has no script yet — rebuild it in full first."),
                 "error")
             return
 
@@ -551,7 +551,7 @@ class StudioVM(QObject):
         self.scriptChanged.emit()
         self.dirtyChanged.emit()
         self.refreshLibrary()
-        self.toast.emit(tr("Script saved to the blueprint."), "success")
+        self.toast.emit(tr("Script saved to the greenlight."), "success")
 
     @Slot(str)
     def copyText(self, text):

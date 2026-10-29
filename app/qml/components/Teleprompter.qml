@@ -908,7 +908,7 @@ Item {
                             Layout.alignment: Qt.AlignHCenter
                         }
                         C.AppText {
-                            text: I18n.tr("Pick a blueprint with a script to read it here.")
+                            text: I18n.tr("Pick a greenlight with a script to read it here.")
                             color: root._inkMut
                             font.pixelSize: Tokens.fontLabel
                             Layout.alignment: Qt.AlignHCenter

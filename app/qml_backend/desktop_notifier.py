@@ -72,6 +72,13 @@ _LIVE_FLUSH_MS = 200     # update coalescing window
 # the page and the in-page "Saved" state is the whole story, so it is dropped.
 _PENDING_MAX_S = 240.0
 
+# v1.0.2 "Transfer capsule": the in-app activity feed (title bar capsule +
+# its panel) is rebuilt at most this often, and a job that just ended keeps a
+# short "done" beat in it before it leaves (seconds, per outcome).
+_DOCK_FLUSH_MS = 160
+_DOCK_EXPIRE_MS = 250
+_DOCK_HOLD_S = {"success": 2.2, "error": 4.6, "stopped": 1.1}
+
 # 11-char YouTube id → we can show its thumbnail on the card
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -187,6 +194,16 @@ class DesktopNotifier(QObject):
         self._sync_timer.timeout.connect(self._sync_live)
         self._preview_timer = None
         self._downloads = None         # DownloadsVM, for the card's ⏸ / ▶
+        # v1.0.2: in-app activity feed (see the "Transfer capsule" section)
+        self._activity = []            # what QML reads (DesktopNotify.activity)
+        self._dock_last = {}           # key -> last live payload
+        self._dock_done = {}           # key -> (expires_at, payload)
+        self._dock_outcomes = {}       # key -> outcome recorded by live_finish
+        self._dock_seen = set()        # keys that were live on the last rebuild
+        self._dock_timer = QTimer(self)
+        self._dock_timer.setSingleShot(True)
+        self._dock_timer.setInterval(_DOCK_FLUSH_MS)
+        self._dock_timer.timeout.connect(self._dock_rebuild)
         # v3.44: video id -> monotonic time the YouTube panel last polled it
         # while visible. A download someone is WATCHING in the browser gets
         # no desktop live card; close the panel and the card takes over.
@@ -458,6 +475,8 @@ class DesktopNotifier(QObject):
         if job.get("state") not in _LIVE_STATES:
             return bool(job.get("shown"))
         outcome = outcome if outcome in ("success", "error", "stopped") else "error"
+        self._dock_outcomes[key] = outcome
+        self._dock_touch()
         job["state"] = outcome
         if title:
             job["title"] = str(title)
@@ -617,10 +636,12 @@ class DesktopNotifier(QObject):
         self._dirty.add(key)
         if not self._flush_timer.isActive():
             self._flush_timer.start()
+        self._dock_touch()
 
     def _sync_live(self):
         """Make the screen match the rules: cards for running, un-dismissed
         jobs while the user is away (max _LIVE_MAX), none otherwise."""
+        self._dock_touch()
         away_ok = self._can_show()
         shown = 0
         for job in list(self._jobs.values()):
@@ -942,6 +963,122 @@ class DesktopNotifier(QObject):
             self._to_paused(job)         # ⏸: the card stays, now with ▶
             return
         self.live_finish(key, "stopped")
+
+    # ══ v1.0.2 "Transfer capsule": the in-app activity feed ══════════════
+    # The live cards above only exist while the user is AWAY. Inside the app
+    # every running download / cut is summarised by a compact capsule in the
+    # title bar (components/TransferCapsule.qml) that opens a small panel
+    # (components/TransferPanel.qml). Both read this one list: every job that
+    # is running or paused, in start order, plus a short "done" beat for a job
+    # that just ended so the capsule can play its exit instead of popping.
+    # It is fed by the same _jobs dict, so downloads from every page, cuts
+    # from the Cutter and cuts started in the YouTube panel all show up.
+    activityChanged = Signal()
+
+    @Property("QVariantList", notify=activityChanged)
+    def activity(self):
+        return self._activity
+
+    @Property(int, notify=activityChanged)
+    def activeCount(self):
+        return sum(1 for r in self._activity if not r.get("outcome"))
+
+    def _dock_touch(self):
+        try:
+            if not self._dock_timer.isActive():
+                self._dock_timer.start(_DOCK_FLUSH_MS)
+        except AttributeError:
+            pass                       # called before __init__ finished
+
+    def _dock_rebuild(self):
+        from app.i18n import tr
+        now = time.monotonic()
+        live_keys = set()
+        rows = {}
+        for job in list(self._jobs.values()):
+            key = job.get("key") or ""
+            if not key or job.get("state") not in _LIVE_STATES:
+                continue
+            live_keys.add(key)
+            if key.startswith("dl:") and not (job.get("title") and job.get("subtitle")):
+                # the DB row lands just after the first tick: retry, gently
+                if now - float(job.get("_dock_meta_at") or 0) > 1.0:
+                    job["_dock_meta_at"] = now
+                    self._dl_fill_meta(job, key[3:])
+            p = self._payload(job)
+            p.update({"state": job.get("state"), "outcome": "",
+                      "seq": int(job.get("seq") or 0)})
+            rows[key] = p
+            self._dock_last[key] = p
+            self._dock_done.pop(key, None)
+            self._dock_outcomes.pop(key, None)
+
+        # jobs that left the live states since the last pass → "done" beat
+        for key in self._dock_seen - live_keys:
+            last = self._dock_last.get(key)
+            if last is None or key in self._dock_done:
+                continue
+            job = self._jobs.get(key)
+            outcome = self._dock_outcomes.pop(key, None)
+            if outcome is None and job is not None:
+                outcome = job.get("state")
+            if outcome not in ("success", "error", "stopped"):
+                outcome = "stopped"
+            p = dict(last)
+            p.update({"state": outcome, "outcome": outcome,
+                      "speedText": "", "etaText": "", "busy": False,
+                      "canPause": False, "paused": False,
+                      "indeterminate": False})
+            if outcome == "success":
+                p["pct"] = 100
+                p["stage"] = (tr("Clip ready") if p.get("kind") == "cut"
+                              else tr("Download complete"))
+            elif outcome == "error":
+                p["stage"] = (tr("Cut failed.") if p.get("kind") == "cut"
+                              else tr("Download failed"))
+            else:
+                p["stage"] = tr("Stopped")
+            self._dock_done[key] = (now + _DOCK_HOLD_S[outcome], p)
+        self._dock_seen = live_keys
+
+        for key, (until, p) in list(self._dock_done.items()):
+            if now >= until:
+                self._dock_done.pop(key, None)
+                self._dock_last.pop(key, None)
+                continue
+            rows[key] = p
+        # forget payloads of jobs that are neither live nor holding a beat
+        for key in list(self._dock_last):
+            if key not in rows:
+                self._dock_last.pop(key, None)
+
+        out = sorted(rows.values(), key=lambda r: r.get("seq", 0))
+        if out != self._activity:
+            self._activity = out
+            self.activityChanged.emit()
+        if self._dock_done:
+            self._dock_timer.start(_DOCK_EXPIRE_MS)
+
+    @Slot(str)
+    def activityStop(self, key):
+        """The panel's ■ on a running download (kept for resume, as on the
+        Downloads page)."""
+        vm = self._downloads
+        if vm is None or not str(key).startswith("dl:"):
+            return
+        try:
+            vm.cancelDownload(str(key)[3:])
+        except Exception:
+            pass
+
+    @Slot(int)
+    def activityOpen(self, page):
+        """A row in the panel was clicked: open the page that owns the job."""
+        if self._app is not None and page is not None and int(page) >= 0:
+            try:
+                self._app.goto(int(page))
+            except Exception:
+                pass
 
     # ── called by the toast windows ──────────────────────────────────────
     @Slot(QObject)

@@ -36,7 +36,30 @@ from app.core.net import RequestCancelled
 #  generated before this change still render — see _content_lab_clean_idea.
 # ═════════════════════════════════════════════════════════════════════════
 
-CONTENT_LAB_SCHEMA_VERSION = 6
+CONTENT_LAB_SCHEMA_VERSION = 7
+
+# ── v7: the audit pack (v1.0.3) ────────────────────────────────────────────
+# A section-by-section audit of the v6 greenlight found four places where two
+# sections said the same thing (and one where the model was asked to invent
+# data), and four things a working creator still had to work out alone.
+#
+# Dropped from the ASK (old records still render them; nothing is migrated):
+#   execution.audio    duplicated style_guide.music + style_guide.sfx
+#   packaging.timing   duplicated publish_plan, and "best time to post" is not
+#                      public data — the model was guessing
+#   ab_plan.watch      duplicated checkpoints[1 hour]
+#   playbook           duplicated checkpoints[].if_not ("If it stalls")
+#   seo.keywords       duplicated discovery.search_queries (the SEO section
+#                      now shows those instead)
+# Re-framed: publish_plan.day/time must come from the creator's CSV data or
+# say plainly that it is a starting slot to confirm in YouTube Studio.
+# Added:
+#   packaging_brief    thumbnail text, focal point, how title + thumbnail
+#                      split the job, how it stands out in the feed
+#   fact_check         every checkable claim in the script + how to verify it
+#   lite_version       the fast version for a creator short on time
+#   funnel             Shorts to cut from a long video / where a Short sends
+#                      viewers — YouTube's own format funnel
 
 # ── v6: the "after you hit publish" pack ───────────────────────────────────
 # v5 stopped at the upload. v6 fills the gaps a working creator still filled
@@ -259,6 +282,11 @@ def _content_lab_default_idea(format="short"):
         "end_screen": {"cards": [], "end_target": "", "line": ""},
         "checkpoints": [],
         "reply_bank": [],
+        # ── v7 pack (see the note at CONTENT_LAB_SCHEMA_VERSION) ──
+        "packaging_brief": {"thumb_text": [], "focal": "", "pairing": "", "stand_out": ""},
+        "fact_check": [],
+        "lite_version": {"time": "", "cut": "", "keep": ""},
+        "funnel": {"clips": [], "link_to": "", "why": ""},
     }
 
 
@@ -471,6 +499,7 @@ def _content_lab_clean_idea(raw, format="short"):
         }
     _clean_v5(raw, d)
     _clean_v6(raw, d)
+    _clean_v7(raw, d)
     # stored, already-resolved data passes straight through
     if isinstance(raw.get("refs"), list):
         d["refs"] = [r for r in raw["refs"][:24] if isinstance(r, dict)]
@@ -592,6 +621,26 @@ def _clean_v6(raw, d):
         raw.get("checkpoints"), ("when", "check", "good_sign", "if_not"), 4)
     d["reply_bank"] = _content_lab_clean_obj_list(
         raw.get("reply_bank"), ("comment", "reply"), 5)
+
+
+def _clean_v7(raw, d):
+    """The v7 audit pack — same defensive rules as v5 / v6."""
+    pb = raw.get("packaging_brief") if isinstance(raw.get("packaging_brief"), dict) else {}
+    d["packaging_brief"] = {
+        "thumb_text": _content_lab_clean_str_or_list(pb.get("thumb_text"), 3),
+        "focal": _content_lab_clean_str(pb.get("focal")),
+        "pairing": _content_lab_clean_str(pb.get("pairing")),
+        "stand_out": _content_lab_clean_str(pb.get("stand_out")),
+    }
+    d["fact_check"] = _content_lab_clean_obj_list(raw.get("fact_check"), ("claim", "verify"), 5)
+    lv = raw.get("lite_version") if isinstance(raw.get("lite_version"), dict) else {}
+    d["lite_version"] = {k: _content_lab_clean_str(lv.get(k)) for k in ("time", "cut", "keep")}
+    fn = raw.get("funnel") if isinstance(raw.get("funnel"), dict) else {}
+    d["funnel"] = {
+        "clips": _content_lab_clean_obj_list(fn.get("clips"), ("from", "hook"), 4),
+        "link_to": _content_lab_clean_str(fn.get("link_to")),
+        "why": _content_lab_clean_str(fn.get("why")),
+    }
 
 
 # ── reference resolution (v4) ─────────────────────────────────────────────
@@ -752,9 +801,47 @@ def _is_persian(text):
     return bool(letters) and fa >= max(4, 0.3 * letters)
 
 
+# v1.0.4 — the creator profile ("My channel" on the AI Ideas page). Tokens are
+# fixed English keys (stored in config); the model gets a plain sentence each.
+CREATOR_CONSTRAINTS = {
+    "faceless": "Faceless channel: the creator never appears on camera. No talking-head shots.",
+    "solo": "One person does everything (script, shoot, edit). No crew, no second host.",
+    "phone": "Shoots on a phone only. No drone, no studio lighting, no special lenses.",
+    "quick_edit": "Edits must be quick: under ~2 hours per video, simple cuts and captions.",
+    "no_voice": "No voiceover: tell the story with on-screen text, captions and music.",
+    "clips": "Clip / compilation channel: builds on existing footage, adds framing and commentary.",
+}
+
+
+def creator_block(creator):
+    """The creator profile as a prompt block, or "" when it says nothing.
+
+    `creator` is {"niche": str, "audience": str, "constraints": [token, ...]}.
+    It is stated as hard facts about who is making the video, because a
+    blueprint that ignores them (a face-cam idea for a faceless channel, a
+    drone shot for a phone shooter) is a blueprint the creator cannot make."""
+    c = creator if isinstance(creator, dict) else {}
+    niche = str(c.get("niche") or "").strip()[:400]
+    audience = str(c.get("audience") or "").strip()[:300]
+    rules = [CREATOR_CONSTRAINTS[t] for t in (c.get("constraints") or [])
+             if t in CREATOR_CONSTRAINTS]
+    if not (niche or audience or rules):
+        return ""
+    out = ["\n\nTHE CREATOR — facts about who will make this video. Every blueprint must fit them:"]
+    if niche:
+        out.append(f"- Channel: {niche}")
+    if audience:
+        out.append(f"- Audience: {audience}")
+    for r in rules:
+        out.append(f"- Hard constraint: {r}")
+    out.append("If a reference video relies on something these constraints rule out, keep its "
+               "pattern and find a way to execute it within them.")
+    return "\n".join(out)
+
+
 def generate_content_lab_ideas(videos, client, n=3, avoid_titles=None, format="short",
                                brief="", brief_mode="videos", csv_sources=None,
-                               seed_context=""):
+                               seed_context="", creator=None, out_lang=""):
     """Public entry point — see _generate_content_lab_batch for the prompt.
 
     v5 asks for roughly 30% more per blueprint than v4, and one reply carrying
@@ -776,7 +863,7 @@ def generate_content_lab_ideas(videos, client, n=3, avoid_titles=None, format="s
             batch = _generate_content_lab_batch(
                 videos, client, n=k, avoid_titles=avoid, format=format,
                 brief=brief, brief_mode=brief_mode, csv_sources=csv_sources,
-                seed_context=seed_context)
+                seed_context=seed_context, creator=creator, out_lang=out_lang)
         except RequestCancelled:
             # Stop means stop: never hand back a half run as if it finished.
             raise
@@ -796,7 +883,7 @@ def generate_content_lab_ideas(videos, client, n=3, avoid_titles=None, format="s
 
 def _generate_content_lab_batch(videos, client, n=3, avoid_titles=None, format="short",
                                 brief="", brief_mode="videos", csv_sources=None,
-                                seed_context=""):
+                                seed_context="", creator=None, out_lang=""):
     """Asks the configured AI provider for `n` full content 'blueprints' and
     returns a list of cleaned idea dicts — see _content_lab_clean_idea() for
     the exact shape, and CONTENT_LAB_SCHEMA_VERSION for what changed in v2.
@@ -891,12 +978,19 @@ def _generate_content_lab_batch(videos, client, n=3, avoid_titles=None, format="
                         "meaningfully different, not a reword of any of them:\n" +
                         "\n".join(f"- {t}" for t in avoid_titles))
 
+    # v1.0.4: the creator can pin the output language ("fa" / "en"); "" keeps
+    # the old rule (Persian UI or a Persian brief -> Persian blueprint).
+    out_lang = (out_lang or "").strip().lower()
+    want_fa = out_lang == "fa" or (out_lang != "en" and (i18n.LANG == "fa" or _is_persian(brief)))
     lang_line = ("\nWrite every text field in Persian (Farsi) — titles, hooks, reasoning, "
                  "everything — except the \"score_label\" and \"focus_tag\" fields, which "
                  "should stay short punchy English tags (e.g. \"EXPLOSIVE\", \"Curiosity Gap\"). "
                  "Fixed-choice fields (difficulty, rights.risk, monetization.ad_safety, "
                  "why_now.shelf_life, checkpoints.when) keep their exact English values."
-                 if (i18n.LANG == "fa" or _is_persian(brief)) else "")
+                 if want_fa else
+                 ("\nWrite every text field in English, even where the inputs are in another language."
+                  if out_lang == "en" else ""))
+    creator_txt = creator_block(creator)
 
     is_long = format == "long"
     # In brief-only mode there are no reference videos to describe, so the
@@ -936,13 +1030,13 @@ def _generate_content_lab_batch(videos, client, n=3, avoid_titles=None, format="
     seo_shape = ""
     if is_long:
         seo_field = (
-            '\n- "seo": {"keywords": array of 5-8 search keywords/phrases a viewer would type to '
-            'find this video, "tags": array of 10-15 short YouTube tags, "description": a ready-'
+            '\n- "seo": {"tags": array of 10-15 short YouTube tags (the search phrases '
+            'themselves go in "discovery.search_queries" — do not repeat them here), "description": a ready-'
             'to-paste 2-3 sentence YouTube description ending with a soft call-to-action, '
             '"timestamps": array of 4-7 objects {"time": "0:00"-style timestamp, "label": chapter '
             'name} matching the pacing in "retention.phases".}'
         )
-        seo_shape = ('\n,"seo":{"keywords":["...","..."],"tags":["...","..."],"description":"...",'
+        seo_shape = ('\n,"seo":{"tags":["...","..."],"description":"...",'
                       '"timestamps":[{"time":"0:00","label":"..."}]}')
 
     # ── framing: the three brief modes are genuinely different asks ──
@@ -1170,6 +1264,16 @@ angle from the pattern instead.{avoid_block}"""
         evidence_hint = (
             '1-3 objects {"claim": a concrete reason this idea should work for this audience, '
             '"ref": ""} — no invented statistics')
+    # v7: YouTube's own format funnel — a long video feeds Shorts, a Short
+    # points at a long video. Asked per format, because the two jobs differ.
+    if is_long:
+        funnel_hint = ('{"clips": 2-3 objects {"from": the time range in THIS video to cut into a '
+                       'Short, "hook": the first line of that Short}, "link_to": the playlist or '
+                       '"series_next" video this one should send viewers to, "why": one sentence}')
+    else:
+        funnel_hint = ('{"clips": [], "link_to": the long-form video (a "series_next" title is '
+                       'ideal) this Short should link as its Related video, "why": one sentence on '
+                       'why a viewer of this Short wants it}')
     rehook_count = "4-6" if is_long else "2-3"
     if is_long:
         caption_field = ""
@@ -1216,9 +1320,7 @@ angle from the pattern instead.{avoid_block}"""
 - "ab_plan": {{"thumbnail_first": which thumbnail concept label to launch with and why, "title_first":
   which of the "titles" to launch with, "swap_rule": when to switch to the next variant (use YouTube's
   Test & Compare where available) — phrased against the channel's OWN usual numbers, never an invented
-  absolute figure, "watch": the first YouTube Studio metric to look at and what it tells you}}
-- "playbook": 3-4 objects {{"signal": a symptom visible in YouTube Studio in the first 24-48 hours
-  (e.g. "CTR below this channel's usual", "most viewers gone by 0:05"), "action": the concrete fix}}
+  absolute figure}}
 - "rights": {{"risk": exactly one of "Low", "Medium", "High" — the copyright / Content ID / fair-use
   risk of the material this video uses, "notes": one sentence on what specifically carries that risk
   (third-party clips, music, logos, a person's likeness), "safe_moves": 2-3 concrete ways to keep it
@@ -1243,7 +1345,18 @@ angle from the pattern instead.{avoid_block}"""
   Studio number to look at then, "good_sign": what good looks like, phrased against the channel's
   OWN usual (never an invented absolute figure), "if_not": the concrete move if it is not there}}
 - "reply_bank": 3-4 objects {{"comment": a comment this video is likely to get (a question, a
-  push-back, a request), "reply": the ready reply that keeps the thread going}}"""
+  push-back, a request), "reply": the ready reply that keeps the thread going}}
+- "packaging_brief": {{"thumb_text": exactly 2 options for the words ON the thumbnail, 4 words or
+  fewer each and never a repeat of the title, "focal": the one subject + expression/emotion the eye
+  lands on first, "pairing": how the title and the thumbnail split the job (what each one says that
+  the other does not), "stand_out": how this thumbnail looks different from the reference videos'
+  thumbnails sitting beside it in the same feed}}
+- "fact_check": 0-4 objects {{"claim": a checkable factual claim the script makes (a number, a
+  date, a "this works because"), "verify": how to verify it before publishing — the KIND of primary
+  source to check}} — an empty array when the script makes no factual claims
+- "lite_version": {{"time": the total time the fast version takes (e.g. "1 hour"), "cut": what to
+  drop from the full plan, "keep": the parts that must stay because the video fails without them}}
+- "funnel": {funnel_hint}"""
     v4_shape = (',"audience_profile":{"persona":"...","pain_points":["..."],"desires":["..."],'
                 '"objections":["..."],"watch_context":"..."},'
                 '"rehooks":[{"time":"...","device":"...","line":"..."}],'
@@ -1256,17 +1369,20 @@ angle from the pattern instead.{avoid_block}"""
                 '"on_screen_text":[{"time":"...","text":"...","style":"..."}],'
                 '"production_plan":{"prep":"...","shoot":"...","edit":"...","gear":["..."],"props":["..."],'
                 '"location":"...","checklist":["..."]},'
-                '"ab_plan":{"thumbnail_first":"...","title_first":"...","swap_rule":"...","watch":"..."},'
-                '"playbook":[{"signal":"...","action":"..."}],'
+                '"ab_plan":{"thumbnail_first":"...","title_first":"...","swap_rule":"..."},'
                 '"rights":{"risk":"Low","notes":"...","safe_moves":["..."]},"community_post":"...",'
                 '"why_now":{"shelf_life":"Evergreen","window":"...","why":"..."},'
                 '"discovery":{"search_queries":["..."],"suggested_beside":["..."],"browse_trigger":"..."},'
                 '"delivery":{"tone":"...","pace":"...","energy":"...","emphasis":["..."],"avoid":["..."]},'
                 '"end_screen":{"cards":[{"time":"...","target":"..."}],"end_target":"...","line":"..."},'
                 '"checkpoints":[{"when":"1 hour","check":"...","good_sign":"...","if_not":"..."}],'
-                '"reply_bank":[{"comment":"...","reply":"..."}]')
+                '"reply_bank":[{"comment":"...","reply":"..."}],'
+                '"packaging_brief":{"thumb_text":["...","..."],"focal":"...","pairing":"...","stand_out":"..."},'
+                '"fact_check":[{"claim":"...","verify":"..."}],'
+                '"lite_version":{"time":"...","cut":"...","keep":"..."},'
+                '"funnel":{"clips":[{"from":"...","hook":"..."}],"link_to":"...","why":"..."}')
 
-    prompt = f"""{intro_block}{csv_block}
+    prompt = f"""{intro_block}{creator_txt}{csv_block}
 
 For EACH blueprint, return an object with exactly these fields:
 - "title": a short, punchy working title.
@@ -1301,11 +1417,9 @@ For EACH blueprint, return an object with exactly these fields:
 - "shot_list": {shot_hint}
 - "competitors": {competitors_hint}
 - "execution": {{"editing": one sentence on editing/pacing style, "assets": one sentence on what
-  footage/B-roll/AI-generated assets are needed, "audio": one sentence on the music/sound choice
-  and where it should hit, "render": one sentence on export/resolution/upscale notes, "reasoning":
+  footage/B-roll/AI-generated assets are needed (music and sound belong in "style_guide"), "render": one sentence on export/resolution/upscale notes, "reasoning":
   one sentence {execution_ref}.}}
-- "packaging": {{"framework": the title-writing formula used (e.g. "Number + Promise + Twist"),
-  "timing": one short recommendation on best posting timing/cadence.}}
+- "packaging": {{"framework": the title-writing formula used (e.g. "Number + Promise + Twist")}}
 - "cta_options": {cta_hint}
 - "retention": {{"total_seconds": your estimated ideal video length in seconds ({retention_seconds_hint}), "phases": an
   array of {retention_phase_count_hint} objects {{"label": phase name e.g. {retention_phase_label_hint}, "end_pct":
@@ -1319,8 +1433,9 @@ For EACH blueprint, return an object with exactly these fields:
 - "publish_plan": {{"day": the weekday this video should go up on, "time": a concrete upload time,
   "why": one line on why that slot suits THIS audience and format, "first_hour": an array of 3-4
   concrete things to do in the first hour after publishing (what to answer, what to pin, where to
-  share, what to check)}}. Base the day on when this audience is actually watching, not on generic
-  "post at 5pm" advice — a study-hack audience and a gaming audience wake up at different hours
+  share, what to check)}}. The best upload time is NOT public data: if the CHANNEL DATA above shows a
+  best weekday, use it and say so; otherwise give a sensible starting slot for this audience and
+  say in "why" to confirm it in YouTube Studio → Audience → "When your viewers are on YouTube"
 - "series_next": an array of 2-3 objects {{"title": the follow-up video, "why": the retention logic}}
   — the next question the person who just watched this one asks, or the same format on an adjacent
   topic. One video is a view; a series is a subscriber{v4_fields}
@@ -1352,8 +1467,8 @@ exactly this shape, with exactly {n} objects in the "ideas" array:
 "full_script":[{{"time":"...","speaker":"VO","line":"...","visual":"..."}}],
 "shot_list":[{{"shot":"A1","type":"...","desc":"...","beat":"...","broll":false}}],
 "competitors":{{"rows":[{{"name":"...","angle":"...","gap":"..."}}],"gap":"..."}},
-"execution":{{"editing":"...","assets":"...","audio":"...","render":"...","reasoning":"..."}},
-"packaging":{{"framework":"...","timing":"..."}},
+"execution":{{"editing":"...","assets":"...","render":"...","reasoning":"..."}},
+"packaging":{{"framework":"..."}},
 "cta_options":[{{"label":"...","text":"...","timing":"..."}}],
 "risks":[{{"risk":"...","fix":"..."}},{{"risk":"...","fix":"..."}}],
 "publish_plan":{{"day":"...","time":"...","why":"...","first_hour":["...","...","..."]}},
@@ -1373,7 +1488,8 @@ exactly this shape, with exactly {n} objects in the "ideas" array:
     timeout = (540 if n > 1 else 360) + (60 if csv_sources else 0)
     # v6 adds the why-now / discovery / delivery / end-screen / grow pack
     # (~800 tokens more per blueprint).
-    max_tokens = min(20000, 7600 * max(n, 1) + 1200) + (800 if is_long else 0)
+    # v7: four fields dropped, four added — roughly +400 per greenlight.
+    max_tokens = min(21000, 8000 * max(n, 1) + 1200) + (800 if is_long else 0)
     raw = client.generate(prompt, timeout=timeout, max_output_tokens=max_tokens)
     ideas = _content_lab_parse_ideas_response(raw, n_expected=n, format=format)
     return _attach_refs(ideas, videos, csv_sources)

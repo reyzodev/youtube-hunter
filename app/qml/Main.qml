@@ -632,12 +632,12 @@ Window {
             {
                 target: "tour_nav_6",
                 title: I18n.tr("4 · AI Ideas"),
-                body: I18n.tr("Turn the videos you found into full content blueprints with AI.")
+                body: I18n.tr("Turn the videos you found into shoot-ready, greenlit video plans with AI.")
             },
             {
                 page: 6,
                 target: "tour_ideasBrief",
-                title: I18n.tr("From finds to blueprints"),
+                title: I18n.tr("From finds to greenlights"),
                 body: I18n.tr("Tick the reference videos whose style you want to borrow, describe your angle, and the AI returns titles, hooks, structure and a shot list.")
             },
 

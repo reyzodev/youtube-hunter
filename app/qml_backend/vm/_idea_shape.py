@@ -375,6 +375,36 @@ def _v6(d):
     }
 
 
+def _v7(d):
+    """The v7 audit pack (v1.0.3), flattened. Empty on older records; the pane
+    hides an empty section."""
+    pb = d.get("packaging_brief") if isinstance(d.get("packaging_brief"), dict) else {}
+    pack = {
+        "thumbText": as_list(pb.get("thumb_text"))[:3],
+        "focal": str(pb.get("focal") or "").strip(),
+        "pairing": str(pb.get("pairing") or "").strip(),
+        "standOut": str(pb.get("stand_out") or "").strip(),
+    }
+    facts = _rows(d.get("fact_check"), ("claim", "verify"), 5)
+    lv = d.get("lite_version") if isinstance(d.get("lite_version"), dict) else {}
+    lite = {k: str(lv.get(k) or "").strip() for k in ("time", "cut", "keep")}
+    fn = d.get("funnel") if isinstance(d.get("funnel"), dict) else {}
+    clips = _rows(fn.get("clips"), ("from", "hook"), 4)
+    funnel = {"clips": clips, "linkTo": str(fn.get("link_to") or "").strip(),
+              "why": str(fn.get("why") or "").strip()}
+    return {
+        "packagingBrief": pack,
+        "hasPackagingBrief": bool(pack["thumbText"] or pack["focal"] or pack["pairing"]
+                                  or pack["standOut"]),
+        "factCheck": facts,
+        "hasFactCheck": bool(facts),
+        "liteVersion": lite,
+        "hasLite": bool(lite["cut"] or lite["keep"]),
+        "funnel": funnel,
+        "hasFunnel": bool(clips or funnel["linkTo"]),
+    }
+
+
 def _audit(d, out):
     """Model-free checks on the blueprint the model wrote — what a producer
     would catch reading it before the shoot. Nothing here asks the model
@@ -429,6 +459,12 @@ def _audit(d, out):
     if int(out.get("schemaVersion") or 0) >= 6:
         sections += ["hasWhyNow", "hasDiscovery", "hasDelivery", "hasEndScreen",
                      "hasCheckpoints", "hasReplyBank"]
+    # v7 (v1.0.3): the playbook and the A/B "watch" line are no longer asked
+    # for (Checkpoints carries both), so they stop counting; the audit pack
+    # counts instead. fact_check may legitimately be empty, so it never does.
+    if int(out.get("schemaVersion") or 0) >= 7:
+        sections = [k for k in sections if k != "hasPlaybook"]
+        sections += ["hasPackagingBrief", "hasLite", "hasFunnel"]
     have = sum(1 for k in sections if out.get(k))
     passed = sum(1 for c in checks if c["ok"])
     return {"checks": checks, "passed": passed, "total": len(checks),
@@ -686,6 +722,13 @@ def idea_for_qml(d):
     }
     out.update(_v5(d))
     out.update(_v6(d))
+    out.update(_v7(d))
+    # v7: SEO keywords were the same phrases as discovery.search_queries, so a
+    # v7 record no longer asks for them; the SEO section shows the queries.
+    if not out["seo"]["keywords"] and out.get("discovery", {}).get("searchQueries"):
+        out["seo"]["keywords"] = list(out["discovery"]["searchQueries"])
+    out["hasSeo"] = bool(out["seo"]["keywords"] or out["seo"]["tags"]
+                         or out["seo"]["description"])
     out["titleRows"] = [{"text": t, "chars": len(t), "long": len(t) > _TITLE_MAX} for t in titles]
     # The PDF / clipboard keep reading scriptCopyText; v5 rows also carry what
     # is on screen, so the copy carries it too.

@@ -2330,7 +2330,7 @@ def render_deep_analysis_html(ctx, ai, filename, provider_label, used_web_resear
     # blueprints and snapshot briefs ride along only in a combined report.
     src_chips = ['<span class="hero-chip">CSV · %s ویدیو</span>' % _fa_num(ctx["n"])]
     if blueprint_titles:
-        src_chips.append('<span class="hero-chip">%s بلوپرینت</span>'
+        src_chips.append('<span class="hero-chip">%s گرین‌لایت</span>'
                          % _fa_num(len(blueprint_titles)))
     measured_briefs = [r for r in (briefs or [])
                        if isinstance(r, dict)
@@ -3063,7 +3063,7 @@ def _blueprint_fallback_sections(blueprints, ctx):
     for bp in (blueprints or []):
         if not isinstance(bp, dict):
             continue
-        title = str(bp.get("title") or "").strip() or "بلوپرینت بدون عنوان"
+        title = str(bp.get("title") or "").strip() or "گرین‌لایت بدون عنوان"
         angle = bp.get("viral_angle") if isinstance(bp.get("viral_angle"), dict) else {}
         hook = bp.get("hook") if isinstance(bp.get("hook"), dict) else {}
         anti = bp.get("anti_hook") if isinstance(bp.get("anti_hook"), dict) else {}
@@ -3125,10 +3125,10 @@ def _blueprint_fallback_sections(blueprints, ctx):
             why_bits.append(f"پربازدیدترین «{top_txt}»")
         if wd:
             why_bits.append(f"بهترین روز انتشار {wd}")
-        why_fits = ("؛ ".join(why_bits) + f". این بلوپرینت از داده‌ی همین کانال sharpen نشده (تماس دوم ناموفق بود) و با اعداد فعلی غنی شده — درصد وایرال {viral}٪ برآوردی از تناسب فرمت و سوژه با همین میانگین‌هاست، نه تضمین."
+        why_fits = ("؛ ".join(why_bits) + f". این گرین‌لایت از داده‌ی همین کانال sharpen نشده (تماس دوم ناموفق بود) و با اعداد فعلی غنی شده — درصد وایرال {viral}٪ برآوردی از تناسب فرمت و سوژه با همین میانگین‌هاست، نه تضمین."
                     if why_bits else f"درصد وایرال {viral}٪ برآوردی است، نه تضمین.")
         out.append({
-            "kicker": "بلوپرینت شما + داده‌ی فعلی کانال",
+            "kicker": "گرین‌لایت شما + داده‌ی فعلی کانال",
             "title": title,
             "layout": "blueprint",
             "lead": "",
@@ -3368,7 +3368,7 @@ def generate_combined_report_html(filename, path, ai_client, blueprints,
     # raising and shipping nothing.
     if blueprints:
         if progress_cb:
-            progress_cb(tr("Sharpening {n} blueprint(s) against this channel …")
+            progress_cb(tr("Sharpening {n} greenlight(s) against this channel …")
                         .format(n=len(blueprints)))
         try:
             bp_prompt = _blueprint_sections_prompt(

@@ -1636,6 +1636,26 @@ Item {
                             }
                         }
 
+                        // ═══ v1.0.2 what EARNS here (the demand side) ═══════
+                        // Everything else on this lens describes supply: what got
+                        // made. This panel is the other half — for each choice a
+                        // creator actually makes (length, format, title habits),
+                        // how its videos' views/day compare with the whole set's.
+                        // A diverging bar on a log scale: 2× and ½× sit the same
+                        // distance from the centre line.
+                        // v1.0.3: redesigned as advice → chart → one plain
+                        // sentence, readable without knowing what "1.3×" means
+                        // (components/EarnBoard.qml, data from earn_read).
+                        C.EarnBoard {
+                            Layout.fillWidth: true
+                            visible: (Insights.earnRows || []).length > 0
+                            rows: Insights.earnRows || []
+                            plan: Insights.earnPlan || ({})
+                            baseText: Insights.earnBaseText
+                            datedRows: Insights.earnDatedRows
+                            compact: content.width < 760
+                        }
+
                         // ═══ the shape of the set — v3.39.8 redesign ═══════
                         // Every split now names its own numbers. The old donut
                         // painted five shades of one accent, so "which green is
@@ -2194,6 +2214,262 @@ Item {
                             }
                         }
 
+                        // ═══ v1.0.2 can a newcomer get in? (the entry side) ══
+                        // "Who holds this niche" says who owns the views; this
+                        // says whether anyone NEW has broken in: the set split
+                        // by channel size (how each tier paces vs. the set) and
+                        // the channels younger than a year that made the list.
+                        C.GlassPanel {
+                            id: entryPanel
+                            Layout.fillWidth: true
+                            readonly property var e: Insights.entry || ({})
+                            readonly property var ladder: Insights.entryLadder || []
+                            readonly property bool hasLadder: {
+                                for (var i = 0; i < ladder.length; i++) if (ladder[i].rows > 0) return true
+                                return false
+                            }
+                            visible: hasLadder || (e.agedRows || 0) > 0
+                            radius: Tokens.radiusXl
+                            implicitHeight: entryCol.implicitHeight + Tokens.space5 * 2
+                            readonly property color verdictTint: e.verdict === "open" ? Theme.secondary_container
+                                                               : e.verdict === "rare" ? U.catHue(1, Theme.isDark)
+                                                               : e.verdict === "closed" ? Theme.error
+                                                               : Theme.outline
+                            property real grow: 0
+                            Component.onCompleted: entryGrow.start()
+                            NumberAnimation { id: entryGrow; target: entryPanel; property: "grow"; from: 0; to: 1; duration: 820; easing.type: Easing.OutCubic }
+                            Connections { target: Insights; function onSnapshotChanged() { entryGrow.restart() } }
+
+                            ColumnLayout {
+                                id: entryCol
+                                anchors.fill: parent
+                                anchors.margins: Tokens.space5
+                                spacing: Tokens.space4
+
+                                SectionHead {
+                                    title: I18n.tr("Can a newcomer get in?")
+                                    hint: I18n.tr("channel size and channel age of who made this list")
+                                    icon: "target"
+                                    tint: entryPanel.verdictTint
+                                    Tag {
+                                        label: entryPanel.e.verdictText || ""
+                                        tint: entryPanel.verdictTint
+                                        strong: true
+                                        implicitHeight: 28
+                                    }
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: content.width < 900 ? 1 : 2
+                                    columnSpacing: Tokens.space6
+                                    rowSpacing: Tokens.space5
+
+                                    // ── by channel size ──
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: Tokens.space2
+                                        visible: entryPanel.hasLadder
+                                        Eyebrow { text: I18n.tr("BY CHANNEL SIZE · PACE VS. TYPICAL") }
+                                        Repeater {
+                                            model: entryPanel.ladder
+                                            Item {
+                                                id: lad
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                implicitHeight: 46
+                                                opacity: modelData.rows === 0 ? 0.4 : 1
+                                                readonly property color tint: modelData.strong ? Theme.secondary_container : Theme.outline
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    spacing: Tokens.space3
+                                                    ColumnLayout {
+                                                        Layout.preferredWidth: 118
+                                                        spacing: 1
+                                                        C.AppText {
+                                                            text: lad.modelData.label
+                                                            weight: Tokens.weightDemiBold
+                                                            font.pixelSize: Tokens.fontCaption + 1
+                                                            color: Theme.text_strong
+                                                        }
+                                                        C.AppText {
+                                                            text: lad.modelData.dated > 0
+                                                                  ? I18n.tr("{k} of {n} beat typical").replace("{k}", lad.modelData.beat).replace("{n}", lad.modelData.dated)
+                                                                  : I18n.tr("{n} videos").replace("{n}", lad.modelData.rows)
+                                                            font.pixelSize: Tokens.fontMicro
+                                                            color: Theme.on_surface_var
+                                                        }
+                                                    }
+                                                    // how many videos this tier placed
+                                                    Item {
+                                                        Layout.fillWidth: true
+                                                        implicitHeight: 8
+                                                        Rectangle { anchors.fill: parent; radius: 4; color: U.withAlpha(Theme.outline, 0.12) }
+                                                        Rectangle {
+                                                            visible: lad.modelData.rows > 0
+                                                            anchors.left: parent.left
+                                                            anchors.top: parent.top
+                                                            anchors.bottom: parent.bottom
+                                                            width: Math.max(6, parent.width * lad.modelData.frac * entryPanel.grow)
+                                                            radius: 4
+                                                            color: U.withAlpha(lad.tint, 0.85)
+                                                        }
+                                                    }
+                                                    C.AppText {
+                                                        text: lad.modelData.daily
+                                                        mono: true
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.on_surface_var
+                                                        Layout.minimumWidth: 70
+                                                        horizontalAlignment: Text.AlignRight
+                                                        LayoutMirroring.enabled: false
+                                                    }
+                                                    Rectangle {
+                                                        visible: lad.modelData.vsTypical !== ""
+                                                        implicitWidth: 48
+                                                        implicitHeight: 24
+                                                        radius: Tokens.radiusPill
+                                                        color: U.withAlpha(lad.tint, Theme.isDark ? 0.16 : 0.11)
+                                                        C.AppText {
+                                                            anchors.centerIn: parent
+                                                            text: lad.modelData.vsTypical
+                                                            mono: true
+                                                            weight: Tokens.weightBold
+                                                            font.pixelSize: Tokens.fontCaption
+                                                            color: lad.modelData.strong ? Theme.secondary_container : Theme.on_surface_var
+                                                            LayoutMirroring.enabled: false
+                                                        }
+                                                    }
+                                                    Item { visible: lad.modelData.vsTypical === ""; implicitWidth: 48; implicitHeight: 1 }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ── channels under a year old ──
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: Tokens.space3
+                                        Eyebrow { text: I18n.tr("CHANNELS UNDER A YEAR OLD") }
+
+                                        C.AppText {
+                                            visible: (entryPanel.e.agedRows || 0) === 0
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: I18n.tr("No channel creation dates in this set, so channel age can't be read.")
+                                            font.pixelSize: Tokens.fontCaption
+                                            color: Theme.on_surface_var
+                                        }
+
+                                        RowLayout {
+                                            visible: (entryPanel.e.agedRows || 0) > 0
+                                            Layout.fillWidth: true
+                                            spacing: Tokens.space4
+                                            C.AppText {
+                                                text: String(entryPanel.e.newChannels || 0)
+                                                mono: true
+                                                weight: Tokens.weightExtraBold
+                                                font.pixelSize: 40
+                                                font.letterSpacing: -1.2
+                                                color: (entryPanel.e.newChannels || 0) > 0 ? Theme.text_strong : Theme.outline
+                                                LayoutMirroring.enabled: false
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                C.AppText {
+                                                    Layout.fillWidth: true
+                                                    text: I18n.tr("new channels made this list · {n} videos").replace("{n}", entryPanel.e.newRows || 0)
+                                                    weight: Tokens.weightDemiBold
+                                                    font.pixelSize: Tokens.fontBody
+                                                    color: Theme.text_strong
+                                                    elide: Text.ElideRight
+                                                }
+                                                C.AppText {
+                                                    Layout.fillWidth: true
+                                                    visible: (entryPanel.e.newDated || 0) > 0
+                                                    text: I18n.tr("{k} of their {n} videos beat the typical pace · median {d}")
+                                                        .replace("{k}", entryPanel.e.newBeat || 0)
+                                                        .replace("{n}", entryPanel.e.newDated || 0)
+                                                        .replace("{d}", entryPanel.e.newDaily || "—")
+                                                    font.pixelSize: Tokens.fontCaption
+                                                    color: (entryPanel.e.newBeat || 0) > 0 ? Theme.secondary_container : Theme.on_surface_var
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                        }
+
+                                        // the best newcomer video — proof, not a promise
+                                        Rectangle {
+                                            id: bestCard
+                                            visible: !!entryPanel.e.hasBest
+                                            Layout.fillWidth: true
+                                            implicitHeight: 72
+                                            radius: Tokens.radiusMd
+                                            color: bestHover.hovered ? U.hoverTint(Theme.panel_bg, Theme.isDark, 0.05)
+                                                                     : U.withAlpha(Theme.secondary_container, Theme.isDark ? 0.06 : 0.05)
+                                            border.width: 1
+                                            border.color: U.withAlpha(Theme.secondary_container, bestHover.hovered ? 0.45 : 0.22)
+                                            Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                            HoverHandler { id: bestHover; cursorShape: entryPanel.e.bestUrl ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                            TapHandler { onTapped: if (entryPanel.e.bestUrl) Qt.openUrlExternally(entryPanel.e.bestUrl) }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: Tokens.space3
+                                                spacing: Tokens.space3
+                                                Thumb {
+                                                    implicitWidth: 85; implicitHeight: 48
+                                                    thumbId: entryPanel.e.bestThumb || ""
+                                                    srcW: 170
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+                                                    Eyebrow { text: I18n.tr("BEST NEWCOMER VIDEO"); color: Theme.secondary_container }
+                                                    C.AppText {
+                                                        Layout.fillWidth: true
+                                                        text: entryPanel.e.bestTitle || ""
+                                                        weight: Tokens.weightDemiBold
+                                                        font.pixelSize: Tokens.fontCaption + 1
+                                                        color: Theme.text_strong
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    C.AppText {
+                                                        Layout.fillWidth: true
+                                                        text: [entryPanel.e.bestChannel, entryPanel.e.bestAge, entryPanel.e.bestSubs]
+                                                              .filter(function(x) { return !!x }).join("  ·  ")
+                                                        font.pixelSize: Tokens.fontMicro
+                                                        color: Theme.on_surface_var
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    radius: Tokens.radiusPill
+                                                    implicitWidth: bestVal.implicitWidth + Tokens.space4
+                                                    implicitHeight: 26
+                                                    color: U.withAlpha(Theme.secondary_container, 0.16)
+                                                    C.AppText {
+                                                        id: bestVal
+                                                        anchors.centerIn: parent
+                                                        text: entryPanel.e.bestDaily || ""
+                                                        mono: true
+                                                        weight: Tokens.weightBold
+                                                        font.pixelSize: Tokens.fontCaption
+                                                        color: Theme.secondary_container
+                                                        LayoutMirroring.enabled: false
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // who is winning — one panel, two meanings of "winning"
                         C.GlassPanel {
                             id: leadPanel
@@ -2513,6 +2789,31 @@ Item {
                                                     color: Theme.primary
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
+                                                // v1.0.2: does the term CARRY views? ×lift of
+                                                // views/day vs the set, when 3+ videos use it
+                                                Rectangle {
+                                                    readonly property bool strong: (modelData.lift || 0) >= 1.25
+                                                    readonly property bool weak: (modelData.lift || 0) > 0 && modelData.lift <= 0.8
+                                                    visible: (modelData.liftText || "") !== ""
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: liftLbl.implicitWidth + 10
+                                                    height: 18
+                                                    radius: 9
+                                                    color: strong ? U.withAlpha(Theme.secondary_container, 0.18)
+                                                         : U.withAlpha(Theme.outline, 0.12)
+                                                    C.AppText {
+                                                        id: liftLbl
+                                                        anchors.centerIn: parent
+                                                        text: modelData.liftText || ""
+                                                        mono: true
+                                                        weight: Tokens.weightBold
+                                                        font.pixelSize: Tokens.fontMicro
+                                                        color: parent.strong ? Theme.secondary_container
+                                                             : parent.weak ? U.mix(Theme.error, Theme.on_surface_var, 0.3)
+                                                             : Theme.on_surface_var
+                                                        LayoutMirroring.enabled: false
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2524,7 +2825,7 @@ Item {
                                     C.AppText {
                                         Layout.fillWidth: true
                                         wrapMode: Text.WordWrap
-                                        text: I18n.tr("These show what is being SUPPLIED in this niche. They are not search volume and do not prove demand.")
+                                        text: I18n.tr("The count is how often a term is SUPPLIED; the × badge is how its videos pace against the set (views/day, 3+ videos). Neither is search volume.")
                                         font.pixelSize: Tokens.fontCaption
                                         color: Theme.outline
                                     }
@@ -3236,6 +3537,16 @@ Item {
                                     }
                                 }
                             }
+                        }
+
+                        // ═══ v1.0.3 GAME PLAN — what to make next ═══════════
+                        C.BriefPlaybook {
+                            Layout.fillWidth: true
+                            visible: page.briefOk
+                            brief: page.briefOk ? Insights.brief : ({})
+                            compact: briefLens.compact
+                            wide: content.wide
+                            onCopyRequested: (t) => clipHelper.put(t)
                         }
 
                         // ═══ SIGNALS — every labelled statement ══════════════
@@ -4910,9 +5221,9 @@ Item {
                         C.GlassPanel {
                             Layout.fillWidth: true
                             radius: Tokens.radiusXl
-                            implicitHeight: limCol.implicitHeight + Tokens.space5 * 2
+                            implicitHeight: limitsPanelCol.implicitHeight + Tokens.space5 * 2
                             ColumnLayout {
-                                id: limCol
+                                id: limitsPanelCol
                                 anchors.fill: parent
                                 anchors.margins: Tokens.space5
                                 spacing: Tokens.space4

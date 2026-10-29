@@ -36,6 +36,7 @@ from PySide6.QtGui import QGuiApplication
 from app.core.ai.profiles import client_from as client_from_route, resolve as resolve_ai_route
 from app.core.ai.clients import AIClient, api_mode_for
 from app.core.ai.content_lab import generate_content_lab_ideas
+from app.config import load_app_config, save_app_config
 from app.core.analysis.csv_report import csv_blueprint_source, csv_classify_format
 from app.core.db.archive import archive_get_rows, archive_list_groups
 from app.core.db.content_lab import (
@@ -119,6 +120,7 @@ class IdeasVM(QObject):
     # blueprint a big dict, converted to QVariant again), so the rail's
     # Repeater rebuilt every card — and that was the 1–3 s stop between ideas.
     activeChanged = Signal()
+    creatorChanged = Signal()       # v1.0.4: the creator profile
     labelsChanged = Signal()        # UI language changed
     toast = Signal(str, str)        # (message, kind)
 
@@ -177,6 +179,11 @@ class IdeasVM(QObject):
         self._seed_format = ""
         self._count = 2           # blueprints per run
 
+        # ── v1.0.4: the creator profile ("My channel") ──
+        # Who is making the video: stated once, sent with every run, kept in
+        # config.json so it survives restarts. language: 0 auto, 1 en, 2 fa.
+        self._creator = self._load_creator()
+
         # ── CSV data inputs ──
         # One or more exports can sit beside picked videos. They are reduced to
         # real stats on the worker and passed into the same blueprint prompt.
@@ -214,6 +221,112 @@ class IdeasVM(QObject):
         self._csvLoaded.connect(self._on_csv_loaded)
         self._genProgress.connect(self._on_gen_progress)
         self._regenDone.connect(self._on_regen_done)
+
+    # ── v1.0.4: creator profile ──────────────────────────────────────────
+    _CREATOR_TOKENS = ("faceless", "solo", "phone", "quick_edit", "no_voice", "clips")
+    _LANGS = ("", "en", "fa")
+
+    def _load_creator(self):
+        raw = load_app_config().get("ideas_creator") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        try:
+            lang = int(raw.get("language", 0))
+        except (TypeError, ValueError):
+            lang = 0
+        return {
+            "niche": str(raw.get("niche") or "")[:400],
+            "audience": str(raw.get("audience") or "")[:300],
+            "constraints": [t for t in (raw.get("constraints") or []) if t in self._CREATOR_TOKENS],
+            "language": lang if 0 <= lang < len(self._LANGS) else 0,
+        }
+
+    def _save_creator(self):
+        cfg = load_app_config()
+        cfg["ideas_creator"] = dict(self._creator)
+        save_app_config(cfg)
+        self.creatorChanged.emit()
+
+    @Property(str, notify=creatorChanged)
+    def creatorNiche(self):
+        return self._creator["niche"]
+
+    @creatorNiche.setter
+    def creatorNiche(self, v):
+        v = str(v or "")[:400]
+        if v != self._creator["niche"]:
+            self._creator["niche"] = v
+            self._save_creator()
+
+    @Property(str, notify=creatorChanged)
+    def creatorAudience(self):
+        return self._creator["audience"]
+
+    @creatorAudience.setter
+    def creatorAudience(self, v):
+        v = str(v or "")[:300]
+        if v != self._creator["audience"]:
+            self._creator["audience"] = v
+            self._save_creator()
+
+    @Property(int, notify=creatorChanged)
+    def outputLanguage(self):
+        return self._creator["language"]
+
+    @outputLanguage.setter
+    def outputLanguage(self, i):
+        i = int(i)
+        if 0 <= i < len(self._LANGS) and i != self._creator["language"]:
+            self._creator["language"] = i
+            self._save_creator()
+
+    @Property("QVariantList", notify=labelsChanged)
+    def outputLanguageOptions(self):
+        return [tr("Auto"), "English", "فارسی"]
+
+    @Property("QVariantList", notify=labelsChanged)
+    def constraintOptions(self):
+        """The constraint chips, in display order: {key, label, icon}."""
+        return [
+            {"key": "faceless", "label": tr("Faceless"), "icon": "visibility_off"},
+            {"key": "solo", "label": tr("Solo creator"), "icon": "user"},
+            {"key": "phone", "label": tr("Phone only"), "icon": "smart_display"},
+            {"key": "quick_edit", "label": tr("Quick edits"), "icon": "speed"},
+            {"key": "no_voice", "label": tr("No voiceover"), "icon": "volume_off"},
+            {"key": "clips", "label": tr("Clip channel"), "icon": "scissors"},
+        ]
+
+    @Property("QVariantList", notify=creatorChanged)
+    def creatorConstraints(self):
+        return list(self._creator["constraints"])
+
+    @Slot(str)
+    def toggleConstraint(self, key):
+        if key not in self._CREATOR_TOKENS:
+            return
+        cur = self._creator["constraints"]
+        if key in cur:
+            cur.remove(key)
+        else:
+            cur.append(key)
+        self._save_creator()
+
+    @Property(bool, notify=creatorChanged)
+    def hasCreator(self):
+        c = self._creator
+        return bool(c["niche"].strip() or c["audience"].strip() or c["constraints"])
+
+    @Property(str, notify=creatorChanged)
+    def creatorSummary(self):
+        """One line for the collapsed card / the launch-bar order token."""
+        c = self._creator
+        parts = []
+        if c["niche"].strip():
+            parts.append(c["niche"].strip().split("\n")[0][:60])
+        if c["constraints"]:
+            labels = {o["key"]: o["label"] for o in self.constraintOptions}
+            parts.append(" · ".join(labels[k] for k in c["constraints"] if k in labels))
+        return "  ·  ".join(parts)
 
     def _reload_ai_config(self):
         # Whatever Settings routes "Idea generation" to (AI routing), falling
@@ -920,13 +1033,16 @@ class IdeasVM(QObject):
         token = CancelToken()
         self._gen_token = token
         self._set_busy(True)
-        self._set_status(tr("Asking {p} for {n} blueprint(s)…").format(
+        self._set_status(tr("Asking {p} for {n} greenlight(s)…").format(
             p=self.providerLabel, n=n))
 
         def worker(_videos=videos, _brief=brief, _mode=mode, _fmt=fmt, _n=n,
                    _avoid=avoid, _section=self._section_id, _title=self._section_title,
                    _csv_sources=csv_sources, _seed=seed_context, _rid=run_id, _tok=token,
-                   _csv_cache=dict(self._csv_cache)):
+                   _csv_cache=dict(self._csv_cache),
+                   _creator={"niche": self._creator["niche"], "audience": self._creator["audience"],
+                             "constraints": list(self._creator["constraints"])},
+                   _lang=self._LANGS[self._creator["language"]]):
             try:
                 client = self._make_client()
                 _tok.check()
@@ -939,7 +1055,7 @@ class IdeasVM(QObject):
                     ideas = generate_content_lab_ideas(
                         _videos, client, n=_n, avoid_titles=_avoid, format=_fmt,
                         brief=_brief, brief_mode=_mode, seed_context=_seed,
-                        csv_sources=srcs)
+                        csv_sources=srcs, creator=_creator, out_lang=_lang)
                 # Stopped after the last byte arrived: still honour Stop, and
                 # don't save blueprints the user said they didn't want.
                 _tok.check()
@@ -1020,11 +1136,11 @@ class IdeasVM(QObject):
         else:
             self._ensure_active_visible()
         self.resultsChanged.emit()
-        self._set_status(tr("✓ {n} blueprint(s) ready.").format(n=len(ideas)), "success")
-        self.toast.emit(tr("{n} new blueprint(s) generated.").format(n=len(ideas)),
+        self._set_status(tr("✓ {n} greenlight(s) ready.").format(n=len(ideas)), "success")
+        self.toast.emit(tr("{n} new greenlight(s) generated.").format(n=len(ideas)),
                         "success")
-        announce("success", tr("Blueprints ready"),
-                 tr("{n} new blueprint(s) generated.").format(n=len(ideas)),
+        announce("success", tr("Greenlights ready"),
+                 tr("{n} new greenlight(s) generated.").format(n=len(ideas)),
                  page=6, icon="auto_awesome", source=tr("AI Ideas"))
 
     def _idea_for_qml(self, d):
@@ -1184,12 +1300,12 @@ class IdeasVM(QObject):
         if idea_id <= 0:
             return
         if not content_lab_delete_idea(idea_id):
-            self.toast.emit(tr("Couldn't delete that blueprint."), "error")
+            self.toast.emit(tr("Couldn't delete that greenlight."), "error")
             return
         self._ideas = [i for i in self._ideas if i.get("id") != idea_id]
         self._ensure_active_visible()
         self.resultsChanged.emit()
-        self.toast.emit(tr("Blueprint deleted."), "success")
+        self.toast.emit(tr("Greenlight deleted."), "success")
 
     @Slot()
     def clearIdeas(self):
@@ -1201,7 +1317,7 @@ class IdeasVM(QObject):
         self._ideas = []
         self._active_id = -1
         self.resultsChanged.emit()
-        self._set_status(tr("Cleared the view. Your blueprints are still saved."))
+        self._set_status(tr("Cleared the view. Your greenlights are still saved."))
 
     @Slot()
     def loadSaved(self):
@@ -1219,10 +1335,10 @@ class IdeasVM(QObject):
         self._ensure_active_visible()
         self.resultsChanged.emit()
         if self._ideas:
-            self._set_status(tr("{n} saved blueprint(s) for “{kw}”.").format(
+            self._set_status(tr("{n} saved greenlight(s) for “{kw}”.").format(
                 n=len(self._ideas), kw=title))
         else:
-            self._set_status(tr("No saved blueprints for “{kw}” yet.").format(kw=title))
+            self._set_status(tr("No saved greenlights for “{kw}” yet.").format(kw=title))
 
     # ── regenerate one blueprint ─────────────────────────────────────────
     @Property(int, notify=busyChanged)
@@ -1260,7 +1376,7 @@ class IdeasVM(QObject):
             entry_id = content_lab_get_or_create_entry(
                 gid, self._section_title or tr("My ideas"))
         if entry_id is None:
-            self.toast.emit(tr("Couldn't find where this blueprint is stored."), "error")
+            self.toast.emit(tr("Couldn't find where this greenlight is stored."), "error")
             return
 
         videos = content_lab_get_entry_videos(entry_id)
@@ -1276,16 +1392,20 @@ class IdeasVM(QObject):
 
         self._regen_id = idea_id
         self.busyChanged.emit()
-        self._set_status(tr("Rebuilding “{t}” with the full blueprint…").format(
+        self._set_status(tr("Rebuilding “{t}” with the full greenlight…").format(
             t=brief or tr("Untitled idea")))
 
+        creator = {"niche": self._creator["niche"], "audience": self._creator["audience"],
+                   "constraints": list(self._creator["constraints"])}
+        lang = self._LANGS[self._creator["language"]]
+
         def worker(_id=idea_id, _videos=videos, _brief=brief, _mode=mode,
-                   _fmt=fmt, _avoid=avoid):
+                   _fmt=fmt, _avoid=avoid, _creator=creator, _lang=lang):
             try:
                 client = self._make_client()
                 ideas = generate_content_lab_ideas(
                     _videos, client, n=1, avoid_titles=_avoid, format=_fmt,
-                    brief=_brief, brief_mode=_mode)
+                    brief=_brief, brief_mode=_mode, creator=_creator, out_lang=_lang)
                 if not ideas:
                     raise RuntimeError(tr("The model returned nothing usable."))
                 fresh = ideas[0]
@@ -1319,11 +1439,11 @@ class IdeasVM(QObject):
                 break
         self._active_id = idea_id
         self.resultsChanged.emit()
-        self._set_status(tr("✓ Blueprint rebuilt with the full production plan."),
+        self._set_status(tr("✓ Greenlight rebuilt with the full production plan."),
                          "success")
-        self.toast.emit(tr("Blueprint rebuilt."), "success")
-        announce("success", tr("Blueprint rebuilt."),
-                 tr("✓ Blueprint rebuilt with the full production plan."),
+        self.toast.emit(tr("Greenlight rebuilt."), "success")
+        announce("success", tr("Greenlight rebuilt."),
+                 tr("✓ Greenlight rebuilt with the full production plan."),
                  page=6, icon="auto_awesome", source=tr("AI Ideas"))
 
     @Slot(str)

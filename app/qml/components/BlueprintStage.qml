@@ -323,7 +323,7 @@ Item {
             }
             C.AppText {
                 anchors.verticalCenter: parent.verticalCenter
-                text: I18n.tr("Loading blueprint…")
+                text: I18n.tr("Loading greenlight…")
                 color: Theme.on_surface_var
             }
         }

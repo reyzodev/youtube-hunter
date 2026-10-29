@@ -23,8 +23,10 @@ import "../Utils.js" as U
 //   * Launch bar — the order summary (recipe · idea · picks) + count + Create.
 //     While you pick references far below it, a floating dock carries the
 //     same Create button, so the one action on the page is never a scroll away.
-//   * Pipeline — the hero carries a three-node pipeline whose connecting line
-//     fills as each step completes.
+//   * Pipeline — (removed in v1.0.4: the step badges on each panel say it)
+//   * My channel (v1.0.4) — who is making the video: niche, audience, what
+//     they can't do (faceless, phone only…) and the output language. Set once,
+//     sent with every run, so a greenlight is something THIS creator can shoot.
 //   * Type & colour — Hanken / IRANYekanX via FontBridge, live Theme accent;
 //     the accent is reserved for "chosen", "ready" and the Create action.
 Item {
@@ -264,7 +266,7 @@ Item {
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     C.AppText {
-                                        text: I18n.tr("AI Ideas · Blueprint Builder")
+                                        text: I18n.tr("AI Ideas · Greenlight Builder")
                                         weight: Tokens.weightBold
                                         font.pixelSize: Tokens.fontCaption
                                         font.letterSpacing: I18n.rtl ? 0 : Tokens.trackingLabel
@@ -325,7 +327,7 @@ Item {
                                 Layout.fillWidth: true
                             }
                             C.AppText {
-                                text: I18n.tr("into your next blueprint.")
+                                text: I18n.tr("into your next greenlight.")
                                 weight: Tokens.weightExtraBold
                                 font.pixelSize: page._heroSize
                                 font.letterSpacing: I18n.rtl ? 0 : -page._heroSize * 0.022
@@ -336,7 +338,7 @@ Item {
                             }
                         }
                         C.AppText {
-                            text: I18n.tr("Describe the video you want to make, pick references that already perform, or both — and get full production blueprints back.")
+                            text: I18n.tr("Describe the video you want to make, pick references that already perform, or both — and get full production greenlights back.")
                             font.pixelSize: Tokens.fontLabel
                             color: Theme.on_surface_var
                             wrapMode: Text.Wrap
@@ -345,75 +347,9 @@ Item {
                         }
                     }
 
-                    // ── the pipeline: three nodes, a line that fills as you go ──
-                    Rectangle {
-                        id: pipeline
-                        visible: page._wide
-                        Layout.alignment: Qt.AlignBottom
-                        Layout.preferredWidth: 440
-                        radius: Tokens.radiusXl
-                        color: Theme.panel_bg
-                        border.width: 1
-                        border.color: Theme.border
-                        implicitHeight: 104
-
-                        readonly property real _x0: Tokens.space6 + 16
-                        readonly property real _x1: width - Tokens.space6 - 16
-                        readonly property real _step: (_x1 - _x0) / 2
-
-                        // base line
-                        Rectangle {
-                            x: pipeline._x0
-                            y: Tokens.space5 + 16
-                            width: pipeline._x1 - pipeline._x0
-                            height: 2
-                            radius: 1
-                            color: Theme.border_med
-                        }
-                        // progress line — fills to the last finished node
-                        Rectangle {
-                            x: I18n.rtl ? pipeline._x1 - width : pipeline._x0
-                            y: Tokens.space5 + 16
-                            width: pipeline._step * Math.min(2, Math.max(0, page._cur - 1 + (page._s3 ? 1 : 0)))
-                            height: 2
-                            radius: 1
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: Theme.secondary_container }
-                                GradientStop { position: 1.0; color: Theme.primary }
-                            }
-                            Behavior on width { NumberAnimation { duration: Tokens.durSlow; easing.type: Easing.OutCubic } }
-                        }
-
-                        Repeater {
-                            model: [ { n: "1", t: I18n.tr("Your idea") },
-                                     { n: "2", t: I18n.tr("References") },
-                                     { n: "3", t: I18n.tr("Blueprints") } ]
-                            Item {
-                                readonly property int slot: I18n.rtl ? 2 - index : index
-                                readonly property bool done: index === 0 ? page._s1 : index === 1 ? page._s2 : page._s3
-                                x: pipeline._x0 + slot * pipeline._step - width / 2
-                                y: Tokens.space5
-                                width: 120
-                                height: 72
-                                StepBadge {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    anchors.top: parent.top
-                                    n: modelData.n
-                                    done: parent.done
-                                    current: page._cur === index + 1
-                                }
-                                C.AppText {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    y: 42
-                                    text: modelData.t
-                                    weight: Tokens.weightDemiBold
-                                    font.pixelSize: Tokens.fontCaption
-                                    color: page._cur === index + 1 ? Theme.text_strong : Theme.on_surface_var
-                                }
-                            }
-                        }
-                    }
+                    // v1.0.4: the three-node pipeline card that sat here is gone. It
+                    // repeated the step badges every panel below already carries, and
+                    // pushed the first real control (the composer) down the page.
                 }
 
                 // ── no AI provider banner ──
@@ -439,7 +375,7 @@ Item {
                             Layout.preferredHeight: 36
                         }
                         C.AppText {
-                            text: I18n.tr("No AI provider configured — add a key in Settings to generate blueprints.")
+                            text: I18n.tr("No AI provider configured — add a key in Settings to generate greenlights.")
                             color: Theme.text_strong
                             weight: Tokens.weightDemiBold
                             wrapMode: Text.Wrap
@@ -450,6 +386,217 @@ Item {
                             text: I18n.tr("Open Settings")
                             implicitHeight: 38
                             onClicked: App.goto(10)
+                        }
+                    }
+                }
+
+                // ═══════════════ MY CHANNEL (v1.0.4) ═══════════════
+                // The one thing every run was missing: who is making the video.
+                // Folded to one line once it is set; it rides along with every
+                // run (and every single-greenlight rebuild) from then on.
+                C.GlassPanel {
+                    id: creatorCard
+                    objectName: "tour_ideasCreator"
+                    Layout.fillWidth: true
+                    radius: Tokens.radiusXl
+                    property bool open: false
+                    implicitHeight: creatorCol.implicitHeight + Tokens.space5 * 2
+                    border.color: Ideas.hasCreator ? U.withAlpha(Theme.primary, 0.30) : Theme.border
+
+                    ColumnLayout {
+                        id: creatorCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Tokens.space5
+                        spacing: Tokens.space4
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: page._narrow ? 1 : 3
+                            columnSpacing: Tokens.space4
+                            rowSpacing: Tokens.space3
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Tokens.space3
+                                C.IconTile {
+                                    iconName: "user"
+                                    size: 36
+                                    tint: Theme.primary
+                                    Layout.preferredWidth: 36
+                                    Layout.preferredHeight: 36
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Row {
+                                        spacing: Tokens.space2
+                                        C.AppText {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: I18n.tr("My channel")
+                                            weight: Tokens.weightBold
+                                            font.pixelSize: Tokens.fontSubtitle
+                                            color: Theme.text_strong
+                                        }
+                                        Rectangle {
+                                            visible: Ideas.hasCreator
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            radius: Tokens.radiusPill
+                                            implicitWidth: inUse.implicitWidth + 14
+                                            implicitHeight: 22
+                                            color: U.withAlpha(Theme.secondary_container, 0.12)
+                                            border.width: 1
+                                            border.color: U.withAlpha(Theme.secondary_container, 0.35)
+                                            C.AppText {
+                                                id: inUse
+                                                anchors.centerIn: parent
+                                                text: I18n.tr("In every run")
+                                                font.pixelSize: Tokens.fontMicro
+                                                weight: Tokens.weightBold
+                                                color: Theme.secondary_container
+                                            }
+                                        }
+                                    }
+                                    C.AppText {
+                                        Layout.fillWidth: true
+                                        text: Ideas.hasCreator
+                                              ? Ideas.creatorSummary
+                                              : I18n.tr("Tell the AI what you make and what you can't do, so every greenlight is one you can actually shoot.")
+                                        font.pixelSize: Tokens.fontCaption + 1
+                                        color: Theme.on_surface_var
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+
+                            // output language: always one click away
+                            RowLayout {
+                                spacing: Tokens.space2
+                                Layout.alignment: Qt.AlignVCenter
+                                C.IconGlyph { name: "translate"; size: 15; glyphColor: Theme.on_surface_var }
+                                C.SlideSegment {
+                                    solid: false
+                                    cellHeight: 30
+                                    fontSize: Tokens.fontCaption + 1
+                                    enabledCells: !Ideas.busy
+                                    model: Ideas.outputLanguageOptions
+                                    currentIndex: Ideas.outputLanguage
+                                    onActivated: (i) => Ideas.outputLanguage = i
+                                }
+                            }
+
+                            C.PrimaryButton {
+                                Layout.alignment: Qt.AlignVCenter
+                                variant: creatorCard.open || Ideas.hasCreator ? "ghost" : "primary"
+                                iconName: creatorCard.open ? "check" : (Ideas.hasCreator ? "edit" : "add")
+                                text: creatorCard.open ? I18n.tr("Done")
+                                      : Ideas.hasCreator ? I18n.tr("Edit") : I18n.tr("Set up")
+                                implicitHeight: 38
+                                onClicked: {
+                                    if (creatorCard.open) { nicheSave.flush(); audienceSave.flush() }
+                                    creatorCard.open = !creatorCard.open
+                                }
+                            }
+                        }
+
+                        // ── the form ──
+                        ColumnLayout {
+                            visible: creatorCard.open
+                            Layout.fillWidth: true
+                            spacing: Tokens.space4
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: page._wide ? 2 : 1
+                                columnSpacing: Tokens.space4
+                                rowSpacing: Tokens.space3
+                                C.LineField {
+                                    id: nicheField
+                                    Layout.fillWidth: true
+                                    label: I18n.tr("What is your channel about?")
+                                    placeholder: I18n.tr("e.g. Honest street-food reviews, one Short a day")
+                                    Component.onCompleted: text = Ideas.creatorNiche
+                                    onTextChanged: nicheSave.restart()
+                                }
+                                C.LineField {
+                                    id: audienceField
+                                    Layout.fillWidth: true
+                                    label: I18n.tr("Who watches it?")
+                                    placeholder: I18n.tr("e.g. 18-30, students, watch on their phone at night")
+                                    Component.onCompleted: text = Ideas.creatorAudience
+                                    onTextChanged: audienceSave.restart()
+                                }
+                            }
+                            // typing is saved after a short pause, not per key
+                            Timer {
+                                id: nicheSave; interval: 700
+                                onTriggered: Ideas.creatorNiche = nicheField.text
+                                function flush() { if (running) { stop(); triggered() } }
+                            }
+                            Timer {
+                                id: audienceSave; interval: 700
+                                onTriggered: Ideas.creatorAudience = audienceField.text
+                                function flush() { if (running) { stop(); triggered() } }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: Tokens.space2
+                                C.AppText {
+                                    text: I18n.tr("What you can't or won't do")
+                                    weight: Tokens.weightDemiBold
+                                    font.pixelSize: Tokens.fontBody
+                                    color: Theme.text_strong
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.space2
+                                    Repeater {
+                                        model: Ideas.constraintOptions
+                                        delegate: AbstractButton {
+                                            id: chip
+                                            required property var modelData
+                                            readonly property bool on: Ideas.creatorConstraints.indexOf(modelData.key) >= 0
+                                            hoverEnabled: true
+                                            implicitHeight: 34
+                                            implicitWidth: chipRow.implicitWidth + 24
+                                            onClicked: Ideas.toggleConstraint(modelData.key)
+                                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                            background: Rectangle {
+                                                radius: Tokens.radiusPill
+                                                color: chip.on ? U.withAlpha(Theme.primary, 0.14)
+                                                     : chip.hovered ? Theme.hover_bg : Theme.surface_low
+                                                border.width: 1
+                                                border.color: chip.on ? U.withAlpha(Theme.primary, 0.50) : Theme.border_med
+                                                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                                            }
+                                            contentItem: Item {
+                                                Row {
+                                                    id: chipRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 6
+                                                    C.IconGlyph {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        name: chip.on ? "check" : chip.modelData.icon
+                                                        size: 14
+                                                        glyphColor: chip.on ? Theme.primary : Theme.on_surface_var
+                                                    }
+                                                    C.AppText {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        text: chip.modelData.label
+                                                        font.pixelSize: Tokens.fontCaption + 1
+                                                        weight: Tokens.weightDemiBold
+                                                        color: chip.on ? Theme.text_strong : Theme.on_surface
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -851,7 +998,7 @@ Item {
                                 }
                                 C.AppText {
                                     text: Ideas.briefMode === 2
-                                          ? I18n.tr("Not used in this mode — the blueprints come from your brief alone.")
+                                          ? I18n.tr("Not used in this mode — the greenlights come from your brief alone.")
                                           : (Ideas.briefMode === 1
                                              ? I18n.tr("Your idea stays the subject; these only lend their hook style, pacing and packaging.")
                                              : I18n.tr("The AI studies what these have in common and designs new videos from that pattern."))
@@ -1403,14 +1550,36 @@ Item {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 1
-                                C.AppText {
-                                    text: I18n.tr("Channel data exports")
-                                    weight: Tokens.weightBold
-                                    font.pixelSize: Tokens.fontSubtitle
-                                    color: Theme.text_strong
+                                Row {
+                                    spacing: Tokens.space2
+                                    C.AppText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: I18n.tr("Channel data exports")
+                                        weight: Tokens.weightBold
+                                        font.pixelSize: Tokens.fontSubtitle
+                                        color: Theme.text_strong
+                                    }
+                                    Rectangle {
+                                        visible: Ideas.csvCount === 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        radius: Tokens.radiusPill
+                                        implicitWidth: optTag.implicitWidth + 14
+                                        implicitHeight: 22
+                                        color: Theme.surface_high
+                                        border.width: 1
+                                        border.color: Theme.border
+                                        C.AppText {
+                                            id: optTag
+                                            anchors.centerIn: parent
+                                            text: I18n.tr("Optional")
+                                            font.pixelSize: Tokens.fontMicro
+                                            weight: Tokens.weightBold
+                                            color: Theme.on_surface_var
+                                        }
+                                    }
                                 }
                                 C.AppText {
-                                    text: I18n.tr("Add one or more CSV exports to ground the blueprint in real views, titles, lengths and publishing patterns.")
+                                    text: I18n.tr("Add one or more CSV exports to ground the greenlight in real views, titles, lengths and publishing patterns.")
                                     font.pixelSize: Tokens.fontCaption
                                     color: Theme.on_surface_var
                                     wrapMode: Text.Wrap
@@ -1427,6 +1596,7 @@ Item {
                         }
 
                         Flow {
+                            visible: Ideas.csvCount > 0
                             Layout.fillWidth: true
                             spacing: Tokens.space2
                             Repeater {
@@ -1457,12 +1627,6 @@ Item {
                             }
                         }
 
-                        C.AppText {
-                            visible: Ideas.csvCount === 0
-                            text: I18n.tr("Optional. Videos still work on their own, but exports add channel-level evidence and real performance patterns.")
-                            font.pixelSize: Tokens.fontCaption
-                            color: Theme.outline
-                        }
                     }
                 }
 
@@ -1511,7 +1675,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: Tokens.space2
                                 C.AppText {
-                                    text: I18n.tr("Build the blueprints")
+                                    text: I18n.tr("Build the greenlights")
                                     weight: Tokens.weightBold
                                     font.pixelSize: Tokens.fontSubtitle
                                     color: Theme.text_strong
@@ -1539,6 +1703,19 @@ Item {
                                         muted: !Ideas.videosRequired
                                         ok: Ideas.selectedCount > 0
                                     }
+                                    // v1.0.4: the creator profile rides along
+                                    OrderToken {
+                                        visible: Ideas.hasCreator
+                                        icon: "user"
+                                        label: I18n.tr("My channel")
+                                        ok: true
+                                    }
+                                    OrderToken {
+                                        visible: Ideas.outputLanguage > 0
+                                        icon: "translate"
+                                        label: Ideas.outputLanguageOptions[Ideas.outputLanguage] || ""
+                                        ok: true
+                                    }
                                 }
                                 C.AppText {
                                     text: Ideas.busy ? Ideas.status : Ideas.readyHint
@@ -1559,7 +1736,7 @@ Item {
                             spacing: Tokens.space2
                             Layout.alignment: page._wide ? Qt.AlignVCenter : Qt.AlignLeft
                             C.AppText {
-                                text: I18n.tr("Blueprints per run")
+                                text: I18n.tr("Greenlights per run")
                                 weight: Tokens.weightDemiBold
                                 font.pixelSize: Tokens.fontCaption
                                 color: Theme.on_surface_var
@@ -1610,7 +1787,7 @@ Item {
                         status: Ideas.status
                         count: parseInt(Ideas.countOptions[Ideas.countIndex]) || 1
                         thumbs: Ideas.videosRequired ? Ideas.selectedThumbs : []
-                        note: I18n.tr("This can take a few minutes — each blueprint is a full production plan. You can leave the page; the run continues.")
+                        note: I18n.tr("This can take a few minutes — each greenlight is a full production plan. You can leave the page; the run continues.")
                         opacity: 0
                         transform: Translate { id: forgeRise; y: 14 }
                         Component.onCompleted: forgeIn.start()
@@ -1635,7 +1812,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: Tokens.space2
                         C.AppText {
-                            text: I18n.tr("Your blueprints")
+                            text: I18n.tr("Your greenlights")
                             weight: Tokens.weightExtraBold
                             font.pixelSize: Tokens.fontTitle + 2
                             font.letterSpacing: I18n.rtl ? 0 : -0.4
@@ -1778,7 +1955,7 @@ Item {
                             spacing: Tokens.space3
                             C.AppText {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: I18n.tr("No favorited blueprints yet.")
+                                text: I18n.tr("No favorited greenlights yet.")
                                 color: Theme.on_surface_var
                             }
                             C.PrimaryButton {
@@ -1867,7 +2044,7 @@ Item {
                             Layout.fillWidth: true
                             Layout.topMargin: Tokens.space2
                             horizontalAlignment: Text.AlignHCenter
-                            text: I18n.tr("No blueprints yet")
+                            text: I18n.tr("No greenlights yet")
                             weight: Tokens.weightBold
                             font.pixelSize: Tokens.fontSubtitle
                             color: Theme.text_strong
@@ -1933,8 +2110,8 @@ Item {
                 C.AppText {
                     text: Ideas.videosRequired
                           ? I18n.tr("{n} picked").replace("{n}", Ideas.selectedCount)
-                            + "  ·  " + (Ideas.countOptions[Ideas.countIndex] || "") + " " + I18n.tr("blueprints")
-                          : (Ideas.countOptions[Ideas.countIndex] || "") + " " + I18n.tr("blueprints")
+                            + "  ·  " + (Ideas.countOptions[Ideas.countIndex] || "") + " " + I18n.tr("greenlights")
+                          : (Ideas.countOptions[Ideas.countIndex] || "") + " " + I18n.tr("greenlights")
                     mono: true
                     font.pixelSize: Tokens.fontCaption
                     color: Theme.on_surface_var
@@ -1969,7 +2146,7 @@ Item {
         anchors.centerIn: parent
         width: Math.min(440, page.width - 80)
         padding: 0
-        title: I18n.tr("Delete this blueprint?")
+        title: I18n.tr("Delete this greenlight?")
 
         property int pendingId: -1
         property string pendingTitle: ""

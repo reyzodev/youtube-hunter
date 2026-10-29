@@ -488,12 +488,12 @@ class ContentLabVM(QObject):
         if idea_id <= 0:
             return
         if not content_lab_delete_idea(idea_id):
-            self.toast.emit(tr("Couldn't delete that blueprint."), "error")
+            self.toast.emit(tr("Couldn't delete that greenlight."), "error")
             return
         self._ideas = [i for i in self._ideas if i.get("id") != idea_id]
         self._ensure_active_visible()
         self.resultsChanged.emit()
-        self.toast.emit(tr("Blueprint deleted."), "success")
+        self.toast.emit(tr("Greenlight deleted."), "success")
 
     @Slot(int)
     def deleteEntry(self, entry_id):
@@ -578,8 +578,8 @@ class ContentLabVM(QObject):
                 break
         self._active_id = idea_id
         self.resultsChanged.emit()
-        self.toast.emit(tr("Blueprint rebuilt."), "success")
-        announce("success", tr("Blueprint rebuilt."), "", page=7,
+        self.toast.emit(tr("Greenlight rebuilt."), "success")
+        announce("success", tr("Greenlight rebuilt."), "", page=7,
                  icon="nav_lab", source=tr("Content Lab"))
 
     @Slot(str)
@@ -910,7 +910,7 @@ class ContentLabVM(QObject):
         self.csvChanged.emit()
         if blueprints and briefs:
             self._set_csv_status(
-                tr("Analyzing with {p}, folding in {n} blueprint(s) and {b} brief(s) — "
+                tr("Analyzing with {p}, folding in {n} greenlight(s) and {b} brief(s) — "
                    "this can take a few minutes…").format(
                        p=self.providerLabel, n=len(blueprints), b=len(briefs)))
         elif briefs:
@@ -919,7 +919,7 @@ class ContentLabVM(QObject):
                    "this can take a few minutes…").format(
                        p=self.providerLabel, b=len(briefs)))
         elif blueprints:
-            self._set_csv_status(tr("Analyzing with {p} and folding in {n} blueprint(s) — "
+            self._set_csv_status(tr("Analyzing with {p} and folding in {n} greenlight(s) — "
                                     "this can take a few minutes…").format(
                 p=self.providerLabel, n=len(blueprints)))
         else:
@@ -1006,11 +1006,11 @@ class ContentLabVM(QObject):
             # `kind` alone: a pre-brief history entry has kind "combined" and no
             # briefs list, and must keep reading as "Channel + blueprints".
             if brs and bps:
-                kind_label = tr("Channel + blueprints + research")
+                kind_label = tr("Channel + greenlights + research")
             elif brs:
                 kind_label = tr("Channel + research")
             elif combined:
-                kind_label = tr("Channel + blueprints")
+                kind_label = tr("Channel + greenlights")
             else:
                 kind_label = tr("Channel report")
             out.append({

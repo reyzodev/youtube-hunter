@@ -2374,9 +2374,9 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
         plan.append({"cookies": cookies_browser, "clients": None})
     for clients in client_ladder():
         plan.append({"cookies": None, "clients": clients})
-    # Set once a bot check / 403 is seen, so the cookie rungs below are appended
+    # Set once a bot check / 403 is seen, so the fallback rungs below are appended
     # exactly once (the loop iterates `plan` while these are appended to it).
-    cookies_added = bool(cookies_browser)
+    cookies_added = False   # v1.0.3: the fallback adds no-cookie client rungs only
 
     import time as _time
     dl_state = {"pct": -1, "at": 0.0, "bands": {},
@@ -2599,18 +2599,17 @@ def _cut_via_ydl_download(url, height_cap, start, end, seg_len, target_dir,
                                 or str(exc))
                 except Exception:             # noqa: BLE001
                     last_err = str(exc)
-                # Bot check / CDN 403: browser cookies are the only thing that
-                # gets past them, so the cookie rungs are appended once, on
-                # demand, followed by a no-cookie rung so a locked or
-                # undecryptable cookie DB can't end the cut.
+                # Bot check / CDN 403. v1.0.3: no automatic browser-cookie
+                # rungs any more (they read every installed browser's signed-in
+                # session without asking — an account-ban risk the user never
+                # agreed to). Only the browser picked in Settings is used, and
+                # that one is already in the plan. The no-cookie client rungs
+                # stay, appended once.
                 if not cookies_added and _is_bot_or_403(last_err):
                     cookies_added = True
-                    for b in _COOKIE_BROWSERS:
-                        if b != cookies_browser:
-                            plan.append({"cookies": b, "clients": None})
                     for clients in ([],) + tuple(BYPASS_CLIENTS):
                         plan.append({"cookies": None, "clients": clients})
-                    _status(tr("Trying browser cookies…"))
+                    _status(tr("Retrying with another method…"))
                 continue
     return (False,
             _friendly_or_clean(last_err) or tr("No playable stream at that quality."),

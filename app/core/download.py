@@ -539,9 +539,9 @@ def friendly_extract_error(err_text):
         return _missing
     if _is_bot_or_403(err_text):
         return tr(
-            "YouTube blocked this download (bot check). Close your browser "
-            "completely and try again — or set “Use cookies from browser” in "
-            "Settings, or try a different VPN location.")
+            "YouTube blocked this download (bot check). Try a different VPN "
+            "location, or turn on Browser Cookies in Settings (read the "
+            "account-safety warning first).")
     if _is_drm(err_text):
         return tr(
             "YouTube only offered DRM-protected formats for this video, so it "
@@ -3211,28 +3211,19 @@ def download_video(url, target_dir, quality, on_status=None, on_progress=None,
                     fresh = _refresh_engine_once(_status, should_cancel)
                     if fresh is not None:
                         yt_dlp = fresh
-                # Browser cookies are the ONLY thing that gets past a real bot
-                # check or a CDN 403, so they are appended to the ladder here —
-                # on demand, once YouTube has actually blocked us — rather than
-                # being tried on every download whether needed or not. A browser
-                # that isn't installed just raises and is skipped by the cookie
-                # guard above.
+                # v1.0.3 — browser cookies are NEVER borrowed on the user's
+                # behalf any more. This branch used to append every installed
+                # browser (firefox / edge / chrome / brave) the moment YouTube
+                # threw a bot check, so a user who had never touched the
+                # setting still had their signed-in session read and sent to
+                # YouTube. A logged-in account that bulk-downloads can be
+                # flagged or banned, so that is now a decision the user makes
+                # in Settings (behind a warning), and only the browser they
+                # picked is ever used — see the `cookies_browser` rungs above.
+                # What stays: after the engine refresh, re-try the two client
+                # sets most likely to answer differently, once.
                 if _is_bot_or_403(last_err) and not cookies_tried:
                     cookies_tried = True
-                    for b in _COOKIE_BROWSERS:
-                        if b != cookies_browser:
-                            attempts.append({"cookies": b, "clients": None,
-                                             "loose": False, "dashy": True})
-                    # NEVER let a cookie rung be the LAST rung. Every
-                    # Chrome-family store can fail at once — browser running
-                    # (DB locked) or App-Bound Encryption on Chrome 127+
-                    # ("Failed to decrypt with DPAPI") — and when the last rung
-                    # of the ladder is a cookie rung, that failure ENDS the
-                    # download with the misleading "close your browser" message.
-                    # These no-cookie client rungs run after them, so the ladder
-                    # always ends on a rung that can actually succeed.
-                    # (only the rungs that may answer differently after
-                    # the engine refresh above — not the whole ladder again)
                     for clients in ([], ["tv"]):
                         attempts.append({"cookies": None, "clients": clients,
                                          "loose": False, "dashy": True})

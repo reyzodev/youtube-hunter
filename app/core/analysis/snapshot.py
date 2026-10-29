@@ -69,6 +69,15 @@ OUTLIER_X = 3.0
 # small-channel-wins reading.
 SMALL_CHANNEL_SUBS = 10_000
 
+# v1.0.2 "what earns / who gets in".
+# A group (a length bucket, a title habit, a term) only gets a lift reading
+# when it AND the rest of the set each hold at least this many dated videos:
+# below that, one lucky upload is the whole "pattern".
+LIFT_MIN_ROWS = 4
+TERM_LIFT_MIN_ROWS = 3
+# A channel younger than this is a "newcomer" for the is-it-too-late reading.
+NEW_CHANNEL_DAYS = 365
+
 # Words too common to be a "recurring topic". Both languages, since a Persian
 # creator's snapshot is titled in Persian. Mirrors _DEEP_STOPWORDS in
 # app.core.analysis.deep_report but kept separate: that one is tuned for
@@ -202,11 +211,16 @@ def _size_tiers(viewed, set_median):
     """Rows per channel-size tier, each with its own median views and how many
     of its videos beat the median of the whole set."""
     tiers = {key: [] for _lo, _hi, key in CHANNEL_SIZE_BUCKETS}
+    daily_tiers = {key: [] for _lo, _hi, key in CHANNEL_SIZE_BUCKETS}
     for r in viewed:
         subs = _public_subs(r)
         if subs is None:
             continue
         tiers[_bucket(subs, CHANNEL_SIZE_BUCKETS)].append(_int(r["view_count"]))
+        d = _daily(r)
+        if d is not None:
+            daily_tiers[_bucket(subs, CHANNEL_SIZE_BUCKETS)].append(d)
+    base_daily = _median([d for d in (_daily(r) for r in viewed) if d is not None])
     out = []
     for _lo, _hi, key in CHANNEL_SIZE_BUCKETS:
         vals = tiers[key]
@@ -214,6 +228,11 @@ def _size_tiers(viewed, set_median):
             "key": key,
             "rows": len(vals),
             "median_views": _median(vals),
+            "median_daily": _median(daily_tiers[key]),
+            "dated_rows": len(daily_tiers[key]),
+            # same yardstick as the lift readings: views/day vs the set's
+            "beat_daily": (sum(1 for d in daily_tiers[key] if d > base_daily)
+                           if base_daily else 0),
             "beat_median": (sum(1 for v in vals if v > set_median)
                             if set_median is not None else 0),
         })
@@ -271,6 +290,118 @@ def _title_shape(rows):
         "with_number": sum(1 for t in titles if re.search(r"[0-9۰-۹]", t)) / n,
         "question": sum(1 for t in titles if "?" in t or "؟" in t) / n,
         "brackets": sum(1 for t in titles if re.search(r"[\[\(|]", t)) / n,
+    }
+
+def _daily(row):
+    """Age-normalised views (views per day since publishing), or None."""
+    views = _int(row.get("view_count"))
+    age_days = _row_age_days(row)
+    if views <= 0 or not age_days or age_days <= 0:
+        return None
+    return views / max(age_days, 0.25)
+
+def _lift_groups(rows):
+    """Which choices EARN views here, not just which are common.
+
+    Everything else in the snapshot describes supply (what got made). This is
+    the demand side: for each choice a creator actually makes — length, format,
+    title habits — the median views/day of the videos that made it, divided by
+    the median views/day of the whole set. Views/day rather than raw views so
+    a three-year-old video doesn't win on age alone.
+
+    Honest by construction: a group needs LIFT_MIN_ROWS dated videos AND the
+    rest of the set needs as many (a group that IS the whole set has nothing
+    to be compared with). It is a correlation inside one search result, and
+    the UI says so."""
+    dated = [(r, _daily(r)) for r in rows]
+    dated = [(r, d) for r, d in dated if d is not None]
+    base = _median([d for _r, d in dated])
+    if not dated or not base:
+        return {"rows": len(dated), "base_daily": base, "groups": []}
+
+    def title_of(r):
+        return str(r.get("title") or "").strip()
+
+    tests = []
+    for low, high, key in DURATION_BUCKETS:
+        tests.append(("length", key,
+                      lambda r, lo=low, hi=high: _int(r.get("duration_s")) > 0 and
+                      _int(r["duration_s"]) >= lo and (hi is None or _int(r["duration_s"]) < hi)))
+    tests += [
+        ("format", "shorts", lambda r: bool(r.get("is_short"))),
+        ("format", "long_form", lambda r: not r.get("is_short")),
+        ("title", "has_number", lambda r: bool(re.search(r"[0-9۰-۹]", title_of(r)))),
+        ("title", "question", lambda r: "?" in title_of(r) or "؟" in title_of(r)),
+        ("title", "brackets", lambda r: bool(re.search(r"[\[\(|]", title_of(r)))),
+        ("title", "short_title", lambda r: 0 < len(title_of(r)) <= 40),
+        ("title", "long_title", lambda r: len(title_of(r)) > 65),
+        ("extras", "captions", lambda r: r.get("has_captions") is True),
+    ]
+    groups = []
+    for group, key, test in tests:
+        inside = [d for r, d in dated if test(r)]
+        outside = len(dated) - len(inside)
+        if len(inside) < LIFT_MIN_ROWS or outside < LIFT_MIN_ROWS:
+            continue
+        med = _median(inside)
+        groups.append({"group": group, "key": key, "rows": len(inside),
+                       "median_daily": med, "lift": med / base})
+    groups.sort(key=lambda g: g["lift"], reverse=True)
+    return {"rows": len(dated), "base_daily": base, "groups": groups}
+
+def _term_lifts(rows, chips, base_daily):
+    """Views/day lift for each recurring term (title words or tags)."""
+    out = {}
+    if not base_daily:
+        return out
+    for label, _count in chips:
+        key = str(label).lower()
+        # whole words only: "art" must not count every "start"
+        word = re.compile(r"(?<!\w)" + re.escape(key) + r"(?!\w)")
+        vals = []
+        for r in rows:
+            hay = str(r.get("title") or "").lower()
+            tags = r.get("tags") if isinstance(r.get("tags"), list) else []
+            if word.search(hay) or any(key == str(t).strip().lower() for t in tags):
+                d = _daily(r)
+                if d is not None:
+                    vals.append(d)
+        if len(vals) >= TERM_LIFT_MIN_ROWS:
+            out[label] = {"rows": len(vals), "lift": _median(vals) / base_daily}
+    return out
+
+def _channel_age_days(row):
+    hours = iso_age_hours(row.get("channel_created_at") or "")
+    return (hours / 24.0) if hours else None
+
+def _newcomers(rows, base_daily):
+    """Is it too late to start here? Channels younger than NEW_CHANNEL_DAYS
+    that made this result set, and whether their videos keep up."""
+    aged = [(r, _channel_age_days(r)) for r in rows]
+    aged = [(r, a) for r, a in aged if a is not None]
+    fresh = [(r, a) for r, a in aged if a < NEW_CHANNEL_DAYS]
+    dailies = [(r, a, _daily(r)) for r, a in fresh]
+    dated = [(r, a, d) for r, a, d in dailies if d is not None]
+    best = max(dated, key=lambda t: t[2]) if dated else None
+    return {
+        "aged_rows": len(aged),
+        "rows": len(fresh),
+        "channels": len({str(r.get("channel_id") or r.get("channel_title") or "")
+                         for r, _a in fresh} - {""}),
+        "median_daily": _median([d for _r, _a, d in dated]),
+        "beat_typical": (sum(1 for _r, _a, d in dated if d > base_daily)
+                         if base_daily else 0),
+        "dated_rows": len(dated),
+        "best": ({
+            "video_id": best[0].get("video_id", ""),
+            "title": best[0].get("title", ""),
+            "channel_title": best[0].get("channel_title", ""),
+            "thumbnail_url": best[0].get("thumbnail_url", ""),
+            "video_url": best[0].get("video_url", ""),
+            "daily": best[2],
+            "channel_age_days": best[1],
+            "subscriber_count": _public_subs(best[0]),
+        } if best else None),
     }
 
 def build_snapshot(rows, query="", mode="keyword"):
@@ -391,6 +522,13 @@ def build_snapshot(rows, query="", mode="keyword"):
     small = next((t for t in size_tiers if t["key"] == "under_10k"), None)
     sized_rows = sum(t["rows"] for t in size_tiers)
 
+    # v1.0.2: the demand side (what earns) and the entry side (who gets in)
+    lifts = _lift_groups(viewed)
+    topics = _topic_chips(rows)
+    topics["lifts"] = _term_lifts(viewed, topics.get("chips") or [],
+                                  lifts.get("base_daily"))
+    newcomers = _newcomers(viewed, lifts.get("base_daily"))
+
     return {
         "snapshot_key": snapshot_key(rows),
         "query": str(query or ""),
@@ -441,7 +579,11 @@ def build_snapshot(rows, query="", mode="keyword"):
 
         "velocity_leaders": velocity_leaders,
         "breakout_leaders": breakout_leaders,
-        "topics": _topic_chips(rows),
+        "topics": topics,
+
+        # v1.0.2 — what earns views (lift of views/day) and who gets in
+        "lifts": lifts,
+        "newcomers": newcomers,
 
         # What the snapshot could actually see. Every one of these is a count of
         # rows, so the UI can render "N of total" beside the metric it feeds.
@@ -456,6 +598,7 @@ def build_snapshot(rows, query="", mode="keyword"):
             "captions": sum(1 for r in rows if r.get("has_captions") is True),
             "hd": sum(1 for r in rows if str(r.get("definition") or "").lower() == "hd"),
             "channel_baseline": sum(1 for r in rows if _channel_baseline(r)),
+            "channel_age": sum(1 for r in rows if _channel_age_days(r) is not None),
         },
     }
 
@@ -492,6 +635,24 @@ def verdict_line(snap):
         elif snap.get("small_rows", 0) == 0:
             parts.append(tr("No channel under 10K subscribers made this list."))
 
+    # v1.0.2: is it too late? channels under a year old that made the list
+    new = snap.get("newcomers") or {}
+    if new.get("aged_rows", 0) >= 8:
+        if new.get("beat_typical", 0) >= 1:
+            parts.append(tr("{c} channels under a year old made this list and "
+                            "{k} of their videos beat the typical pace — not too late.")
+                         .format(c=new.get("channels", 0), k=new["beat_typical"]))
+        elif new.get("rows", 0) == 0:
+            parts.append(tr("No channel younger than a year made this list."))
+
+    # v1.0.2: the strongest choice, when the lift is big enough to matter
+    groups = (snap.get("lifts") or {}).get("groups") or []
+    if groups and groups[0]["lift"] >= 1.8:
+        g = groups[0]
+        parts.append(tr("{what} earn {x}× the typical views per day here.")
+                     .format(what=lift_label(g["group"], g["key"]),
+                             x=round(g["lift"], 1)))
+
     split = snap.get("format_split") or {}
     if split.get("mixed") and split.get("shorts_median") and split.get("long_median"):
         ratio = split["shorts_median"] / split["long_median"]
@@ -522,8 +683,8 @@ def verdict_line(snap):
                          .format(p=int(count / langs["rows"] * 100), l=lang))
 
     # The cover line stays a line: at most four readings, in the order a
-    # creator decides with them (who owns it, can I win, which format, is the
-    # average lying, is it alive, which language).
+    # creator decides with them (who owns it, can I win, is it too late, what
+    # earns, which format, is the average lying, is it alive, which language).
     return " ".join(parts[:4])
 
 def duration_label(key):
@@ -552,3 +713,27 @@ def recency_label(key):
         "1_12m": tr("1–12 months"),
         "over_1y": tr("Over a year"),
     }.get(key, key)
+
+def lift_label(group, key):
+    """A lift group → the plural noun phrase the UI and the verdict use
+    ("10–20 min videos earn 2.1×…"). Translated at read time."""
+    if group == "length":
+        return tr("{len} videos").format(len=duration_label(key))
+    return {
+        "shorts": tr("Shorts"),
+        "long_form": tr("Long-form videos"),
+        "has_number": tr("Titles with a number"),
+        "question": tr("Question titles"),
+        "brackets": tr("Titles with brackets or a pipe"),
+        "short_title": tr("Short titles (≤40 chars)"),
+        "long_title": tr("Long titles (65+ chars)"),
+        "captions": tr("Videos with captions"),
+    }.get(key, key)
+
+def lift_group_label(group):
+    return {
+        "length": tr("LENGTH"),
+        "format": tr("FORMAT"),
+        "title": tr("TITLE"),
+        "extras": tr("EXTRAS"),
+    }.get(group, group.upper())

@@ -258,7 +258,7 @@ Item {
                         C.PageHeader {
                             iconName: "biotech"
                             title: I18n.tr("Content Lab")
-                            subtitle: I18n.tr("Your saved blueprints and the teleprompter you shoot from.")
+                            subtitle: I18n.tr("Your saved greenlights and the teleprompter you shoot from.")
 
                             // live stats — each one is also a door to its tab
                             Repeater {
@@ -641,7 +641,7 @@ Item {
                                     Repeater {
                                         model: [
                                             { v: page._sectionCount, l: I18n.tr("Sections") },
-                                            { v: page._totalIdeas,   l: I18n.tr("blueprints") },
+                                            { v: page._totalIdeas,   l: I18n.tr("greenlights") },
                                             { v: page._totalFavs,    l: I18n.tr("Favorites") }
                                         ]
                                         Row {
@@ -731,7 +731,7 @@ Item {
                                         horizontalAlignment: Text.AlignHCenter
                                         text: ContentLab.entrySearch !== ""
                                               ? I18n.tr("Try a shorter word, or clear the search to see every section.")
-                                              : I18n.tr("Go to AI Ideas, generate a few blueprints, and they show up here grouped by keyword or channel.")
+                                              : I18n.tr("Go to AI Ideas, generate a few greenlights, and they show up here grouped by keyword or channel.")
                                         color: Theme.on_surface_var
                                         font.pixelSize: Tokens.fontLabel
                                         wrapMode: Text.Wrap
@@ -914,7 +914,7 @@ Item {
                                         spacing: Tokens.space2
                                         Repeater {
                                             model: [
-                                                { v: String(ContentLab.ideaCount), l: I18n.tr("blueprints"), i: "auto_awesome", c: "" },
+                                                { v: String(ContentLab.ideaCount), l: I18n.tr("greenlights"), i: "auto_awesome", c: "" },
                                                 { v: page._railStats.best > 0 ? String(page._railStats.best) : "—", l: I18n.tr("best score"), i: "star", c: "best" },
                                                 { v: page._railStats.avg > 0 ? String(page._railStats.avg) : "—", l: I18n.tr("average"), i: "bar_chart", c: "avg" },
                                                 { v: ContentLab.shortCount + " / " + ContentLab.longCount, l: I18n.tr("short / long"), i: "fmt_short", c: "" },
@@ -1308,7 +1308,7 @@ Item {
                                     }
                                     C.AppText {
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        text: I18n.tr("No favorited blueprints in this section yet.")
+                                        text: I18n.tr("No favorited greenlights in this section yet.")
                                         color: Theme.on_surface_var
                                     }
                                     C.PrimaryButton {
@@ -1748,7 +1748,7 @@ Item {
                                     spacing: Tokens.space2
                                     C.IconGlyph { name: "auto_awesome"; size: 18; glyphColor: Theme.primary }
                                     C.AppText {
-                                        text: I18n.tr("Combine with my blueprints")
+                                        text: I18n.tr("Combine with my greenlights")
                                         weight: Tokens.weightBold
                                         font.pixelSize: Tokens.fontSubtitle
                                         color: Theme.text_strong
@@ -1782,7 +1782,7 @@ Item {
                                 }
 
                                 C.AppText {
-                                    text: I18n.tr("Optional — tick any saved blueprints to have the report sharpen them against this channel's real data.")
+                                    text: I18n.tr("Optional — tick any saved greenlights to have the report sharpen them against this channel's real data.")
                                     font.pixelSize: Tokens.fontCaption
                                     color: Theme.outline
                                     wrapMode: Text.Wrap
@@ -1791,7 +1791,7 @@ Item {
 
                                 C.AppText {
                                     visible: !ContentLab.hasBlueprintChoices
-                                    text: I18n.tr("No saved blueprints yet — generate some in AI Ideas first.")
+                                    text: I18n.tr("No saved greenlights yet — generate some in AI Ideas first.")
                                     font.pixelSize: Tokens.fontCaption
                                     color: Theme.outline
                                     wrapMode: Text.Wrap
@@ -1910,8 +1910,8 @@ Item {
                                     spacing: Tokens.space2
                                     C.AppText {
                                         text: ContentLab.blueprintSectionId === -1
-                                              ? I18n.tr("ALL BLUEPRINTS")
-                                              : I18n.tr("BLUEPRINTS IN “{k}”").replace("{k}", ContentLab.blueprintSectionTitle)
+                                              ? I18n.tr("ALL GREENLIGHTS")
+                                              : I18n.tr("GREENLIGHTS IN “{k}”").replace("{k}", ContentLab.blueprintSectionTitle)
                                         mono: true
                                         weight: Tokens.weightExtraBold
                                         font.pixelSize: 11
@@ -2274,7 +2274,7 @@ Item {
                                             model: [
                                                 { g: "description", v: ContentLab.csvName, on: true },
                                                 { g: "auto_awesome", on: ContentLab.selectedBlueprintCount > 0,
-                                                  v: I18n.tr("{n} blueprint(s)").replace("{n}", ContentLab.selectedBlueprintCount) },
+                                                  v: I18n.tr("{n} greenlight(s)").replace("{n}", ContentLab.selectedBlueprintCount) },
                                                 { g: "page_insights", on: ContentLab.selectedBriefCount > 0,
                                                   v: I18n.tr("{n} research brief(s)").replace("{n}", ContentLab.selectedBriefCount) }
                                             ]
@@ -2323,11 +2323,11 @@ Item {
                                     text: ContentLab.csvBusy ? I18n.tr("Analyzing …")
                                           : (ContentLab.selectedBlueprintCount > 0
                                              && ContentLab.selectedBriefCount > 0)
-                                            ? I18n.tr("Analyze + blueprints + research")
+                                            ? I18n.tr("Analyze + greenlights + research")
                                           : ContentLab.selectedBriefCount > 0
                                             ? I18n.tr("Analyze + combine research")
                                           : ContentLab.selectedBlueprintCount > 0
-                                            ? I18n.tr("Analyze + combine blueprints")
+                                            ? I18n.tr("Analyze + combine greenlights")
                                           : I18n.tr("Analyze channel")
                                     enabled: launchBar.ready
                                     indeterminate: ContentLab.csvBusy
@@ -2536,7 +2536,7 @@ Item {
                                                 // which blueprints were folded in
                                                 C.AppText {
                                                     visible: repRow.modelData.blueprintCount > 0
-                                                    text: I18n.tr("{n} blueprint(s): {list}")
+                                                    text: I18n.tr("{n} greenlight(s): {list}")
                                                         .replace("{n}", repRow.modelData.blueprintCount)
                                                         .replace("{list}", repRow.modelData.blueprintSummary)
                                                     font.pixelSize: Tokens.fontCaption
@@ -2879,13 +2879,13 @@ Item {
                                     Layout.fillWidth: true
                                     horizontalAlignment: Text.AlignHCenter
                                     wrapMode: Text.WordWrap
-                                    text: I18n.tr("Generate blueprints on the AI Ideas page — each one comes with a timecoded, camera-ready script, and every script shows up here.")
+                                    text: I18n.tr("Generate greenlights on the AI Ideas page — each one comes with a timecoded, camera-ready script, and every script shows up here.")
                                     color: Theme.on_surface_var
                                 }
                                 C.PrimaryButton {
                                     variant: "ghost"
                                     iconName: "lightbulb"
-                                    text: I18n.tr("Generate a blueprint")
+                                    text: I18n.tr("Generate a greenlight")
                                     Layout.alignment: Qt.AlignHCenter
                                     onClicked: App.goto(6)   // PAGE_AI_IDEAS
                                 }
@@ -2909,7 +2909,7 @@ Item {
                                     C.LineField {
                                         Layout.fillWidth: true
                                         Layout.maximumWidth: 360
-                                        label: I18n.tr("Find a blueprint")
+                                        label: I18n.tr("Find a greenlight")
                                         labelIcon: "search"
                                         placeholder: I18n.tr("Search by title")
                                         text: Studio.search
@@ -3179,7 +3179,7 @@ Item {
         anchors.centerIn: parent
         width: Math.min(440, page.width - 80)
         padding: 0
-        title: I18n.tr("Delete this blueprint?")
+        title: I18n.tr("Delete this greenlight?")
 
         property int pendingId: -1
         property string pendingTitle: ""

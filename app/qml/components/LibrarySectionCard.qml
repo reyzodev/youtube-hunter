@@ -268,7 +268,7 @@ C.GlassPanel {
                     LayoutMirroring.enabled: false
                 }
                 C.AppText {
-                    text: I18n.tr("blueprints")
+                    text: I18n.tr("greenlights")
                     font.pixelSize: Tokens.fontMicro
                     color: Theme.on_surface_var
                 }
@@ -380,7 +380,7 @@ C.GlassPanel {
                 accent: Theme.error
                 opacity: root.hot ? 1 : 0.45
                 Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
-                tip: I18n.tr("Delete this section and its blueprints")
+                tip: I18n.tr("Delete this section and its greenlights")
                 onClicked: root.deleteRequested(root.entry.id || 0, root.entry.title || "", root.ideaN)
             }
         }

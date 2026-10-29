@@ -53,8 +53,14 @@ Rectangle {
     // never move. The brand and app-control groups arrange themselves around
     // this fixed anchor (see below).
     component WinBtn: AbstractButton {
-        property string glyph: ""
+        id: wb
+        // "min" | "max" | "close" — drawn by WindowGlyph (v1.0.3), not the
+        // in-page icon set: the maximised state used to borrow the video
+        // player's "exit fullscreen" corners, which read as a broken glyph.
+        property string kind: "max"
+        property bool maximized: false
         property bool danger: false
+        property string tip: ""
         width: 46; height: Tokens.titleBarHeight
         hoverEnabled: true
         HoverHandler { cursorShape: Qt.PointingHandCursor }
@@ -65,17 +71,33 @@ Rectangle {
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: 4
-                radius: Tokens.radiusSm
-                color: parent.parent.hovered
-                       ? (parent.parent.danger ? Theme.error : Theme.hover_bg)
-                       : U.withAlpha((parent.parent.danger ? Theme.error : Theme.hover_bg), 0)
+                anchors.topMargin: 7
+                anchors.bottomMargin: 7
+                radius: Tokens.radiusMd
+                color: wb.hovered
+                       ? (wb.danger ? Theme.error : Theme.hover_bg)
+                       : U.withAlpha((wb.danger ? Theme.error : Theme.hover_bg), 0)
+                scale: wb.pressed ? 0.94 : 1.0
                 Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                Behavior on scale { NumberAnimation { duration: Tokens.durFast; easing.type: Easing.OutCubic } }
             }
         }
-        contentItem: IconGlyph {
-            name: parent.glyph
-            size: 16
-            glyphColor: parent.hovered && parent.danger ? "#ffffff" : Theme.on_surface_var
+        contentItem: Item {
+            WindowGlyph {
+                anchors.centerIn: parent
+                kind: wb.kind
+                maximized: wb.maximized
+                hovered: wb.hovered
+                glyphColor: wb.hovered
+                            ? (wb.danger ? "#ffffff" : Theme.text_strong)
+                            : Theme.on_surface_var
+                Behavior on glyphColor { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+            }
+        }
+        AppTooltip {
+            visible: wb.tip !== "" && wb.hovered
+            delay: 600
+            text: wb.tip
         }
     }
 
@@ -86,12 +108,23 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         LayoutMirroring.enabled: false
         spacing: 0
-        WinBtn { glyph: "remove"; onClicked: root.win.showMinimized() }
         WinBtn {
-            glyph: root.win && root.win.isMaximized ? "fullscreen_exit" : "crop_square"
+            kind: "min"
+            tip: I18n.tr("Minimize")
+            onClicked: root.win.showMinimized()
+        }
+        WinBtn {
+            kind: "max"
+            maximized: !!(root.win && root.win.isMaximized)
+            tip: maximized ? I18n.tr("Restore down") : I18n.tr("Maximize")
             onClicked: root.win.toggleMaximize()
         }
-        WinBtn { glyph: "close"; danger: true; onClicked: root.win.close() }
+        WinBtn {
+            kind: "close"
+            danger: true
+            tip: I18n.tr("Close")
+            onClicked: root.win.close()
+        }
     }
 
     // brand: menu-toggle · logo · name · "Core Control".
@@ -188,6 +221,22 @@ Rectangle {
             spacing: Tokens.space2
             rightPadding: Tokens.space3
             LayoutMirroring.enabled: false
+
+            // ── transfers in flight (v1.0.2) ──
+            // Every running download / cut as one compact capsule: an orb
+            // (thumbnail in its own progress ring) and a percentage per job.
+            // Folds away to nothing when no job is running, so the bar looks
+            // exactly as before. Click → TransferPanel below.
+            TransferCapsule {
+                id: transfers
+                objectName: "hdrTransfers"
+                anchors.verticalCenter: parent.verticalCenter
+                panelOpen: transferPanel.opened
+                // a press on the capsule while the panel is open already
+                // closed it (press outside); don't reopen on the same click
+                onToggleRequested: transferPanel.opened ? transferPanel.close()
+                    : (Date.now() - transferPanel.closedAt > 250 ? transferPanel.open() : undefined)
+            }
 
             // ── "not connected" pill (v3.36) ──
             // Shown after the user skipped the connection gate while the app
@@ -465,6 +514,21 @@ Rectangle {
     // transform, so the tray opened at the shrunken bell's coordinates and then
     // jumped when the bell sprang back. It now hangs off the bar itself and is
     // placed from the bell's UNSCALED geometry (plain arithmetic, no mapToItem).
+    // v1.0.2: the transfers panel hangs off the bar for the same reason as the
+    // tray below (the capsule scales on press), placed from its geometry.
+    TransferPanel {
+        id: transferPanel
+        model: transfers.model
+        readonly property real _capX: controls.x + appControls.x + transfers.x
+        readonly property real _capY: controls.y + appControls.y + transfers.y
+        y: _capY + transfers.height + 9
+        // LTR: right edge under the capsule's right edge, growing leftward
+        // (clamped so it never runs under the window buttons).
+        // RTL: the controls sit at the left edge, so the left edges align.
+        x: I18n.rtl ? Math.max(8, _capX)
+                    : Math.max(8, Math.min(root.width - width - 8, _capX + transfers.width - width))
+    }
+
     NotificationsTray {
         id: notifTray
         readonly property real _bellX: controls.x + appControls.x + bellBtn.x

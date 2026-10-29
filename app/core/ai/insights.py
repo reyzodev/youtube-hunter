@@ -27,7 +27,7 @@ OpenAI-compatible endpoint all work — no provider gate on this feature.
 import json
 
 from app import i18n
-from app.core.analysis.snapshot import duration_label, recency_label, size_label
+from app.core.analysis.snapshot import duration_label, lift_label, recency_label, size_label
 from app.core.utils import humanize_count
 from app.i18n import tr
 
@@ -75,7 +75,7 @@ def _clean_obj_list(value, fields, limit=8):
             break
     return out
 
-def _row_digest(rows, limit=ROW_DIGEST_LIMIT):
+def _row_digest(rows, limit=ROW_DIGEST_LIMIT, base_daily=None):
     """The rows the model is allowed to cite, as compact lines.
 
     Sorted by views so the digest covers the videos that actually drive the
@@ -101,6 +101,22 @@ def _row_digest(rows, limit=ROW_DIGEST_LIMIT):
         mult = row.get("multiplier")
         if isinstance(mult, (int, float)) and mult:
             bits.append("%.1fx views/subs" % mult)
+        # v1.0.3: age and momentum per video. Without them the model could not
+        # tell a 3-year-old evergreen hit from last week's breakout, and every
+        # "what's working NOW" claim was a guess.
+        try:
+            from app.core.analysis.snapshot import _daily, _row_age_days
+            age = _row_age_days(row)
+            daily = _daily(row)
+        except Exception:                       # noqa: BLE001
+            age = daily = None
+        if age:
+            bits.append("%dd old" % max(1, int(age)))
+        if daily:
+            pace = "%s views/day" % humanize_count(daily)
+            if base_daily:
+                pace += " (%.1fx the set's typical)" % (daily / base_daily)
+            bits.append(pace)
         duration = int(row.get("duration_s") or 0)
         if duration:
             bits.append("%dm%02ds" % (duration // 60, duration % 60))
@@ -187,6 +203,33 @@ def _overview_block(snap):
                                           % (l["title"][:70], l["value"])
                                           for l in out["leaders"][:3]))
 
+    # v1.0.2: the demand side. Supply (what got made) is everywhere above;
+    # this is what EARNED views per day, so the brief can tell the two apart.
+    lifts = snap.get("lifts") or {}
+    if lifts.get("groups"):
+        add("WHAT EARNS (median views/day of each group ÷ the set's median %s/day, "
+            "%d dated rows; groups under 4 videos hidden; correlation inside one "
+            "search, not cause): " % (humanize_count(lifts.get("base_daily") or 0),
+                                      lifts.get("rows", 0))
+            + "; ".join("%s %.2f× (%d videos)" % (lift_label(g["group"], g["key"]),
+                                                   g["lift"], g["rows"])
+                        for g in lifts["groups"][:8]) + ".")
+    new = snap.get("newcomers") or {}
+    if new.get("aged_rows"):
+        line = ("NEWCOMERS: %d of %d rows with a channel creation date come from "
+                "%d channels under a year old" % (new.get("rows", 0), new["aged_rows"],
+                                                  new.get("channels", 0)))
+        if new.get("dated_rows"):
+            line += ("; %d of their videos beat the set's typical views/day"
+                     % new.get("beat_typical", 0))
+        best = new.get("best")
+        if best:
+            line += ("; best: \"%s\" by %s (%s views/day, channel %d months old)"
+                     % (best["title"][:70], best["channel_title"],
+                        humanize_count(best["daily"]),
+                        max(1, int(best["channel_age_days"] // 30))))
+        add(line + ".")
+
     langs = snap.get("languages") or {}
     if langs.get("top"):
         add("LANGUAGES (declared, %d rows): %s. A gap here can be an opening."
@@ -226,6 +269,18 @@ def _overview_block(snap):
             source, ", ".join("%s ×%d" % (label, count)
                               for label, count in topics["chips"][:10])))
 
+    # v1.0.3: which recurring terms EARN views, not just which recur
+    term_lifts = topics.get("lifts") or {}
+    if term_lifts:
+        ranked = sorted(term_lifts.items(), key=lambda kv: kv[1].get("lift", 0), reverse=True)
+        add("TERMS THAT EARN (median views/day of videos using the term ÷ the set's typical): "
+            + "; ".join("%s %.2f× (%d videos)" % (k, v.get("lift", 0), v.get("rows", 0))
+                        for k, v in ranked[:10]) + ".")
+    if snap.get("velocity_leaders"):
+        add("FASTEST RIGHT NOW (views per day): " + "; ".join(
+            "%s (%s/day)" % (str(l.get("title") or "")[:70], humanize_count(l.get("value") or 0))
+            for l in snap["velocity_leaders"][:3]))
+
     if snap.get("breakout_leaders"):
         add("HIGHEST REACH BEYOND SUBSCRIBERS: " + "; ".join(
             "%s (%.1f× its subscriber count)" % (l["title"][:70], l["value"])
@@ -246,8 +301,9 @@ def build_insights_prompt(snap, rows):
     fragments, because the constraints only work if you can read them in order
     the way the model does."""
     lang_line = ("\nWrite every human-readable string in Persian (Farsi). Keep the "
-                 "JSON keys, the evidence_class values and the video ids in "
-                 "English exactly as specified."
+                 "JSON keys, the evidence_class values, the video ids and the fixed "
+                 "values of format / effort / competition.level in English exactly "
+                 "as specified."
                  if i18n.LANG == "fa" else "")
 
     return f"""You are a YouTube research analyst. Below is a snapshot of public YouTube
@@ -286,7 +342,7 @@ Other hard rules:
 {_overview_block(snap)}
 
 ════════ THE VIDEOS YOU MAY CITE ════════
-{_row_digest(rows)}
+{_row_digest(rows, base_daily=(snap.get("lifts") or {}).get("base_daily"))}
 
 ════════ WHAT TO RETURN ════════
 A JSON object with exactly these fields:
@@ -299,6 +355,25 @@ A JSON object with exactly these fields:
   surface these videos most likely win on ("search", "browse or suggested", or "mixed")
   with one clause of why, "promise": the honest one-sentence promise a new video here
   would have to make.}}
+- "game_plan": the concrete recipe for the creator's NEXT video here, every field grounded in
+  WHAT EARNS / TERMS THAT EARN / LENGTH MIX above: {{"format": "Shorts", "long-form" or "both"
+  with one clause of why, "length": the length band to aim for and why, "title_style": the title
+  shape that earns here (question / number / short / ...), "thumbnail": what the thumbnail should
+  show, judged from the titles and format (say it is a judgement — thumbnails are not in the data),
+  "first_30s": what the opening has to deliver for this viewer}}.
+- "video_ideas": array of exactly 5 objects, videos the creator could film this week:
+  {{"title": a ready-to-use title under 70 characters, "angle": one sentence on the angle,
+    "why": the measured fact it rests on (cite the number), "format": "Short" or "Long-form",
+    "effort": "Easy", "Medium" or "Hard"}}.
+- "title_formulas": array of 3 objects {{"pattern": a reusable title formula like "How I [result]
+  in [time]", "example_id": the id of a REAL video from the digest that uses it, "why": why it works
+  here, with its number}}.
+- "keywords": array of 6-10 short search phrases this audience types, built from the recurring
+  terms above (prefer the ones that EARN).
+- "avoid": array of 3 objects {{"what": a choice that underperforms or is saturated here, "why":
+  the number or pattern that shows it}}.
+- "competition": {{"level": "low", "medium" or "high", "why": one sentence from CHANNEL SPREAD,
+  CHANNEL SIZE and NEWCOMERS, "edge": the one way a new or small channel can stand out}}.
 - "observed": array of exactly 3 statements measured in the data. Each cites its numbers.
 - "inferred": array of exactly 3 hypotheses drawn from that data, each clearly a reading
   rather than a fact.
@@ -326,6 +401,11 @@ A JSON object with exactly these fields:
 
 Respond with ONLY minified JSON, no markdown fences, no commentary before or after:
 {{"summary":"...","intent":{{"job":"...","viewer":"...","surface":"...","promise":"..."}},
+"game_plan":{{"format":"...","length":"...","title_style":"...","thumbnail":"...","first_30s":"..."}},
+"video_ideas":[{{"title":"...","angle":"...","why":"...","format":"Short","effort":"Easy"}}],
+"title_formulas":[{{"pattern":"...","example_id":"...","why":"..."}}],
+"keywords":["...","..."],"avoid":[{{"what":"...","why":"..."}}],
+"competition":{{"level":"medium","why":"...","edge":"..."}},
 "observed":["...","...","..."],"inferred":["...","...","..."],
 "requires_studio":["...","...","..."],
 "audience_questions":[{{"question":"...","answer":"..."}}],
@@ -472,7 +552,54 @@ def _loads_tolerant(text):
     return None, unfinished
 
 
-def parse_insights_response(raw, allowed_ids=()):
+_EFFORTS = ("Easy", "Medium", "Hard")
+_LEVELS = ("low", "medium", "high")
+
+
+def _clean_playbook(data, allowed_ids=(), titles_by_id=None):
+    """v1.0.3: the action half of the brief — what to make next.
+
+    A title formula may only point at a video that is really in the snapshot;
+    a made-up example id is dropped (the formula stays, without the example),
+    and the example's title is filled from the real row, never from the model.
+    """
+    titles_by_id = titles_by_id or {}
+    allowed = set(allowed_ids or ())
+    gp = data.get("game_plan") if isinstance(data.get("game_plan"), dict) else {}
+    game_plan = {k: _clean_str(gp.get(k), 320)
+                 for k in ("format", "length", "title_style", "thumbnail", "first_30s")}
+    ideas = _clean_obj_list(data.get("video_ideas"),
+                            ("title", "angle", "why", "format", "effort"), limit=6)
+    for idea in ideas:
+        fmt = str(idea.get("format") or "").lower()
+        idea["format"] = "Short" if "short" in fmt else "Long-form" if fmt else ""
+        eff = str(idea.get("effort") or "").title()
+        idea["effort"] = eff if eff in _EFFORTS else ""
+    formulas = _clean_obj_list(data.get("title_formulas"), ("pattern", "example_id", "why"), limit=4)
+    for f in formulas:
+        vid = str(f.get("example_id") or "").strip()
+        if vid and vid in allowed:
+            f["example"] = titles_by_id.get(vid, "")
+        else:
+            f["example_id"] = ""
+            f["example"] = ""
+    comp = data.get("competition") if isinstance(data.get("competition"), dict) else {}
+    level = _clean_str(comp.get("level"), 20).lower()
+    return {
+        "game_plan": game_plan,
+        "video_ideas": ideas,
+        "title_formulas": formulas,
+        "keywords": _clean_list(data.get("keywords"), 10, 80),
+        "avoid": _clean_obj_list(data.get("avoid"), ("what", "why"), limit=4),
+        "competition": {
+            "level": level if level in _LEVELS else "",
+            "why": _clean_str(comp.get("why"), 400),
+            "edge": _clean_str(comp.get("edge"), 400),
+        },
+    }
+
+
+def parse_insights_response(raw, allowed_ids=(), titles_by_id=None):
     """Turn the model's reply into the dict the UI binds to.
 
     Tolerant by design (see _loads_tolerant): fences, prose, raw control
@@ -492,6 +619,8 @@ def parse_insights_response(raw, allowed_ids=()):
             "intent": {}, "observed": [], "inferred": [], "requires_studio": [],
             "audience_questions": [], "opportunities": [], "experiments": [],
             "claims": [], "limits": [], "dropped_claims": 0,
+            "game_plan": {}, "video_ideas": [], "title_formulas": [], "keywords": [],
+            "avoid": [], "competition": {},
         }
 
     intent_raw = data.get("intent") if isinstance(data.get("intent"), dict) else {}
@@ -511,6 +640,7 @@ def parse_insights_response(raw, allowed_ids=()):
         if not isinstance(claim.get("limitations"), list):
             claim["limitations"] = _clean_list(claim.get("limitations"), 3)
     claims, dropped = _validate_claims(claims, allowed_ids)
+    extras = _clean_playbook(data, allowed_ids, titles_by_id)
 
     return {
         "ok": True,
@@ -541,6 +671,7 @@ def parse_insights_response(raw, allowed_ids=()):
         # Shown in the evidence ledger. Silently discarding fabricated citations
         # would make a badly-behaved provider look identical to a good one.
         "dropped_claims": dropped,
+        **extras,
     }
 
 def generate_insights(snap, rows, client):
@@ -553,7 +684,9 @@ def generate_insights(snap, rows, client):
     failure the Content Lab v2 bump had to raise its ceiling for."""
     prompt = build_insights_prompt(snap, rows)
     allowed = [str(r.get("video_id") or "") for r in rows if r.get("video_id")]
+    titles = {str(r.get("video_id")): str(r.get("title") or "") for r in rows if r.get("video_id")}
     # v1.1.3: 9000 → 14000. Reasoning models spend part of the ceiling
     # thinking, and a cut-off reply was the main source of "not structured".
-    raw = client.generate(prompt, timeout=300, max_output_tokens=14000)
-    return parse_insights_response(raw, allowed)
+    # v1.0.3: +3000 for the game plan / ideas / formulas pack.
+    raw = client.generate(prompt, timeout=330, max_output_tokens=17000)
+    return parse_insights_response(raw, allowed, titles)

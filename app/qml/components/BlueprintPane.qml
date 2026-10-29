@@ -200,6 +200,17 @@ Item {
     readonly property bool hasEndScreen: idea.hasEndScreen === true
     readonly property bool hasCheckpoints: idea.hasCheckpoints === true
     readonly property bool hasReplies: idea.hasReplyBank === true
+    // ── v7 pack (v1.0.3) ──
+    readonly property var packBrief: idea.packagingBrief || ({})
+    readonly property var liteV: idea.liteVersion || ({})
+    readonly property var funnelD: idea.funnel || ({})
+    readonly property bool hasPackBrief: idea.hasPackagingBrief === true
+    readonly property bool hasLite: idea.hasLite === true
+    readonly property bool hasFacts: idea.hasFactCheck === true
+    readonly property bool hasFunnel: idea.hasFunnel === true
+    // Pacing is drawn on the Timeline's own axis whenever there is a script,
+    // so the separate Pacing section only shows when there is no Timeline.
+    readonly property bool showPacing: hasRet && !hasScript
     readonly property color shelfColor: whyNow.shelfLife === "Trending" ? Theme.error
                                       : whyNow.shelfLife === "Seasonal" ? Theme.warn
                                       : Theme.secondary_container
@@ -213,6 +224,7 @@ Item {
             { it: sAngle,    has: hasAngle,    act: 0, label: I18n.tr("Angle") },
             { it: sHook,     has: hasHook,     act: 0, label: I18n.tr("Hook") },
             { it: sThumbs,   has: hasThumbs,   act: 0, label: I18n.tr("Thumbnails") },
+            { it: sPack,     has: hasPackBrief, act: 0, label: I18n.tr("Packaging") },
             { it: sAudience, has: hasAudience, act: 0, label: I18n.tr("Audience") },
             { it: sDiscovery, has: hasDiscovery, act: 0, label: I18n.tr("Discovery") },
             { it: sComp,     has: hasComp,     act: 0, label: I18n.tr("Competition") },
@@ -226,8 +238,10 @@ Item {
             { it: sOverlay,  has: hasOnScreen, act: 1, label: I18n.tr("On-screen text") },
             { it: sExec,     has: hasExec,     act: 1, label: I18n.tr("Edit") },
             { it: sStyle,    has: hasStyle,    act: 1, label: I18n.tr("Look & sound") },
-            { it: sRet,      has: hasRet,      act: 1, label: I18n.tr("Pacing") },
+            { it: sRet,      has: showPacing,  act: 1, label: I18n.tr("Pacing") },
             { it: sPrep,     has: hasProduction, act: 1, label: I18n.tr("Prep & gear") },
+            { it: sLite,     has: hasLite,     act: 1, label: I18n.tr("Fast version") },
+            { it: sFacts,    has: hasFacts,    act: 1, label: I18n.tr("Fact check") },
             { it: sTitles,   has: hasTitles,   act: 2, label: I18n.tr("Titles") },
             { it: sAb,       has: hasAbPlan,   act: 2, label: I18n.tr("Test plan") },
             { it: sPlan,     has: hasPlan,     act: 2, label: I18n.tr("Publish") },
@@ -240,7 +254,8 @@ Item {
             { it: sCheckpoints, has: hasCheckpoints, act: 3, label: I18n.tr("Checkpoints") },
             { it: sPlaybook, has: hasPlaybook, act: 3, label: I18n.tr("If it stalls") },
             { it: sReplies,  has: hasReplies,  act: 3, label: I18n.tr("Reply bank") },
-            { it: sSeries,   has: hasSeries,   act: 3, label: I18n.tr("Series") }
+            { it: sSeries,   has: hasSeries,   act: 3, label: I18n.tr("Series") },
+            { it: sFunnel,   has: hasFunnel,   act: 3, label: I18n.tr("Format funnel") }
         ]
         var out = []
         for (var i = 0; i < all.length; i++) if (all[i].has) out.push(all[i])
@@ -268,6 +283,7 @@ Item {
     property var planDone: ({})
     property var prepDone: ({})
     property var cpDone: ({})
+    property var factDone: ({})
     onIdeaChanged: _primeForIdea()
     // v3.16-p3: BlueprintStage creates a fresh pane per idea (asynchronously)
     // with `idea` already set, so the change handler never fires there —
@@ -281,6 +297,7 @@ Item {
             planDone = ({})
             prepDone = ({})
             cpDone = ({})
+            factDone = ({})
             playT = 0
             playing = true
             revealTick++
@@ -763,7 +780,7 @@ Item {
                         iconName: "auto_awesome"
                         enabled: !root.regenerating
                         accent: Theme.primary
-                        tip: I18n.tr("Regenerate this blueprint")
+                        tip: I18n.tr("Regenerate this greenlight")
                         onClicked: root.regenerateRequested(root.idea.id || 0)
                     }
                     C.IconButton {
@@ -994,7 +1011,7 @@ Item {
                             ColumnLayout {
                                 Layout.alignment: Qt.AlignVCenter
                                 spacing: 2
-                                Caption { text: I18n.tr("Blueprint score"); horizontalAlignment: Text.AlignRight }
+                                Caption { text: I18n.tr("Greenlight score"); horizontalAlignment: Text.AlignRight }
                                 C.AppText {
                                     Layout.alignment: Qt.AlignRight
                                     text: root.hasScoreParts ? I18n.tr("sum of 5 parts") : I18n.tr("model estimate")
@@ -1083,7 +1100,7 @@ Item {
                             }
                             C.AppText {
                                 Layout.fillWidth: true
-                                text: I18n.tr("Blueprint check")
+                                text: I18n.tr("Greenlight check")
                                 weight: Tokens.weightBold
                                 font.pixelSize: Tokens.fontBody
                                 color: Theme.text_strong
@@ -1227,7 +1244,7 @@ Item {
                     spacing: 2
                     C.AppText { text: I18n.tr("Built with an earlier version"); weight: Tokens.weightBold; color: Theme.warn }
                     C.AppText {
-                        text: I18n.tr("This blueprint has no full script, shot list or competitor breakdown — those came later. Rebuilding keeps the same idea and adds them.")
+                        text: I18n.tr("This greenlight has no full script, shot list or competitor breakdown — those came later. Rebuilding keeps the same idea and adds them.")
                         font.pixelSize: Tokens.fontBody
                         color: Theme.on_surface_var
                         wrapMode: Text.Wrap
@@ -1769,6 +1786,71 @@ Item {
                 }
             }
         }
+
+        // ── v7 · PACKAGING BRIEF (v1.0.3) ──
+        // The words ON the thumbnail, the one thing the eye lands on, and how
+        // title and thumbnail split the job instead of repeating each other.
+        Stage {
+            id: sPack
+            host: root; act: 0; order: 3
+            has: root.hasPackBrief
+            kicker: "PACKAGING"
+            heading: I18n.tr("Title + thumbnail, working as one")
+
+            GridLayout {
+                Layout.fillWidth: true
+                visible: (root.packBrief.thumbText || []).length > 0
+                columns: root.mid ? 2 : 1
+                columnSpacing: Tokens.space3
+                rowSpacing: Tokens.space3
+                Repeater {
+                    model: root.packBrief.thumbText || []
+                    Option {
+                        Layout.preferredWidth: 1
+                        letter: index === 0 ? "A" : index === 1 ? "B" : "C"
+                        body: modelData
+                        big: true
+                        tint: Theme.tertiary
+                        onCopyClicked: (t) => root.copyRequested(t)
+                    }
+                }
+            }
+            C.AppText {
+                visible: (root.packBrief.thumbText || []).length > 0
+                text: I18n.tr("Words on the thumbnail: 4 or fewer, never the title again.")
+                font.pixelSize: Tokens.fontCaption
+                color: Theme.outline
+                Layout.fillWidth: true
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Tokens.space2
+                columns: root.wide ? 3 : 1
+                columnSpacing: Tokens.space3
+                rowSpacing: Tokens.space3
+                Repeater {
+                    model: [
+                        { c: I18n.tr("THE EYE LANDS ON"), g: "visibility", v: root.packBrief.focal || "" },
+                        { c: I18n.tr("TITLE VS. THUMBNAIL"), g: "filter_none", v: root.packBrief.pairing || "" },
+                        { c: I18n.tr("STANDS OUT IN THE FEED"), g: "sparkling", v: root.packBrief.standOut || "" }
+                    ]
+                    Box {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 1
+                        Layout.alignment: Qt.AlignTop
+                        visible: modelData.v !== ""
+                        RowLayout {
+                            spacing: 6
+                            C.IconGlyph { name: modelData.g; size: 14; glyphColor: Theme.tertiary }
+                            Caption { text: modelData.c; color: Theme.tertiary }
+                        }
+                        Body { text: modelData.v }
+                    }
+                }
+            }
+        }
+
 
         Stage {
             id: sAudience
@@ -3090,7 +3172,7 @@ Item {
         Stage {
             id: sRet
             host: root; act: 1; order: 5
-            has: root.hasRet
+            has: root.showPacing
             kicker: "RETENTION PACING"
             heading: I18n.tr("The rhythm that keeps them watching")
             aside: [ Pill { text: root.ret.totalLabel || ""; mono: true; visible: (root.ret.totalLabel || "") !== "" } ]
@@ -3286,6 +3368,120 @@ Item {
                 }
             }
         }
+
+        // ── v7 · SHORT ON TIME (v1.0.3) ──
+        // The version that ships when there's an hour, not a day: what must
+        // stay (the video fails without it) and what can go.
+        Stage {
+            id: sLite
+            host: root; act: 1; order: 7
+            has: root.hasLite
+            kicker: "SHORT ON TIME"
+            heading: I18n.tr("The fast version")
+            aside: [ Pill { text: root.liteV.time || ""; glyph: "schedule"; tint: Theme.warn; strong: true; visible: (root.liteV.time || "") !== "" } ]
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: root.mid ? 2 : 1
+                columnSpacing: Tokens.space3
+                rowSpacing: Tokens.space3
+                Repeater {
+                    model: [
+                        { c: I18n.tr("KEEP"), g: "check_circle", t: Theme.secondary_container, v: root.liteV.keep || "" },
+                        { c: I18n.tr("CUT"), g: "scissors", t: Theme.error, v: root.liteV.cut || "" }
+                    ]
+                    Box {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 1
+                        Layout.alignment: Qt.AlignTop
+                        visible: modelData.v !== ""
+                        border.color: U.withAlpha(modelData.t, 0.35)
+                        color: U.withAlpha(modelData.t, Theme.isDark ? 0.07 : 0.05)
+                        RowLayout {
+                            spacing: 6
+                            C.IconGlyph { name: modelData.g; size: 15; glyphColor: modelData.t }
+                            Caption { text: modelData.c; color: modelData.t }
+                        }
+                        Body { text: modelData.v }
+                    }
+                }
+            }
+        }
+
+        // ── v7 · FACT CHECK (v1.0.3) ──
+        // Every claim in the script a viewer could call out, with how to
+        // verify it. Tick each one off before you publish (per idea, not saved).
+        Stage {
+            id: sFacts
+            host: root; act: 1; order: 7
+            has: root.hasFacts
+            kicker: "FACT CHECK"
+            heading: I18n.tr("Check these before you publish")
+
+            Repeater {
+                model: root.idea.factCheck || []
+                Rectangle {
+                    id: fc
+                    readonly property bool done: root.factDone[index] === true
+                    Layout.fillWidth: true
+                    radius: Tokens.radiusXl
+                    color: Theme.surface_low
+                    border.width: 1
+                    border.color: fc.done ? U.withAlpha(Theme.secondary_container, 0.5) : Theme.border
+                    Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                    implicitHeight: fcRow.implicitHeight + Tokens.space4 * 2
+                    RowLayout {
+                        id: fcRow
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Tokens.space4
+                        spacing: Tokens.space3
+                        AbstractButton {
+                            Layout.alignment: Qt.AlignTop
+                            implicitWidth: 24; implicitHeight: 24
+                            onClicked: {
+                                var m = Object.assign({}, root.factDone)
+                                m[index] = !fc.done
+                                root.factDone = m
+                            }
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            background: Rectangle {
+                                radius: 12
+                                color: fc.done ? Theme.secondary_container : "transparent"
+                                border.width: 1.5
+                                border.color: fc.done ? Theme.secondary_container : Theme.border_med
+                            }
+                            contentItem: C.IconGlyph {
+                                name: "check"
+                                size: 13
+                                visible: fc.done
+                                glyphColor: Theme.isDark ? "#0F0D12" : "#FFFFFF"
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Tokens.space2
+                            Body {
+                                text: modelData.claim || ""
+                                font.pixelSize: Tokens.fontLabel + 1
+                                color: Theme.text_strong
+                                opacity: fc.done ? 0.6 : 1
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: (modelData.verify || "") !== ""
+                                spacing: Tokens.space2
+                                C.IconGlyph { name: "search"; size: 14; glyphColor: Theme.warn; Layout.alignment: Qt.AlignTop; Layout.topMargin: 3 }
+                                Body { text: modelData.verify || ""; font.pixelSize: Tokens.fontBody; color: Theme.on_surface_var }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
 
         Stage {
             id: sTitles
@@ -4377,6 +4573,67 @@ Item {
             }
         }
 
+        // ── v7 · FORMAT FUNNEL (v1.0.3) ──
+        // YouTube's own funnel: a long video feeds Shorts, a Short points at
+        // a long video. Long-form lists the clips to cut; a Short names the
+        // video to set as its Related video.
+        Stage {
+            id: sFunnel
+            host: root; act: 3; order: 4
+            has: root.hasFunnel
+            kicker: "FORMAT FUNNEL"
+            heading: root.idea.isLong ? I18n.tr("Shorts to cut from this video")
+                                      : I18n.tr("Where this Short sends viewers")
+
+            Repeater {
+                model: root.funnelD.clips || []
+                Rectangle {
+                    id: fnRow
+                    Layout.fillWidth: true
+                    radius: Tokens.radiusXl
+                    color: Theme.surface_high
+                    border.width: 1
+                    border.color: fnHover.hovered ? U.withAlpha(root.growColor, 0.45) : Theme.border
+                    Behavior on border.color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                    implicitHeight: fnLay.implicitHeight + Tokens.space4 * 2
+                    HoverHandler { id: fnHover }
+                    RowLayout {
+                        id: fnLay
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Tokens.space4
+                        spacing: Tokens.space3
+                        Pill { Layout.alignment: Qt.AlignTop; text: modelData.from || ""; glyph: "scissors"; mono: true; tint: root.growColor; strong: true; visible: (modelData.from || "") !== "" }
+                        Body { text: modelData.hook || ""; font.pixelSize: Tokens.fontLabel; color: Theme.text_strong }
+                        C.IconButton {
+                            Layout.alignment: Qt.AlignTop
+                            iconName: "content_copy"
+                            tip: I18n.tr("Copy hook")
+                            accent: Theme.primary
+                            implicitWidth: 28; implicitHeight: 28
+                            opacity: fnHover.hovered ? 1 : 0.45
+                            Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
+                            onClicked: root.copyRequested(modelData.hook || "")
+                        }
+                    }
+                }
+            }
+            Box {
+                Layout.fillWidth: true
+                visible: (root.funnelD.linkTo || "") !== ""
+                border.color: U.withAlpha(root.growColor, 0.35)
+                RowLayout {
+                    spacing: 6
+                    C.IconGlyph { name: "link"; size: 15; glyphColor: root.growColor }
+                    Caption { text: root.idea.isLong ? I18n.tr("SEND VIEWERS TO") : I18n.tr("SET AS RELATED VIDEO"); color: root.growColor }
+                }
+                Body { text: root.funnelD.linkTo || ""; font.pixelSize: Tokens.fontLabel + 1; color: Theme.text_strong }
+                Body { visible: text !== ""; text: root.funnelD.why || ""; font.pixelSize: Tokens.fontBody; color: Theme.on_surface_var }
+            }
+        }
+
+
         // ═════════════ next act ═════════════
         AbstractButton {
             id: nextCard
@@ -4449,14 +4706,14 @@ Item {
             C.PrimaryButton {
                 variant: "ghost"
                 iconName: "auto_awesome"
-                text: root.regenerating ? I18n.tr("Rebuilding …") : I18n.tr("Regenerate this blueprint")
+                text: root.regenerating ? I18n.tr("Rebuilding …") : I18n.tr("Regenerate this greenlight")
                 enabled: !root.regenerating
                 implicitHeight: 40
                 onClicked: root.regenerateRequested(root.idea.id || 0)
             }
             Item { Layout.fillWidth: true }
             C.AppText {
-                text: I18n.tr("Saved automatically — this blueprint is in your Content Lab library.")
+                text: I18n.tr("Saved automatically — this greenlight is in your Content Lab library.")
                 font.pixelSize: Tokens.fontCaption
                 color: Theme.outline
                 wrapMode: Text.Wrap

@@ -73,7 +73,7 @@ C.GlassPanel {
         { icon: "movie",        label: I18n.tr("Reading references") },
         { icon: "query_stats",  label: I18n.tr("Finding the pattern") },
         { icon: "edit",         label: I18n.tr("Drafting hooks & script") },
-        { icon: "auto_awesome", label: I18n.tr("Polishing the blueprint") }
+        { icon: "auto_awesome", label: I18n.tr("Polishing the greenlight") }
     ]
 
     // ═════════════════ ambient background ═════════════════
@@ -450,8 +450,8 @@ C.GlassPanel {
             }
 
             C.AppText {
-                text: (root.count === 1 ? I18n.tr("Forging 1 blueprint")
-                                        : I18n.tr("Forging {n} blueprints").replace("{n}", root.count))
+                text: (root.count === 1 ? I18n.tr("Forging 1 greenlight")
+                                        : I18n.tr("Forging {n} greenlights").replace("{n}", root.count))
                 weight: Tokens.weightExtraBold
                 font.pixelSize: Tokens.fontDisplay + 4
                 font.letterSpacing: I18n.rtl ? 0 : -0.8

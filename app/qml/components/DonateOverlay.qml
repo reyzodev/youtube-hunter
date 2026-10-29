@@ -70,9 +70,17 @@ Popup {
     // a connection drop mid-donation opens the gate BEHIND this card.
     z: 50
 
-    width: Math.min(1120, parent ? parent.width - 88 : 960)
-    height: Math.min(920, parent ? parent.height - 72 : 700)
+    // v1.0.4: wider (1120 -> 1360). The extra room goes to a brand rail on the
+    // left, not to empty margin around the page; the page keeps ~1000 px.
+    width: Math.min(1360, parent ? parent.width - 64 : 960)
+    height: Math.min(940, parent ? parent.height - 56 : 700)
     anchors.centerIn: parent
+
+    // Wide enough for the rail (left: brand, perks, security; right: page).
+    // Below this the card falls back to the single-column layout.
+    readonly property bool wide: width >= 1100
+    readonly property int _railW: 300
+    readonly property int _frameR: Tokens.radiusLg
 
     // A stronger backdrop than the app's other dialogs (they use a light
     // 3.5 px so you keep your bearings). Donating is a full-attention flow:
@@ -135,6 +143,7 @@ Popup {
     onOpened: Qt.callLater(root._beginLoad)
 
     function reload() {
+        root.pageLang = ""
         root._pending = false
         root._failed = false
         root._netError = false
@@ -164,6 +173,60 @@ Popup {
     // round-trip: about one pixel at this width, and it cannot lose a
     // half-filled form. Two repaint triggers (down, then back 450 ms later);
     // on a normal GPU this is invisible.
+    // ── page language switch (v1.0.4) ──────────────────────────────────
+    // The donation page draws its own small language toggle (ENG / FA) as a
+    // floating circle pinned against the edge of its "recent donations" box,
+    // where it reads as part of that box. It is taken over here: the page's
+    // own button is found by its label, hidden, and a "language" control in
+    // this card's header clicks it for you. If the page has no such button
+    // (or it changes shape), nothing is hidden and nothing shows in the header,
+    // so the worst case is exactly the old behaviour.
+    property string pageLang: ""
+    property int _langTries: 0
+    readonly property string _langJs: "(function(){" +
+        "var RX=/^(ENG?|EN|FA|FAR|PER|English|Persian|\u0641\u0627|\u0641\u0627\u0631\u0633\u06cc)$/i;" +
+        "var S=window.__yhLang;" +
+        "if(!S){S=window.__yhLang={el:null,t:0};" +
+        " var st=document.createElement('style');" +
+        " st.textContent='[data-yh-lang]{display:none !important}';" +
+        " (document.head||document.documentElement).appendChild(st);" +
+        " new MutationObserver(function(){if(S.el&&document.contains(S.el))return;" +
+        "  clearTimeout(S.t);S.t=setTimeout(S.find,250);})" +
+        " .observe(document.documentElement,{childList:true,subtree:true});" +
+        " S.find=function(){" +
+        "  if(S.el&&document.contains(S.el))return S.el;S.el=null;" +
+        "  var c=document.querySelectorAll('button,a,[role=button],div,span');" +
+        "  for(var i=0;i<c.length;i++){var e=c[i];" +
+        "   if(e.children.length>2)continue;" +
+        "   var t=(e.textContent||'').trim();if(!RX.test(t))continue;" +
+        "   var r=e.getBoundingClientRect();if(r.width<=0||r.width>140||r.height>90)continue;" +
+        "   var b=e.querySelector('button,a,[role=button]')||e.closest('button,a,[role=button]')||e;" +
+        "   e.setAttribute('data-yh-lang','1');S.el=e;S.btn=b;return e;}" +
+        "  return null;};" +
+        " S.label=function(){return S.el?(S.el.textContent||'').trim().slice(0,8):'';};" +
+        " S.toggle=function(){if(S.find())(S.btn||S.el).click();};" +
+        "}" +
+        "S.find();return S.label();})()"
+
+    function _hookLang() {
+        web.runJavaScript(root._langJs, function(res) {
+            root.pageLang = String(res || "")
+            // a client-rendered page may draw the toggle a moment after load
+            if (root.pageLang === "" && root._langTries < 8) {
+                root._langTries += 1
+                langRetry.restart()
+            }
+        })
+    }
+    function toggleLang() {
+        web.runJavaScript("window.__yhLang&&window.__yhLang.toggle();", function() {
+            langRelabel.restart()
+        })
+    }
+    Timer { id: langRetry; interval: 700; onTriggered: root._hookLang() }
+    // the page re-renders after a switch; read the new label once it settled
+    Timer { id: langRelabel; interval: 600; onTriggered: root._hookLang() }
+
     function _wake() {
         web.zoomFactor = 1.001
         wakeTimer.restart()
@@ -294,6 +357,38 @@ Popup {
         }
     }
 
+    // v1.0.4: one line in the rail's "what it funds" list
+    component Perk: RowLayout {
+        id: perk
+        property string icon: ""
+        property alias label: perkText.text
+        spacing: Tokens.space3
+        Rectangle {
+            Layout.preferredWidth: 34
+            Layout.preferredHeight: 34
+            radius: Tokens.radiusMd
+            antialiasing: true
+            color: U.withAlpha(Theme.primary, Theme.isDark ? 0.13 : 0.08)
+            border.width: 1
+            border.color: U.withAlpha(Theme.primary, Theme.isDark ? 0.26 : 0.16)
+            C.IconGlyph {
+                anchors.centerIn: parent
+                name: perk.icon
+                fill: true
+                size: 16
+                glyphColor: Theme.primary
+            }
+        }
+        C.AppText {
+            id: perkText
+            Layout.fillWidth: true
+            font.pixelSize: Tokens.fontBody
+            weight: Tokens.weightDemiBold
+            color: Theme.on_surface
+            wrapMode: Text.WordWrap
+        }
+    }
+
     // ── the card ───────────────────────────────────────────────────────
     // A lit object, not a flat box: a soft drop shadow, an accent halo rising
     // from behind the top edge, a rim that is accent-warm at the top and fades
@@ -345,9 +440,11 @@ Popup {
                 anchors.fill: parent
                 radius: parent.radius
                 antialiasing: true
+                // v1.0.4: ends above the page frame — the frame's rounded
+                // corner caps are plain Theme.surface and must match
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.085 : 0.045) }
-                    GradientStop { position: 0.16; color: U.withAlpha(Theme.primary, 0.0) }
+                    GradientStop { position: Math.min(0.2, 60 / Math.max(1, root.height)); color: U.withAlpha(Theme.primary, 0.0) }
                 }
             }
         }
@@ -355,26 +452,235 @@ Popup {
             anchors.top: parent.top
             anchors.topMargin: 1
             anchors.horizontalCenter: parent.horizontalCenter
-            width: parent.width * 0.6
+            width: parent.width * 0.7
             height: 1
+            // v1.0.4: the lit edge carries the accent out to both sides and
+            // burns white in the middle, like light caught on a glass lip
             gradient: Gradient {
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0) }
-                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, Theme.isDark ? 0.22 : 0.7) }
-                GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0) }
+                GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, 0) }
+                GradientStop { position: 0.3; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.55 : 0.40) }
+                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, Theme.isDark ? 0.40 : 0.85) }
+                GradientStop { position: 0.7; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.55 : 0.40) }
+                GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0) }
             }
         }
     }
 
-    contentItem: ColumnLayout {
+    contentItem: RowLayout {
         spacing: 0
         transform: Translate { y: root._rise }
+
+        // ── rail (v1.0.4) ─────────────────────────────────────────────
+        // Brand, what a donation funds, and the security promise, so the page
+        // on the right can be just the page. Static apart from the heart.
+        Item {
+            id: rail
+            visible: root.wide
+            Layout.preferredWidth: root._railW
+            Layout.fillHeight: true
+            clip: true      // squares off the wash's right edge at the divider
+
+            HoverHandler { id: railHover }
+
+            // wash: accent at the top fading into a faint tint. Rounded like
+            // the card on the left, and wider than the rail so the clip above
+            // cuts its right corners away.
+            Rectangle {
+                x: 1; y: 1
+                width: parent.width + 40
+                height: parent.height - 2
+                radius: Tokens.radiusXl - 1
+                antialiasing: true
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.11 : 0.06) }
+                    GradientStop { position: 0.42; color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.018 : 0.014) }
+                    GradientStop { position: 1.0; color: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.018 : 0.014) }
+                }
+            }
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.topMargin: Tokens.space5
+                anchors.bottomMargin: Tokens.space5
+                width: 1
+                color: Theme.border
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 28
+                anchors.rightMargin: 28
+                anchors.topMargin: 30
+                anchors.bottomMargin: Tokens.space5
+                spacing: 0
+
+                // brand tile: the accent as a glossy app-icon square with the
+                // beating heart in white (same language as Hunter's chat mark)
+                Rectangle {
+                    Layout.preferredWidth: 56
+                    Layout.preferredHeight: 56
+                    radius: 18
+                    antialiasing: true
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: U.mix(Theme.logo_grad_in, "#FFFFFF", 0.14) }
+                        GradientStop { position: 0.55; color: Theme.logo_grad_in }
+                        GradientStop { position: 1.0; color: U.mix(Theme.logo_grad_out, "#000000", 0.18) }
+                    }
+                    border.width: 1
+                    border.color: Theme.isDark ? Qt.rgba(0, 0, 0, 0.4) : U.withAlpha(Theme.logo_grad_out, 0.22)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        antialiasing: true
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.30) }
+                            GradientStop { position: 0.48; color: Qt.rgba(1, 1, 1, 0.04) }
+                            GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0) }
+                        }
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        radius: parent.radius - 1
+                        antialiasing: true
+                        color: "transparent"
+                        border.width: 1
+                        border.color: Qt.rgba(1, 1, 1, 0.22)
+                    }
+                    C.HeartBeat {
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 1
+                        size: 26
+                        hot: "#FFFFFF"
+                        deep: U.mix("#FFFFFF", Theme.primary, 0.22)
+                        racing: railHover.hovered
+                        running: root.opened && root.wide
+                    }
+                }
+
+                C.AppText {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Tokens.space5
+                    text: I18n.tr("Support YouTube Hunter")
+                    font.pixelSize: Tokens.fontTitle
+                    font.letterSpacing: -0.5
+                    weight: Tokens.weightExtraBold
+                    color: Theme.text_strong
+                    wrapMode: Text.WordWrap
+                }
+                C.AppText {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Tokens.space2
+                    text: I18n.tr("Your support keeps the updates coming.")
+                    font.pixelSize: Tokens.fontBody
+                    color: Theme.on_surface_var
+                    wrapMode: Text.WordWrap
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Tokens.space6
+                    spacing: Tokens.space3
+                    Perk { Layout.fillWidth: true; icon: "bolt"; label: I18n.tr("Faster fixes and updates") }
+                    Perk { Layout.fillWidth: true; icon: "auto_awesome"; label: I18n.tr("New AI features") }
+                    Perk { Layout.fillWidth: true; icon: "favorite"; label: I18n.tr("Keeps it independent") }
+                }
+
+                Item { Layout.fillHeight: true }
+
+                // the security promise, as a card of its own
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: secCol.implicitHeight + Tokens.space4 * 2
+                    radius: Tokens.radiusLg
+                    antialiasing: true
+                    color: U.withAlpha(Theme.secondary_container, Theme.isDark ? 0.07 : 0.06)
+                    border.width: 1
+                    border.color: U.withAlpha(Theme.secondary_container, Theme.isDark ? 0.24 : 0.22)
+
+                    ColumnLayout {
+                        id: secCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: Tokens.space4
+                        anchors.rightMargin: Tokens.space4
+                        spacing: Tokens.space2
+
+                        RowLayout {
+                            spacing: Tokens.space2
+                            Rectangle {
+                                Layout.preferredWidth: 22
+                                Layout.preferredHeight: 22
+                                radius: 11
+                                color: U.withAlpha(Theme.secondary_container, 0.18)
+                                C.IconGlyph {
+                                    anchors.centerIn: parent
+                                    name: "lock"
+                                    fill: true
+                                    size: 12
+                                    glyphColor: Theme.secondary_container
+                                }
+                            }
+                            C.AppText {
+                                text: I18n.tr("Secure checkout")
+                                font.pixelSize: Tokens.fontBody
+                                weight: Tokens.weightBold
+                                color: Theme.text_strong
+                            }
+                        }
+                        C.AppText {
+                            Layout.fillWidth: true
+                            text: I18n.tr("Payments run on the provider's own secure page. Nothing is stored in this app.")
+                            font.pixelSize: Tokens.fontCaption
+                            color: Theme.on_surface_var
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Tokens.space4
+                    spacing: Tokens.space2
+                    C.AppText {
+                        Layout.fillWidth: true
+                        text: I18n.tr("Thank you for being here.")
+                        font.pixelSize: Tokens.fontCaption
+                        color: Theme.on_surface_var
+                        elide: Text.ElideRight
+                    }
+                    Rectangle {
+                        implicitHeight: 20
+                        implicitWidth: railVer.implicitWidth + 14
+                        radius: Tokens.radiusPill
+                        color: U.withAlpha(Theme.primary, Theme.isDark ? 0.12 : 0.08)
+                        C.AppText {
+                            id: railVer
+                            anchors.centerIn: parent
+                            text: "v" + App.version
+                            mono: true
+                            font.pixelSize: Tokens.fontMicro
+                            color: U.mix(Theme.on_surface_var, Theme.primary, 0.45)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── right column: header, page, footer ────────────────────────
+        ColumnLayout {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        spacing: 0
 
         // ── header ────────────────────────────────────────────────────
         Item {
             id: header
             Layout.fillWidth: true
-            Layout.preferredHeight: 78
+            Layout.preferredHeight: root.wide ? 68 : 78
 
             // where the view actually is right now (the gateway may move on to
             // a bank page) — so the security chip always tells the truth
@@ -396,8 +702,10 @@ Popup {
                 spacing: Tokens.space3
 
                 // the heart tile — a glass chip with the app's beating heart in
-                // it; hovering the header makes it race
+                // it; hovering the header makes it race. (Wide card: the rail
+                // carries the brand, so the header is just the browser bar.)
                 Rectangle {
+                    visible: !root.wide
                     Layout.preferredWidth: 44
                     Layout.preferredHeight: 44
                     Layout.alignment: Qt.AlignVCenter
@@ -422,11 +730,12 @@ Popup {
                         anchors.centerIn: parent
                         size: 20
                         racing: headHover.hovered
-                        running: root.opened
+                        running: root.opened && !root.wide
                     }
                 }
 
                 ColumnLayout {
+                    visible: !root.wide
                     Layout.alignment: Qt.AlignVCenter
                     Layout.leftMargin: 2
                     spacing: 3
@@ -445,14 +754,16 @@ Popup {
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                Item { Layout.fillWidth: true; visible: !root.wide }
 
                 // security chip: lock + Secure + the live host. Click opens the
                 // same page in the browser.
                 Rectangle {
                     id: addr
                     Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 32
+                    // wide card: a full address bar (Safari-style, host centred)
+                    Layout.fillWidth: root.wide
+                    implicitHeight: root.wide ? 38 : 32
                     implicitWidth: Math.min(320, addrRow.implicitWidth + 22)
                     radius: Tokens.radiusPill
                     color: U.withAlpha(Theme.on_surface, addrHover.hovered ? 0.07 : 0.035)
@@ -498,7 +809,7 @@ Popup {
                             color: Theme.border_med
                         }
                         C.AppText {
-                            Layout.maximumWidth: 190
+                            Layout.maximumWidth: root.wide ? 420 : 190
                             text: header.pageHost
                             mono: true
                             font.pixelSize: Tokens.fontCaption
@@ -522,6 +833,57 @@ Popup {
                         id: navRow
                         anchors.centerIn: parent
                         spacing: 0
+
+                        // the page's language switch, moved up here (v1.0.4)
+                        AbstractButton {
+                            id: langBtn
+                            visible: root.pageLang !== "" && !root._failed
+                            Layout.preferredHeight: 32
+                            Layout.preferredWidth: langRow.implicitWidth + 20
+                            hoverEnabled: true
+                            onClicked: root.toggleLang()
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            C.AppTooltip {
+                                visible: langBtn.hovered
+                                delay: 400
+                                text: I18n.tr("Switch the page language")
+                            }
+                            background: Rectangle {
+                                radius: Tokens.radiusPill
+                                color: langBtn.pressed ? Theme.hover_bg_strong
+                                       : langBtn.hovered ? Theme.hover_bg : "transparent"
+                                Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+                            }
+                            contentItem: Item {
+                                Row {
+                                    id: langRow
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    C.IconGlyph {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: "translate"
+                                        size: 15
+                                        glyphColor: langBtn.hovered ? Theme.on_surface : Theme.on_surface_var
+                                    }
+                                    C.AppText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.pageLang.toUpperCase()
+                                        mono: true
+                                        font.pixelSize: Tokens.fontMicro
+                                        weight: Tokens.weightBold
+                                        color: langBtn.hovered ? Theme.text_strong : Theme.on_surface
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            visible: langBtn.visible
+                            Layout.preferredWidth: 1
+                            Layout.preferredHeight: 16
+                            Layout.leftMargin: 2
+                            Layout.rightMargin: 2
+                            color: Theme.border_med
+                        }
 
                         // the gateway may navigate a few pages deep (amount ->
                         // bank -> back); a way back beats starting over
@@ -637,10 +999,13 @@ Popup {
                 // here would only round the hairline border and then have the
                 // page's own square corners cut it into four gaps. The card
                 // around it is rounded; this is the viewport.
+                // v1.0.4: the viewport now LOOKS rounded. A clip cannot round
+                // (see above), so four corner caps in the card's colour are laid
+                // over the page's square corners, and the hairline is drawn on
+                // top as a rounded outline. Static, so they cost nothing.
                 radius: 0
                 color: Theme.surface_low
-                border.width: 1
-                border.color: Theme.border
+                border.width: 0
                 clip: true
 
                 WebEngineView {
@@ -666,6 +1031,8 @@ Popup {
                             root._netError = false
                             root._progress = 0
                         } else if (req.status === WebEngineView.LoadSucceededStatus) {
+                            root._langTries = 0
+                            root._hookLang()
                             root._failed = false
                             root._wake()
                         } else if (req.status === WebEngineView.LoadFailedStatus) {
@@ -686,7 +1053,11 @@ Popup {
                     // minutes away even though the page is fully painted.
                     onLoadProgressChanged: {
                         root._progress = web.loadProgress
-                        if (web.loadProgress >= 100) root._wake()
+                        if (web.loadProgress >= 100) {
+                            root._wake()
+                            root._langTries = 0
+                            root._hookLang()
+                        }
                     }
 
                     // Anything that is not a web page (a `tel:`, a `mailto:`, an
@@ -939,13 +1310,47 @@ Popup {
                         }
                     }
                 }
+
+                // rounded corners: caps (card colour) + outline
+                Repeater {
+                    model: 4
+                    delegate: Shape {
+                        required property int index
+                        width: root._frameR; height: root._frameR
+                        x: (index === 1 || index === 2) ? frame.width - width : 0
+                        y: index >= 2 ? frame.height - height : 0
+                        rotation: index * 90
+                        preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            strokeColor: "transparent"
+                            strokeWidth: -1
+                            fillColor: Theme.surface
+                            startX: 0; startY: 0
+                            PathLine { x: root._frameR; y: 0 }
+                            PathArc {
+                                x: 0; y: root._frameR
+                                radiusX: root._frameR; radiusY: root._frameR
+                                direction: PathArc.Counterclockwise
+                            }
+                            PathLine { x: 0; y: 0 }
+                        }
+                    }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: root._frameR
+                    antialiasing: true
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.border
+                }
             }
         }
 
         // ── footer ────────────────────────────────────────────────────
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 48
+            Layout.preferredHeight: root.wide ? 44 : 48
 
             RowLayout {
                 anchors.fill: parent
@@ -954,12 +1359,16 @@ Popup {
                 spacing: Tokens.space2
 
                 C.IconGlyph {
+                    visible: !root.wide
                     name: "lock"
                     fill: true
                     size: 13
                     glyphColor: Theme.secondary_container
                 }
+                // wide card: the security line lives in the rail
+                Item { Layout.fillWidth: true; visible: root.wide }
                 C.AppText {
+                    visible: !root.wide
                     Layout.fillWidth: true
                     text: I18n.tr("Payments run on the provider's own secure page. Nothing is stored in this app.")
                     font.pixelSize: Tokens.fontCaption
@@ -980,9 +1389,10 @@ Popup {
                     text: I18n.tr("reload")
                     font.pixelSize: Tokens.fontCaption
                     color: Theme.on_surface_var
-                    Layout.rightMargin: Tokens.space3
+                    Layout.rightMargin: root.wide ? 0 : Tokens.space3
                 }
                 Rectangle {
+                    visible: !root.wide
                     implicitHeight: 20
                     implicitWidth: verText.implicitWidth + 14
                     radius: Tokens.radiusPill
@@ -997,6 +1407,7 @@ Popup {
                     }
                 }
             }
+        }
         }
     }
 }

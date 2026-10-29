@@ -2378,7 +2378,7 @@ Item {
                                                     ColumnLayout {
                                                         spacing: 0
                                                         C.AppText { text: I18n.tr("AI Ideas"); weight: Tokens.weightBold; color: Theme.text_strong }
-                                                        C.AppText { text: I18n.tr("3 blueprints ready"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
+                                                        C.AppText { text: I18n.tr("3 greenlights ready"); font.pixelSize: Tokens.fontCaption; color: Theme.on_surface_var }
                                                     }
                                                 }
                                                 // chart bars
@@ -2882,7 +2882,7 @@ Item {
                                     Layout.topMargin: Tokens.space3
                                     icon: "language"
                                     title: I18n.tr("Browser Cookies (for downloads)")
-                                    detail: I18n.tr("Borrow a signed-in browser session for age-gated or members-only videos.")
+                                    detail: I18n.tr("Off by default. The app never reads a browser's cookies unless you pick one here, and it warns you first.")
                                 }
                                 Flow {
                                     Layout.fillWidth: true
@@ -2893,9 +2893,17 @@ Item {
                                             text: modelData
                                             glyph: index === 0 ? "cancel" : "public"
                                             active: Settings.cookieIndex === index
-                                            onClicked: Settings.cookieIndex = index
+                                            // v1.0.3: cookies are opt-in only. "None" applies
+                                            // at once; a browser needs the risk card first.
+                                            onClicked: index === 0 ? (Settings.cookieIndex = 0)
+                                                     : (Settings.cookieIndex === index ? undefined
+                                                        : cookieWarn.ask(index, modelData))
                                         }
                                     }
+                                }
+                                C.CookieRiskDialog {
+                                    id: cookieWarn
+                                    onConfirmed: (i) => Settings.cookieIndex = i
                                 }
 
                                 // clip cutting: the re-encode level app.core.cutter reads

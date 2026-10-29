@@ -7,6 +7,52 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — UI pass: My channel, greenlights, and transfers you can see
+
+- **AI Ideas now knows who is making the video.** A new "My channel" card takes
+  the niche, the audience, hard constraints (Faceless, Solo creator, Phone only,
+  Quick edits, No voiceover, Clip channel) and a forced output language. It is
+  saved in `config.json`, rides along with every run and every single-greenlight
+  rebuild, and is printed as a hard-facts block in the prompt, so ideas that
+  ignore the creator (a face-cam plan for a faceless channel, a drone shot for a
+  phone shooter) stop arriving.
+- **Blueprints are now "greenlights"** in every page, toast, tip and tour step —
+  the same saved records and DB schema, only the name the interface uses.
+- **Running downloads and cuts are visible inside the app.** A compact capsule
+  in the title bar shows one orb per job (thumbnail in its own progress ring)
+  and a percentage; clicking it opens a panel with stage, meter, speed, ETA and
+  Pause / Resume / Stop, and a click on a row opens the page that owns the job.
+  Downloads from every page, Cutter cuts and extension cuts all feed it. The
+  desktop live card is unchanged and still covers the window-closed case.
+- **Browser cookies are strictly opt-in.** A bot check no longer makes the app
+  borrow every installed browser's signed-in session on its own. Only the
+  browser picked in Settings is ever used, and picking one opens a hold-to-
+  confirm account-ban warning; "None" applies immediately.
+- **Window controls are drawn, not borrowed** (`WindowGlyph`): minimise,
+  maximise, restore (two stacked windows) and a close that spins on hover, with
+  tooltips — the maximised state no longer reuses the video player's
+  fullscreen glyphs.
+- **Niche Scan now reads demand, not just supply.** "What earns the views"
+  (length, format and title habits ranked by views/day vs. the set, with trust
+  dots and plain-sentence reads), "Can a newcomer get in?" (channel-size ladder
+  vs. the set's pace and the under-a-year-old channels that broke in, with a
+  best-newcomer card), a ×lift badge on each recurring term, and a richer AI
+  brief: game plan, five video ideas, reusable title formulas, keywords, what
+  to avoid and a competition read.
+- **Greenlights gained a v7 audit pack:** packaging brief (thumbnail words,
+  focal point, title/thumbnail split, stand-out), fact check with tick-off
+  verification, a "short on time" fast version and a format funnel. Duplicated
+  fields were dropped from the ask (execution audio, packaging timing, the A/B
+  "watch" line, playbook and SEO keywords — the SEO section now shows the
+  discovery queries); old saved records still render their old sections.
+- **Donate window, wide layout:** a brand rail (accent tile with the beating
+  heart, perks, secure-checkout card, version) beside the page, a Safari-style
+  address bar, rounded page frame, and a language control in the header that
+  clicks the page's own ENG/FA switch.
+- **Hunter's chat mark** is now an accent squircle tile (`HunterAvatar`) that
+  orbits and breathes while thinking, and a Persian answer puts its header row
+  on the right (mark → Hunter → model chip → time) to match the text.
+
 ## Unreleased — Cutter: pause stays put, live streams cut, and the picker knows what you already own
 
 - **Pause no longer kills the cut.** Pausing used to stop reading ffmpeg's
