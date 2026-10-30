@@ -14,8 +14,6 @@ Version numbering restarted at **1.0.0** for the public release.
   showed its bare background — black in the dark theme, white in the light —
   until the archive appeared. The entrance now starts at 0.9: the same 240 ms
   settle and 8 px rise, without ever exposing the page wash.
-- The first show no longer re-reads the section list a second time. The page
-  preloads while it is built hidden; the reload now waits for later visits.
 - Opening a keyword or channel section was a second flash: the master view was
   hidden in the same frame the detail view began a 120 ms fade from 0, so both
   were half-transparent over the wash. The master/detail swap is instant now,

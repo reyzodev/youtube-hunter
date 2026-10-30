@@ -27,15 +27,7 @@ import "../Utils.js" as U
 Item {
     id: page
 
-    // v1.0.2: the page preloads while it is being built (hidden), and the
-    // first show used to reload the same sections a second time — a needless
-    // sqlite read in the very frame the page appeared. Later visits still
-    // refresh, so data from another page (a new scrape) lands.
-    property bool _wasShown: false
-    onVisibleChanged: if (visible) {
-        if (page._wasShown) { Archive.reload(); Archive.refreshDownloaded() }
-        page._wasShown = true
-    }
+    onVisibleChanged: if (visible) { Archive.reload(); Archive.refreshDownloaded() }
     Component.onCompleted: { Archive.reload(); Archive.refreshDownloaded() }
 
     property string _pendingThumbId: ""
