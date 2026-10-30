@@ -974,6 +974,16 @@ class DashboardVM(QObject):
                 n += 1
         return path
 
+    def _partial_path(self, sort_order):
+        """Where a stopped run's usable snapshot goes: the user's CHOSEN
+        format, not the JSONL resume checkpoint. The tag keeps two different
+        channels on the same file name from overwriting each other."""
+        suffix = SORT_SUFFIX[sort_order]
+        ext = FORMAT_EXT[self._export_format]
+        tag = f"_{self._ckpt_tag}" if self._ckpt_tag else ""
+        return os.path.join(self._save_folder,
+                            f"{self._filename}_{suffix}{tag}_partial.{ext}")
+
     def _scrape_entry(self, *args):
         try:
             self._scrape_videos(*args)
@@ -1438,6 +1448,10 @@ class DashboardVM(QObject):
                     ck = self._checkpoint_path(sort_order)
                     if os.path.exists(ck):
                         os.remove(ck)
+                    # a full export supersedes the snapshot an earlier stop left
+                    pt = self._partial_path(sort_order)
+                    if os.path.exists(pt):
+                        os.remove(pt)
                 except Exception:
                     pass
                 emit.log_signal.emit("\n" + "═" * 72)
@@ -1465,6 +1479,15 @@ class DashboardVM(QObject):
                 data.append(_row)
             if data:
                 self._save_checkpoint(data, sort_order)
+                partial = self._save_partial(data, sort_order)
+                if partial:
+                    emit.done_popup_signal.emit(
+                        tr("Stopped — results saved"),
+                        tr("{n} videos were scraped before you stopped. They are saved in "
+                           "your chosen format ({fmt}).\n\nThe checkpoint was kept as well, "
+                           "so starting the same scrape again resumes from here.").format(
+                               n=len(data), fmt=self._export_format.upper()),
+                        partial)
         except QuotaExceededError:
             emit.log_signal.emit("\n❌  " + tr("YouTube API daily quota exhausted."))
             # finished-but-not-yet-emitted transcripts still belong in the save
@@ -1478,6 +1501,7 @@ class DashboardVM(QObject):
                 data.append(_row)
             if data:
                 self._save_checkpoint(data, sort_order)
+                self._save_partial(data, sort_order)
             emit.popup_signal.emit(tr("Quota exhausted"),
                                    tr("Every configured YouTube API key has used up its daily quota.\n\n"
                                       "Everything scraped so far ({n} videos) was saved.").format(n=len(data)),
@@ -1487,6 +1511,7 @@ class DashboardVM(QObject):
             emit.log_signal.emit("\n❌  " + tr("Unexpected error: {e}").format(e=exc))
             if data:
                 self._save_checkpoint(data, sort_order)
+                self._save_partial(data, sort_order)
             emit.popup_signal.emit(tr("Error"),
                                    tr("An error occurred:\n{e}\n\nScraped data was saved — you can "
                                       "resume this scrape later.").format(e=exc), "error")
@@ -1508,8 +1533,35 @@ class DashboardVM(QObject):
             write_export(data, path, "json")
             self._emit.log_signal.emit("   💾  " + tr("Checkpoint saved ({n} rows) → {name}").format(
                 n=len(data), name=os.path.basename(path)))
+            return path
         except Exception as exc:
             self._emit.log_signal.emit("   ⚠️  " + tr("Checkpoint save failed: {e}").format(e=exc))
+            return ""
+
+    def _save_partial(self, data, sort_order):
+        """A stopped or failed run's data in the USER'S chosen format.
+
+        The JSONL checkpoint exists to resume the run; this file exists so the
+        50 videos already scraped can be opened in Excel / Sheets / SQLite
+        right away, without waiting for the remaining 50. When the chosen
+        format already IS JSONL the checkpoint is that file.
+        """
+        if not data:
+            return ""
+        if self._export_format in ("json", "jsonl"):
+            return self._checkpoint_path(sort_order)
+        try:
+            path = self._partial_path(sort_order)
+            write_export(data, path, self._export_format)
+            self._emit.log_signal.emit(
+                "   💾  " + tr("Partial export saved ({fmt}, {n} rows) → {name}").format(
+                    fmt=self._export_format.upper(), n=len(data),
+                    name=os.path.basename(path)))
+            return path
+        except Exception as exc:
+            self._emit.log_signal.emit(
+                "   ⚠️  " + tr("Partial export failed: {e}").format(e=exc))
+            return ""
 
     def _save_settings(self):
         cfg = load_app_config()

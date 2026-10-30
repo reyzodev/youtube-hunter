@@ -1052,89 +1052,223 @@ Item {
                                 color: Dashboard.isRunning ? Theme.primary : Theme.on_surface_var
                             }
 
-                            // ── the gauge: run size → run progress ──
+                            // ── the gauge: v1.0.2 "Hunter Core" ──
+                            // Run size → run progress, now an instrument built
+                            // around the brand: a 48-segment LED ring is the
+                            // amount / progress (lit segments ramp up to a hot
+                            // head, the next segment blinks while scraping), a
+                            // hairline precision arc with a glowing bead runs
+                            // inside it, and the mark sits above the read-out.
+                            // While a run is live a radar beam sweeps the core,
+                            // the same beam as the Niche Finder's scope, and the
+                            // mark's sheen passes every few seconds.
                             Item {
                                 id: gauge
                                 Layout.alignment: Qt.AlignHCenter
-                                implicitWidth: 188
-                                implicitHeight: 188
-                                readonly property real thickness: 12
-                                readonly property real r: (width - thickness) / 2 - 2
+                                implicitWidth: 204
+                                implicitHeight: 204
+                                readonly property real c: width / 2
+                                readonly property int segs: 48
+                                readonly property real segOuter: c - 4
+                                readonly property real segLen: 12
+                                readonly property real innerR: segOuter - segLen - 9
+                                readonly property bool live: Dashboard.isRunning && page.visible && page._motion
                                 // idle: amount on a log scale (50 → sliver, 5 000 → full)
                                 readonly property real sizeFrac: page._amount <= 0 ? 0
                                     : Math.max(0.04, Math.min(1, Math.log(page._amount) / Math.log(5000)))
                                 readonly property real target: Dashboard.isRunning
                                     ? Math.max(0, Math.min(1, Dashboard.progress / 100)) : sizeFrac
                                 property real shown: target
-                                Behavior on shown { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
+                                Behavior on shown { NumberAnimation { duration: 620; easing.type: Easing.OutCubic } }
+                                readonly property int lit: Math.round(shown * segs)
 
                                 C.GlowBlob {
                                     anchors.centerIn: parent
-                                    size: 230
+                                    size: 250
                                     glow: Theme.primary
-                                    strength: Dashboard.isRunning ? 0.30 : 0.14
+                                    strength: Dashboard.isRunning ? 0.34 : 0.16
                                     Behavior on strength { NumberAnimation { duration: Tokens.durSlow } }
                                 }
 
-                                Shape {
+                                // core dish
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: gauge.innerR * 2 - 6; height: width; radius: width / 2
+                                    antialiasing: true
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.10 : 0.06) }
+                                        GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.02 : 0.015) }
+                                    }
+                                    border.width: 1
+                                    border.color: U.withAlpha(Theme.primary, 0.14)
+                                }
+
+                                // radar beam across the core while scraping (painted once, only rotated)
+                                Canvas {
+                                    id: coreBeam
                                     anchors.fill: parent
                                     antialiasing: true
-                                    layer.enabled: true
-                                    layer.samples: 4
+                                    smooth: true
+                                    opacity: Dashboard.isRunning ? 1 : 0
+                                    visible: opacity > 0.01
+                                    Behavior on opacity { NumberAnimation { duration: Tokens.durSlow } }
+                                    property color tint: Theme.primary
+                                    onTintChanged: requestPaint()
+                                    onWidthChanged: requestPaint()
+                                    onPaint: {
+                                        var ctx = getContext("2d")
+                                        ctx.reset()
+                                        var cx = width / 2, cy = height / 2, r = gauge.innerR - 4
+                                        if (r <= 0) return
+                                        var R = Math.round(tint.r * 255), G = Math.round(tint.g * 255), B = Math.round(tint.b * 255)
+                                        var steps = 48, span = Math.PI * 0.55
+                                        for (var k = 0; k < steps; k++) {
+                                            var a = 0.26 * Math.pow(1 - k / steps, 1.8)
+                                            ctx.beginPath()
+                                            ctx.moveTo(cx, cy)
+                                            ctx.arc(cx, cy, r, -(k + 1) * span / steps, -k * span / steps + 0.004, false)
+                                            ctx.closePath()
+                                            ctx.fillStyle = "rgba(" + R + "," + G + "," + B + "," + a.toFixed(3) + ")"
+                                            ctx.fill()
+                                        }
+                                        var lg = ctx.createLinearGradient(cx, cy, cx + r, cy)
+                                        lg.addColorStop(0.0, "rgba(" + R + "," + G + "," + B + ",0)")
+                                        lg.addColorStop(1.0, "rgba(" + R + "," + G + "," + B + ",0.9)")
+                                        ctx.strokeStyle = lg
+                                        ctx.lineWidth = 1.5
+                                        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + r, cy); ctx.stroke()
+                                    }
+                                    RotationAnimator on rotation {
+                                        running: gauge.live
+                                        loops: Animation.Infinite
+                                        from: 0; to: 360
+                                        duration: 2400
+                                    }
+                                }
+
+                                // ── LED segment ring: the amount / the progress ──
+                                Repeater {
+                                    model: gauge.segs
+                                    delegate: Item {
+                                        id: seg
+                                        required property int index
+                                        anchors.fill: parent
+                                        rotation: index * 360 / gauge.segs
+                                        readonly property bool on: index < gauge.lit
+                                        readonly property bool head: index === gauge.lit - 1
+                                        readonly property bool next: index === gauge.lit && Dashboard.isRunning
+                                        Rectangle {
+                                            x: gauge.c - width / 2
+                                            y: gauge.c - gauge.segOuter - (seg.head ? 2 : 0)
+                                            width: seg.head ? 4 : 3
+                                            height: gauge.segLen + (seg.head ? 4 : 0)
+                                            radius: width / 2
+                                            antialiasing: true
+                                            color: seg.on
+                                                   ? U.withAlpha(Theme.primary, (page._ready || Dashboard.isRunning ? 0.42 : 0.28)
+                                                                 + 0.58 * (seg.index + 1) / Math.max(1, gauge.lit))
+                                                   : U.withAlpha(Theme.on_surface, Theme.isDark ? 0.09 : 0.08)
+                                        }
+                                        // the head's glow
+                                        Rectangle {
+                                            visible: seg.head
+                                            x: gauge.c - width / 2
+                                            y: gauge.c - gauge.segOuter - 6
+                                            width: 10; height: gauge.segLen + 12
+                                            radius: width / 2
+                                            color: U.withAlpha(Theme.primary, 0.16)
+                                        }
+                                        // the segment about to light, blinking while a run is live
+                                        Rectangle {
+                                            visible: seg.next
+                                            x: gauge.c - width / 2
+                                            y: gauge.c - gauge.segOuter
+                                            width: 3; height: gauge.segLen
+                                            radius: 1.5
+                                            color: Theme.primary
+                                            SequentialAnimation on opacity {
+                                                running: seg.next && gauge.live
+                                                loops: Animation.Infinite
+                                                NumberAnimation { from: 0.15; to: 0.9; duration: 420; easing.type: Easing.InOutSine }
+                                                NumberAnimation { from: 0.9; to: 0.15; duration: 420; easing.type: Easing.InOutSine }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ── precision arc + bead ──
+                                Shape {
+                                    anchors.fill: parent
+                                    preferredRendererType: Shape.CurveRenderer
                                     ShapePath {
-                                        strokeColor: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.08 : 0.07)
-                                        strokeWidth: gauge.thickness
+                                        strokeColor: U.withAlpha(Theme.on_surface, Theme.isDark ? 0.07 : 0.06)
+                                        strokeWidth: 2
                                         fillColor: "transparent"
-                                        capStyle: ShapePath.RoundCap
                                         PathAngleArc {
-                                            centerX: gauge.width / 2; centerY: gauge.height / 2
-                                            radiusX: gauge.r; radiusY: gauge.r
+                                            centerX: gauge.c; centerY: gauge.c
+                                            radiusX: gauge.innerR; radiusY: gauge.innerR
                                             startAngle: 0; sweepAngle: 360
                                         }
                                     }
                                     ShapePath {
-                                        strokeColor: Dashboard.isRunning ? Theme.primary
-                                                     : U.withAlpha(Theme.primary, page._ready ? 0.95 : 0.55)
-                                        strokeWidth: gauge.thickness
+                                        strokeColor: Theme.primary
+                                        strokeWidth: 2
                                         fillColor: "transparent"
                                         capStyle: ShapePath.RoundCap
                                         PathAngleArc {
-                                            centerX: gauge.width / 2; centerY: gauge.height / 2
-                                            radiusX: gauge.r; radiusY: gauge.r
+                                            centerX: gauge.c; centerY: gauge.c
+                                            radiusX: gauge.innerR; radiusY: gauge.innerR
                                             startAngle: -90
                                             sweepAngle: 360 * Math.max(0.001, gauge.shown)
                                         }
                                     }
                                 }
-
-                                // a slow tick orbiting while it works
                                 Item {
                                     anchors.fill: parent
-                                    visible: Dashboard.isRunning
-                                    RotationAnimation on rotation {
-                                        running: Dashboard.isRunning && page.visible && page._motion
-                                        loops: Animation.Infinite
-                                        from: 0; to: 360
-                                        duration: 2600
+                                    rotation: 360 * gauge.shown
+                                    visible: gauge.shown > 0.005
+                                    Rectangle {
+                                        width: 14; height: 14; radius: 7
+                                        x: gauge.c - 7; y: gauge.c - gauge.innerR - 7
+                                        color: U.withAlpha(Theme.primary, 0.28)
                                     }
                                     Rectangle {
                                         width: 6; height: 6; radius: 3
-                                        color: Theme.primary
-                                        x: parent.width / 2 - 3
-                                        y: gauge.thickness / 2 + 2 + gauge.thickness + 4 - 3
+                                        x: gauge.c - 3; y: gauge.c - gauge.innerR - 3
+                                        color: Qt.lighter(Theme.primary, 1.3)
+                                        border.width: 1
+                                        border.color: Theme.primary
                                     }
                                 }
 
+                                // ── read-out, crowned by the mark ──
                                 Column {
                                     anchors.centerIn: parent
-                                    spacing: 0
+                                    anchors.verticalCenterOffset: -2
+                                    spacing: 2
+                                    C.BrandMark {
+                                        id: gaugeMark
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: 24
+                                        height: Math.round(24 * 812 / 738)
+                                        rim: true
+                                        glow: Dashboard.isRunning
+                                        glowStrength: 0.8
+                                        sheen: -1
+                                        SequentialAnimation on sheen {
+                                            running: gauge.live
+                                            loops: Animation.Infinite
+                                            NumberAnimation { from: 0; to: 1; duration: 900; easing.type: Easing.InOutSine }
+                                            PauseAnimation { duration: 2200 }
+                                        }
+                                    }
                                     C.AppText {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         text: Dashboard.isRunning ? Dashboard.progress + "%"
                                                                   : Number(page._amount).toLocaleString(Qt.locale("en_US"), "f", 0)
                                         mono: true
                                         weight: Tokens.weightExtraBold
-                                        font.pixelSize: 40
+                                        font.pixelSize: 38
                                         color: Theme.text_strong
                                         LayoutMirroring.enabled: false
                                     }

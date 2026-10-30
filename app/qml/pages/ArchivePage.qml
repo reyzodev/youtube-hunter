@@ -2244,7 +2244,7 @@ Item {
                     Layout.fillWidth: true
                     radius: Tokens.radiusXl
                     implicitHeight: dEmptyCol.implicitHeight + Tokens.space7 * 2
-                    visible: Archive.detailIsEmpty
+                    visible: Archive.detailIsEmpty && !Archive.detailLoading
                     elevation: 0
                     ColumnLayout {
                         id: dEmptyCol
@@ -2654,7 +2654,8 @@ Item {
             Loader {
                 id: deckStandIn
                 readonly property bool _deckUp: !!(deckLoader.item && deckLoader.item.revealed)
-                readonly property bool wanted: Archive.isDetail && !Archive.detailIsEmpty
+                readonly property bool wanted: Archive.isDetail
+                                               && (Archive.detailLoading || !Archive.detailIsEmpty)
                                                && page.visible && !_deckUp
                 property bool _late: false
                 onWantedChanged: {

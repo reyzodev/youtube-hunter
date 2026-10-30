@@ -7,6 +7,44 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — HunterCore: an eclipse theme switch, and an archive built for 10,000 rows
+
+- **The theme switch is now an eclipse.** The old wipe is replaced by a
+  full-screen transition: the outgoing palette drains into a curtain, a
+  tick-ringed sun rises, a moon in the incoming palette glides in from the
+  side you clicked and covers it, and totality flashes a rim, corona and
+  diamond-ring bead around the mark before the moon opens as an iris onto the
+  new theme. All motion runs on the render thread; a slow frame can delay the
+  cover but never strand the swap.
+- **The Dashboard leads with the Hunter Core.** A 204 px LED gauge: 48 ring
+  segments fill with the run's progress, the head segment glows and the next
+  one blinks while scraping, a precision arc and bead track the exact
+  percentage, and the core dish sweeps a radar beam behind the mark. The
+  read-out underneath states videos per run and percent scraped.
+- **Niche Finder's radar is one component now** (`HunterRadar`), rebuilt
+  around the brand: a bezel of 72 ticks, orbit arcs, a beam painted once and
+  rotated, contact blips that light as the beam crosses them, hero LOCK
+  brackets on the best hit, and a sonar ring on the mark. The search panel and
+  the empty state use the same component at different sizes.
+- **Video cards have a channel "lock-on" hover.** Hovering the channel row
+  grows a frosted accent capsule out of the avatar, scales the avatar, orbits
+  a comet around it, draws an underline beneath the name and slides in an
+  open-arrow. It costs nothing while you scroll: only the hovered card
+  animates, the comet arc is painted once and only rotated, and every moving
+  part freezes while the grid is gliding or Reduce motion is on.
+- **Archive sections open off the GUI thread.** Reading a section's rows and
+  computing its metrics used to run on the click; a 10,000-video section held
+  the window for a beat. The read now happens on a worker, the header and
+  skeleton cards land immediately, and the grid fills when the rows arrive —
+  a superseded read is dropped by token. The constructor also no longer scans
+  every download on disk synchronously.
+- **A stopped scrape is saved in your format.** Stop a run halfway and the
+  videos scraped so far are written beside the checkpoint in the format you
+  picked (CSV, XLSX or SQLite, with a `_partial` suffix), and the modal tells
+  you where. The JSONL checkpoint is still kept for resume; a later completed
+  export deletes the stale partial. Quota and failure exits save the partial
+  too.
+
 ## Unreleased — Scraper: the whole subtitle, not the first 3,000 characters
 
 - A scraped video's Transcript column stopped after 3,000 characters — roughly

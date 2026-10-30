@@ -159,148 +159,11 @@ Item {
 
     // ═══════════════════════ inline building blocks ═══════════════════════
 
-    // The radar scope. Four rings, a crosshair, a sweep that trails off over
-    // ~75°, and a handful of blips — one accent blip for "the outlier". It
-    // sweeps slowly at rest and hard while a search runs; with ambient motion
-    // off it is a still scope. One Canvas painted once, then only rotated.
-    component Radar: Item {
-        id: rd
-        property bool active: false
-        property bool motion: true
-        property bool hits: false
-        implicitWidth: 196
-        implicitHeight: 196
-        readonly property real _r: Math.min(width, height) / 2
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: rd._r * 2; height: width; radius: width / 2
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.12 : 0.07) }
-                GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.0) }
-            }
-        }
-        Repeater {
-            model: 4
-            Rectangle {
-                anchors.centerIn: parent
-                width: rd._r * 2 * (0.25 + index * 0.25); height: width; radius: width / 2
-                color: "transparent"
-                border.width: 1
-                border.color: U.withAlpha(Theme.primary, index === 3 ? 0.32 : 0.13)
-            }
-        }
-        // outer tick ring — 24 ticks, every sixth one long
-        Repeater {
-            model: 24
-            Rectangle {
-                readonly property bool major: index % 6 === 0
-                width: 1
-                height: major ? 7 : 3
-                color: U.withAlpha(Theme.primary, major ? 0.55 : 0.25)
-                x: rd.width / 2 - width / 2
-                y: rd.height / 2 - rd._r - 6
-                transform: Rotation {
-                    origin.x: 0.5
-                    origin.y: rd._r + 6
-                    angle: index * 15
-                }
-            }
-        }
-        Rectangle { anchors.centerIn: parent; width: rd._r * 2; height: 1; color: U.withAlpha(Theme.primary, 0.12) }
-        Rectangle { anchors.centerIn: parent; width: 1; height: rd._r * 2; color: U.withAlpha(Theme.primary, 0.12) }
-
-        Canvas {
-            id: sweepCv
-            anchors.fill: parent
-            opacity: rd.active ? 1.0 : 0.75
-            Behavior on opacity { NumberAnimation { duration: Tokens.durSlow } }
-            property color tint: Theme.primary
-            onTintChanged: requestPaint()
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
-            onPaint: {
-                var ctx = getContext("2d")
-                ctx.reset()
-                var cx = width / 2, cy = height / 2
-                var r = Math.min(width, height) / 2 - 1
-                var R = Math.round(tint.r * 255), G = Math.round(tint.g * 255), B = Math.round(tint.b * 255)
-                var steps = 30
-                var span = Math.PI * 0.42
-                for (var k = 0; k < steps; k++) {
-                    var a1 = -Math.PI / 2 - k * span / steps
-                    var a0 = -Math.PI / 2 - (k + 1) * span / steps
-                    ctx.beginPath()
-                    ctx.moveTo(cx, cy)
-                    ctx.arc(cx, cy, r, a0, a1, false)
-                    ctx.closePath()
-                    ctx.fillStyle = "rgba(" + R + "," + G + "," + B + "," + (0.30 * (1 - k / steps)).toFixed(3) + ")"
-                    ctx.fill()
-                }
-                ctx.strokeStyle = "rgba(" + R + "," + G + "," + B + ",0.95)"
-                ctx.lineWidth = 1.5
-                ctx.beginPath()
-                ctx.moveTo(cx, cy)
-                ctx.lineTo(cx, cy - r)
-                ctx.stroke()
-            }
-            NumberAnimation on rotation {
-                running: rd.motion && rd.visible && (rd.active || Tokens.appActive)
-                loops: Animation.Infinite
-                from: 0; to: 360
-                duration: rd.active ? 1700 : 5200
-            }
-        }
-
-        // blips: polar (angle°, radius 0..1, size, hero?)
-        Repeater {
-            model: [
-                { a: 38,  d: 0.62, s: 12, hero: true },
-                { a: 152, d: 0.40, s: 6,  hero: false },
-                { a: 228, d: 0.78, s: 7,  hero: false },
-                { a: 300, d: 0.30, s: 5,  hero: false },
-                { a: 95,  d: 0.86, s: 5,  hero: false }
-            ]
-            Item {
-                readonly property real _rad: (modelData.a - 90) * Math.PI / 180
-                x: rd.width / 2 + Math.cos(_rad) * rd._r * modelData.d - width / 2
-                y: rd.height / 2 + Math.sin(_rad) * rd._r * modelData.d - height / 2
-                width: modelData.s * 3; height: width
-                opacity: (rd.hits || rd.active || modelData.hero) ? 1 : 0.55
-                Behavior on opacity { NumberAnimation { duration: Tokens.durSlow } }
-                Rectangle {
-                    id: ping
-                    anchors.centerIn: parent
-                    width: modelData.s; height: width; radius: width / 2
-                    color: "transparent"
-                    border.width: 1
-                    border.color: modelData.hero ? Theme.primary : Theme.on_surface_var
-                    opacity: 0
-                    SequentialAnimation {
-                        running: rd.motion && rd.visible && (rd.active || Tokens.appActive)
-                        loops: Animation.Infinite
-                        PauseAnimation { duration: index * 520 }
-                        ParallelAnimation {
-                            NumberAnimation { target: ping; property: "width"; from: modelData.s; to: modelData.s * 3; duration: 1400; easing.type: Easing.OutCubic }
-                            NumberAnimation { target: ping; property: "opacity"; from: 0.8; to: 0; duration: 1400; easing.type: Easing.OutCubic }
-                        }
-                        PauseAnimation { duration: 1200 + (4 - index) * 300 }
-                    }
-                }
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: modelData.s; height: width; radius: width / 2
-                    color: modelData.hero ? Theme.primary : U.withAlpha(Theme.on_surface_var, 0.85)
-                }
-            }
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: 8; height: 8; radius: 4
-            color: Theme.primary
-        }
-    }
+    // The radar scope: the Hunter Radar (components/HunterRadar.qml). The
+    // brand mark is the transmitter at its core; the beam eases between a
+    // slow cruise at rest and a hard sweep while a search runs, contacts
+    // flare as it passes, and the hero contact locks once there are results.
+    component Radar: C.HunterRadar {}
 
     // One line of the monitor's spec sheet: icon · label ······ value.
     component SpecRow: RowLayout {
@@ -1326,8 +1189,8 @@ Item {
                                 Radar {
                                     Layout.alignment: Qt.AlignHCenter
                                     Layout.topMargin: Tokens.space2
-                                    Layout.preferredWidth: 188
-                                    Layout.preferredHeight: 188
+                                    Layout.preferredWidth: 216
+                                    Layout.preferredHeight: 216
                                     active: Niche.isRunning
                                     motion: page._motion
                                     hits: Niche.hasResults
@@ -2480,8 +2343,8 @@ Item {
 
                                 Radar {
                                     Layout.alignment: Qt.AlignHCenter
-                                    Layout.preferredWidth: 104
-                                    Layout.preferredHeight: 104
+                                    Layout.preferredWidth: 120
+                                    Layout.preferredHeight: 120
                                     motion: page._motion
                                     active: false
                                     hits: false

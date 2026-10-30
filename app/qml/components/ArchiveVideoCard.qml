@@ -734,8 +734,42 @@ C.GlassPanel {
             // decide whether the channel is worth studying: subscribers,
             // channel age, declared country.
             Item {
+                id: chanBlock
                 Layout.fillWidth: true
                 implicitHeight: chanRow.implicitHeight
+                // v1.0.2 perf: `hovered` is the pointer, `hot` is "and the
+                // grid is at rest". Every moving part below reads `hot`, so a
+                // flick-scroll past 24 cards does not build animations for
+                // each one it crosses (same rule as the card's own hoverGlow,
+                // v3.52). The still colour/arrow feedback stays on `hovered`.
+                readonly property bool hovered: chanArea.containsMouse
+                readonly property bool hot: hovered && card.scrollIdle && card._motion
+                readonly property real avatarW: card._isChan ? 42 : 30
+
+                // v1.0.2 "Channel lock-on" hover. A frosted accent capsule
+                // grows out of the avatar to the end of the row, a comet arc
+                // orbits the avatar, the name gets an underline that draws
+                // itself, and an "open" arrow slides in after it.
+                Rectangle {
+                    id: chanCapsule
+                    x: -6
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: chanBlock.avatarW + 12
+                    radius: height / 2
+                    width: chanBlock.hot ? chanBlock.width + 12 : height
+                    opacity: chanBlock.hot ? 1 : 0
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.16 : 0.11) }
+                        GradientStop { position: 0.55; color: U.withAlpha(Theme.primary, Theme.isDark ? 0.06 : 0.045) }
+                        GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.0) }
+                    }
+                    border.width: 1
+                    border.color: U.withAlpha(Theme.primary, 0.18)
+                    antialiasing: true
+                    Behavior on width { NumberAnimation { duration: 380; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: chanBlock.hot ? 160 : 260; easing.type: Easing.OutCubic } }
+                }
 
                 RowLayout {
                     id: chanRow
@@ -749,6 +783,8 @@ C.GlassPanel {
                         height: width
                         Layout.preferredWidth: width
                         Layout.preferredHeight: width
+                        scale: chanBlock.hot ? 1.07 : 1
+                        Behavior on scale { NumberAnimation { duration: 420; easing.type: Easing.OutBack; easing.overshoot: 2.2 } }
                         Rectangle {
                             anchors.fill: parent
                             radius: width / 2
@@ -788,15 +824,60 @@ C.GlassPanel {
                             opacity: avatar.status === Image.Ready ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
                         }
+                        // faint full orbit under the comet
                         Rectangle {
                             anchors.fill: parent
-                            anchors.margins: -3
+                            anchors.margins: -4
                             radius: width / 2
                             color: "transparent"
-                            border.width: 2
-                            border.color: Theme.primary
-                            opacity: chanArea.containsMouse ? 1 : 0
-                            Behavior on opacity { NumberAnimation { duration: Tokens.durFast } }
+                            border.width: 1
+                            border.color: U.withAlpha(Theme.primary, 0.28)
+                            opacity: chanBlock.hot ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                            antialiasing: true
+                        }
+                        // comet arc: painted once, only rotated while hovered
+                        Canvas {
+                            id: comet
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            antialiasing: true
+                            smooth: true
+                            opacity: chanBlock.hot ? 1 : 0
+                            scale: chanBlock.hot ? 1 : 0.82
+                            Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                            Behavior on scale { NumberAnimation { duration: 460; easing.type: Easing.OutBack; easing.overshoot: 1.8 } }
+                            property color tint: Theme.primary
+                            onTintChanged: requestPaint()
+                            onWidthChanged: requestPaint()
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                var cx = width / 2, cy = height / 2, r = width / 2 - 1.25
+                                if (r <= 0) return
+                                var R = Math.round(tint.r * 255), G = Math.round(tint.g * 255), B = Math.round(tint.b * 255)
+                                var steps = 40, span = Math.PI * 1.45
+                                ctx.lineWidth = 2
+                                ctx.lineCap = "round"
+                                for (var k = 0; k < steps; k++) {
+                                    var a0 = -k * span / steps, a1 = -(k + 1) * span / steps
+                                    ctx.strokeStyle = "rgba(" + R + "," + G + "," + B + "," + Math.pow(1 - k / steps, 1.4).toFixed(3) + ")"
+                                    ctx.beginPath()
+                                    ctx.arc(cx, cy, r, a1, a0 + 0.02, false)
+                                    ctx.stroke()
+                                }
+                                // the comet's head
+                                ctx.fillStyle = "rgba(" + R + "," + G + "," + B + ",0.35)"
+                                ctx.beginPath(); ctx.arc(cx + r, cy, 3.6, 0, Math.PI * 2); ctx.fill()
+                                ctx.fillStyle = "rgba(255,255,255,0.95)"
+                                ctx.beginPath(); ctx.arc(cx + r, cy, 1.4, 0, Math.PI * 2); ctx.fill()
+                            }
+                            RotationAnimator on rotation {
+                                running: chanBlock.hot && comet.visible
+                                from: -90; to: 270
+                                duration: 1500
+                                loops: Animation.Infinite
+                            }
                         }
                     }
 
@@ -804,13 +885,45 @@ C.GlassPanel {
                         spacing: card._isChan ? 1 : 0
                         Layout.fillWidth: true
                         C.AppText {
+                            id: chanName
                             text: row.channelTitle || "—"
                             weight: Tokens.weightDemiBold
                             font.pixelSize: card._isChan ? Tokens.fontLabel : Tokens.fontBody
-                            color: chanArea.containsMouse ? Theme.primary : Theme.text_strong
+                            color: chanBlock.hot ? Theme.primary : Theme.text_strong
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                            // room for the arrow, so it never sits on the text
+                            rightPadding: card._isChan ? 0 : 18
                             Behavior on color { enabled: !Tokens.themeSwapping; ColorAnimation { duration: Tokens.durFast } }
+
+                            readonly property real _textW: Math.min(contentWidth, width - rightPadding)
+                            // underline that draws itself from the avatar side
+                            Rectangle {
+                                x: I18n.rtl ? chanName.width - chanName.rightPadding - width : 0
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: -1
+                                height: 1.5
+                                radius: 1
+                                width: chanBlock.hot ? chanName._textW : 0
+                                Behavior on width { NumberAnimation { duration: 340; easing.type: Easing.OutCubic } }
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: Theme.primary }
+                                    GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.15) }
+                                }
+                            }
+                            // "open channel" arrow, slides in after the name
+                            C.IconGlyph {
+                                visible: !card._isChan
+                                name: "arrow_right_up"
+                                size: 13
+                                glyphColor: Theme.primary
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: chanName._textW + 4 + (chanBlock.hot ? 0 : -6)
+                                opacity: chanBlock.hot ? 1 : 0
+                                Behavior on x { NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 2 } }
+                                Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                            }
                         }
                         C.AppText {
                             text: card._isChan ? card._chanMeta : card._subLine
@@ -827,7 +940,7 @@ C.GlassPanel {
                         visible: card._isChan
                         name: I18n.rtl ? "chevron_left" : "chevron_right"
                         size: 16
-                        glyphColor: chanArea.containsMouse ? Theme.primary : Theme.outline
+                        glyphColor: chanBlock.hovered ? Theme.primary : Theme.outline
                         Layout.alignment: Qt.AlignVCenter
                     }
                 }

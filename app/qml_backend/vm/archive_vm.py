@@ -198,6 +198,9 @@ class ArchiveVM(QObject):
     liveChanged = Signal()
     _liveChunk = Signal(int, int, list)    # (group_id, token, fresh rows)
     _liveFinished = Signal(int, int, str)  # (group_id, token, error code or "")
+    # v1.0.2: the open-section row read + metric pass runs off the GUI thread
+    # (group_id, token, rows)
+    _detailLoaded = Signal(int, int, list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -217,6 +220,8 @@ class ArchiveVM(QObject):
         self._detail_filtered_videos = []  # same, before channel aggregation
         self._detail_visible = []    # current page, flattened for QML
         self._raw_by_key = {}        # video_id / archive key → raw row
+        self._detail_loading = False
+        self._detail_token = 0
         self._fav_only = False
         # Videos / Channels is a VIEW of the open section, not a filter on the
         # saved rows: switching it rolls the same matched videos up per channel
@@ -242,7 +247,10 @@ class ArchiveVM(QObject):
         self._downloaded = set()
         self._dl_scan_token = 0
         self._dlScanned.connect(self._on_dl_scanned)
-        self._refresh_downloaded(silent=True)
+        self._detailLoaded.connect(self._on_detail_loaded)
+        # v1.0.2: no synchronous disk scan at construction — every finished
+        # download used to cost an os.path.isfile() before the window could
+        # open. ArchivePage refreshes the set off-thread when it is shown.
         # v3.44 perf: progress ticks arrive many times a second per download;
         # the cards only need ~10 fps, so downloadsChanged is coalesced.
         self._dl_emit = QTimer(self)
@@ -595,6 +603,12 @@ class ArchiveVM(QObject):
         click."""
         return NICHE_PAGE_SIZE
 
+    @Property(bool, notify=detailChanged)
+    def detailLoading(self):
+        """True while a section's rows are being read on the worker thread.
+        The page shows its skeleton grid instead of the empty state."""
+        return self._detail_loading
+
     @Property(bool, notify=rowsChanged)
     def detailIsEmpty(self):
         return len(self._detail_filtered) == 0
@@ -792,15 +806,17 @@ class ArchiveVM(QObject):
         if not group:
             self.toast.emit(tr("Couldn't open that section."), "error")
             return
-        rows = archive_get_rows(gid)
-        # The sort/filter toolbar works off multiplier / velocity / age_hours /
-        # engagement — none of which are stored on the raw archive row — so
-        # compute them once here, exactly like the live grid does after a
-        # search. Cheap: pure arithmetic over the section's rows.
-        compute_niche_metrics(rows)
+        # v1.0.2: the row read moved off the GUI thread. A 10k-video section
+        # is megabytes of JSON — sqlite decode + the metric pass used to run
+        # inside the click that opened it and froze the page. The header and
+        # the skeleton grid land at once; the grid fills when the read lands.
         self._gid = gid
         self._group = dict(group)
-        self._detail_raw = rows
+        self._detail_raw = []
+        self._detail_filtered = []
+        self._detail_filtered_videos = []
+        self._detail_visible = []
+        self._raw_by_key = {}
         self._fav_only = False
         self._channels_view = False
         self._sort = 0
@@ -808,28 +824,61 @@ class ArchiveVM(QObject):
         self._detail_text = ""
         self._timeframe = len(NICHE_TIMEFRAMES) - 1
         self._range = {}
+        self._detail_loading = True
+        self._detail_token += 1
+        token = self._detail_token
         self.sortsChanged.emit()
-        # Fill the page BEFORE the detail view is revealed. Emitting
-        # detailChanged first made QML lay out the whole detail page with 24
-        # empty cards and then lay it out again the moment rows arrived —
-        # the section-open hitch. Now the one layout that matters happens
-        # once, on a grid that already holds its rows.
-        self._render_detail()
+        self.rowsChanged.emit()
         self.detailChanged.emit()
-        # cards show the saved numbers instantly, then turn live in place.
+        # cards show the saved numbers once loaded, then turn live in place.
         # A refresh still running for the PREVIOUS section is dropped.
         self._live_token += 1
         self._live_state = "idle"
-        # A beat after the section is on screen: the stale scan + config read
-        # are not on the click path, and the request thread starts behind the
-        # first paint instead of in front of it.
-        QTimer.singleShot(60, self._start_live)
-        self._live_timer.start()
-        self._live_clock.start()
+
+        def worker():
+            try:
+                fresh = archive_get_rows(gid)
+                # multiplier / velocity / age_hours / engagement are not stored
+                # on the raw archive row; compute them once, exactly like the
+                # live grid does after a search (pure arithmetic).
+                compute_niche_metrics(fresh)
+            except Exception as exc:      # noqa: BLE001 — keep the page usable
+                log_crash("archive open failed:\n" + repr(exc))
+                fresh = []
+            try:
+                self._detailLoaded.emit(gid, token, fresh)
+            except RuntimeError:
+                pass                  # VM already gone (app closing)
+
+        threading.Thread(target=worker, name="archive-open",
+                         daemon=True).start()
+
+    @Slot(int, int, list)
+    def _on_detail_loaded(self, gid, token, rows):
+        if token != self._detail_token or gid != self._gid:
+            return                    # a newer section superseded this read
+        self._detail_loading = False
+        self._detail_raw = rows or []
+        if self._detail_raw:
+            self._render_detail()
+        else:
+            self._detail_filtered = []
+            self._detail_filtered_videos = []
+            self._publish_page()
+        self.detailChanged.emit()
+        if self._detail_raw:
+            # A beat after the section is on screen: the stale scan + config
+            # read are not on the click path, and the request thread starts
+            # behind the first paint instead of in front of it.
+            QTimer.singleShot(60, self._start_live)
+            self._live_timer.start()
+            self._live_clock.start()
 
     @Slot()
     def closeDetail(self):
         self._live_token += 1          # drop any refresh still in flight
+        self._detail_token += 1        # drop a row read still in flight too
+        self._detail_loading = False
         self._live_timer.stop()
         self._live_clock.stop()
         self._set_live("idle")
@@ -854,6 +903,8 @@ class ArchiveVM(QObject):
         user says which subset they mean. Purely local — these rows came out of
         SQLite, so a saved search from three weeks ago can be re-read at set level
         without spending a single API unit."""
+        if self._detail_loading:
+            return                    # the section's rows are still being read
         # Always the VIDEO set: in the Channels view _detail_filtered holds
         # aggregates, which are a presentation step and not valid input for a
         # video-level report.
@@ -1471,7 +1522,7 @@ class ArchiveVM(QObject):
             self._start_live(force=False)
 
     def _start_live(self, force=False):
-        if self._gid is None or self._live_state == "refreshing":
+        if self._gid is None or self._detail_loading or self._live_state == "refreshing":
             return
         rows = [r for r in self._detail_raw if r.get("video_id")]
         self._live_missing = sum(1 for r in rows if r.get("_live_missing"))
