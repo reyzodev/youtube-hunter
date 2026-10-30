@@ -226,8 +226,7 @@ def fetch_transcript(video_id):
     hit = cached_transcript(video_id)
     if hit is not None:
         _bump_stat("cache")
-        status, text, kind = hit
-        return (status, _trim(text) if text and text != "N/A" else text, kind)
+        return hit
     _bump_stat("live")
 
     proxy = configured_proxy()
@@ -265,7 +264,7 @@ def fetch_transcript(video_id):
 
     if text and text != "N/A":
         _cache_put(video_id, status, text, "")
-        return (status, _trim(text), "")
+        return (status, text, "")
     _cache_put(video_id, "Not Available", "N/A", err_kind)
     return ("Not Available", "N/A", err_kind or "none")
 
@@ -291,6 +290,9 @@ def _fetch_transcript_legacy(video_id):
 
 
 def _trim(text):
+    """Legacy 3k preview, kept only for the unused pre-turbo path below. The
+    live scraper returns the WHOLE track: a long upload used to stop
+    mid-sentence in the export at 3000 characters."""
     text = text.strip()
     return text[:3000] + ("…" if len(text) > 3000 else "")
 
@@ -309,9 +311,14 @@ def _trim_ends(text):
     return head + " [...] " + tail
 
 
-# The cache keeps the transcript at full length (capped), and every caller
-# cuts its own view of it: the scraper's export column, the chat's head+tail.
-_CACHE_TEXT_CAP = 120_000
+# The cache keeps the WHOLE transcript — the scraper's export column is the
+# subtitle itself, so cutting it is not an option. This cap is only a safety
+# net against a pathological caption payload; 4M characters covers a 24-hour
+# upload with room to spare. Older builds cut entries at 120k, which left the
+# export ending mid-sentence with no marker; cached_transcript() treats those
+# as a miss so one re-scrape heals them.
+_CACHE_TEXT_CAP = 4_000_000
+_LEGACY_TEXT_CAP = 120_000
 
 
 def _library_api(api_cls, proxy):
@@ -626,6 +633,8 @@ def cached_transcript(video_id):
         return None
     status, text, kind, at = row
     if text and text != "N/A":
+        if len(text) == _LEGACY_TEXT_CAP:
+            return None         # older build cut it mid-sentence: fetch again
         return (status, text, "")
     if kind == "none" and (_time.time() - float(at or 0)) < _NONE_TTL:
         return ("Not Available", "N/A", "none")

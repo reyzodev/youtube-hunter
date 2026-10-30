@@ -7,6 +7,20 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Scraper: the whole subtitle, not the first 3,000 characters
+
+- A scraped video's Transcript column stopped after 3,000 characters — roughly
+  five minutes of speech — so a podcast or a long tutorial exported a subtitle
+  that ended mid-sentence with an ellipsis and nothing after it, no matter how
+  long the video was. The column now carries the entire caption track, first
+  line to last, for any runtime.
+- The transcript cache that feeds both the scraper and AI Chat also cut entries
+  at 120,000 characters. It now keeps the full track, and entries written by
+  older builds at that cap count as missing, so one re-scrape replaces them
+  with the complete text.
+- XLSX exports still obey Excel's own 32,767-character cell limit; CSV, JSONL
+  and SQLite exports carry the full transcript.
+
 ## Unreleased — UI pass: My channel, greenlights, and transfers you can see
 
 - **AI Ideas now knows who is making the video.** A new "My channel" card takes
