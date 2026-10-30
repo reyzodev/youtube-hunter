@@ -27,7 +27,15 @@ import "../Utils.js" as U
 Item {
     id: page
 
-    onVisibleChanged: if (visible) { Archive.reload(); Archive.refreshDownloaded() }
+    // v1.0.2: the page preloads while it is being built (hidden), and the
+    // first show used to reload the same sections a second time — a needless
+    // sqlite read in the very frame the page appeared. Later visits still
+    // refresh, so data from another page (a new scrape) lands.
+    property bool _wasShown: false
+    onVisibleChanged: if (visible) {
+        if (page._wasShown) { Archive.reload(); Archive.refreshDownloaded() }
+        page._wasShown = true
+    }
     Component.onCompleted: { Archive.reload(); Archive.refreshDownloaded() }
 
     property string _pendingThumbId: ""
@@ -1354,9 +1362,9 @@ Item {
         anchors.fill: parent
         visible: !Archive.isDetail
         opacity: visible ? 1 : 0
-        // v3.53: 120 ms, not 190 — a page-sized cross-fade is a full-window
-        // layer while it runs; shorter keeps the switch crisp.
-        Behavior on opacity { NumberAnimation { duration: 120 } }
+        // v1.0.2: instant, like the detail view — the old 120 ms fade left
+        // both views half-transparent over the wash for a frame on every
+        // open/close.
 
         Item {
             width: masterScroll.availableWidth
@@ -1801,9 +1809,10 @@ Item {
         anchors.fill: parent
         visible: Archive.isDetail
         opacity: visible ? 1 : 0
-        // v3.53: see the master view above — a section opens in one quick
-        // settle instead of a slow dissolve.
-        Behavior on opacity { NumberAnimation { duration: 120 } }
+        // v1.0.2: no full-view fade-in. The master is hidden in the same
+        // frame, so fading this view from 0 showed the page wash alone for
+        // ~120 ms — the black/white flash when a section opened. The deck
+        // skeleton and the spec stagger already carry the motion.
 
         Item {
             width: detailScroll.availableWidth
@@ -2648,27 +2657,18 @@ Item {
             // cards with the same proportions as the real ones hold the shape
             // instead, then cross-fade into the deck.
             //
-            // On a warm switch (deck built, pictures cached) the deck is ready
-            // within a frame or two, so the stand-in waits 120 ms before it is
-            // even created: nobody sees it, and nobody pays for it.
+            // v1.0.2: no 120 ms grace period. A warm section can still need
+            // a few frames before its deck is allowed up, and during that
+            // wait the slot used to be page-coloured — a black hole on the
+            // second open of the session. The stand-in is up from the first
+            // frame and cross-fades out when the deck reveals.
             Loader {
                 id: deckStandIn
                 readonly property bool _deckUp: !!(deckLoader.item && deckLoader.item.revealed)
                 readonly property bool wanted: Archive.isDetail
                                                && (Archive.detailLoading || !Archive.detailIsEmpty)
                                                && page.visible && !_deckUp
-                property bool _late: false
-                onWantedChanged: {
-                    if (wanted) standInDelay.restart()
-                    else { standInDelay.stop(); _late = false }
-                }
-                Component.onCompleted: if (wanted) standInDelay.start()
-                Timer {
-                    id: standInDelay
-                    interval: 120
-                    onTriggered: deckStandIn._late = true
-                }
-                readonly property bool _show: wanted && (_late || !deckLoader.item)
+                readonly property bool _show: wanted
                 x: detailCol.x
                 y: detailCol.y + deckLoader.y
                 width: detailCol.width

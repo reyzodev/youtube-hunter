@@ -261,7 +261,13 @@ Window {
                         // landed: a visible double drop on every first visit.
                         ParallelAnimation {
                             id: pageEnter
-                            NumberAnimation { target: pageStack; property: "opacity"; from: 0.0; to: 1.0; duration: Tokens.durPage; easing.type: Easing.OutCubic }
+                            // v1.0.2: never start from 0 — the old page is
+                            // already gone by this frame, so a 0-opacity start
+                            // showed the bare window (black in dark theme,
+                            // white in light) for the first frames of every
+                            // switch. Starting at 0.9 keeps the settle without
+                            // ever exposing the page wash.
+                            NumberAnimation { target: pageStack; property: "opacity"; from: 0.9; to: 1.0; duration: Tokens.durPage; easing.type: Easing.OutCubic }
                             NumberAnimation { target: pageShift; property: "y"; from: Tokens.pageRise; to: 0; duration: Tokens.durPage; easing.type: Easing.OutCubic }
                         }
 

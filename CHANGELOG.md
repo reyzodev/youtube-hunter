@@ -7,6 +7,22 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## Unreleased — Archive: no blank frame on entry, none when a section opens
+
+- Entering Search Archive used to fade the whole page stack in from opacity 0,
+  but the page you came from is already gone in that frame, so the window
+  showed its bare background — black in the dark theme, white in the light —
+  until the archive appeared. The entrance now starts at 0.9: the same 240 ms
+  settle and 8 px rise, without ever exposing the page wash.
+- The first show no longer re-reads the section list a second time. The page
+  preloads while it is built hidden; the reload now waits for later visits.
+- Opening a keyword or channel section was a second flash: the master view was
+  hidden in the same frame the detail view began a 120 ms fade from 0, so both
+  were half-transparent over the wash. The master/detail swap is instant now,
+  and the cold-open skeleton cards are up on the first frame instead of after
+  a 120 ms grace period — the deck still cross-fades in when its pictures are
+  ready, but the slot is never a page-coloured hole.
+
 ## Unreleased — HunterCore: an eclipse theme switch, and an archive built for 10,000 rows
 
 - **The theme switch is now an eclipse.** The old wipe is replaced by a
