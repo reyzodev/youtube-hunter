@@ -25,7 +25,7 @@ YouTube Hunter is a desktop workspace for people who run YouTube channels. Point
 It is a native Windows application (Python + Qt Quick/QML). Everything runs on your machine: your API key, your downloads, your archive. A companion **Chrome/Edge extension** puts the same download and cut panel on the YouTube page itself, and the desktop app does the work in the background.
 
 <div align="center">
-<img src="screenshots/scraper.png" width="880" alt="Scraper page">
+<img src="screenshots/scraper.png?v=ocean" width="880" alt="Scraper page">
 </div>
 
 ## Download & install
@@ -102,15 +102,15 @@ Step-by-step install (30 seconds): **[docs/EXTENSION.md](docs/EXTENSION.md)**.
 
 | Niche Finder | Video Cutter |
 |---|---|
-| ![Niche Finder](screenshots/niche-finder.png) | ![Video Cutter](screenshots/video-cutter.png) |
+| ![Niche Finder](screenshots/niche-finder.png?v=ocean) | ![Video Cutter](screenshots/video-cutter.png?v=ocean) |
 
 | Content Lab | Settings |
 |---|---|
-| ![Content Lab](screenshots/content-lab.png) | ![Settings](screenshots/settings.png) |
+| ![Content Lab](screenshots/content-lab.png?v=ocean) | ![Settings](screenshots/settings.png?v=ocean) |
 
 | Niche Scan | Scraper |
 |---|---|
-| ![Niche Scan](screenshots/niche-scan.png) | ![Scraper](screenshots/scraper.png) |
+| ![Niche Scan](screenshots/niche-scan.png?v=ocean) | ![Scraper](screenshots/scraper.png?v=ocean) |
 
 ## Supported Windows
 

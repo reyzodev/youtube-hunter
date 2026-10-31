@@ -25,7 +25,7 @@ YouTube Hunter یک فضای کار دسکتاپ برای افرادی است ک
 این یک اپلیکیشن بومی ویندوز است (Python + Qt Quick/QML). همه‌چیز روی سیستم خودتان اجرا می‌شود: کلید API، دانلودها و آرشیو شما. یک **افزونه Chrome/Edge** همراه آن، همان پنل دانلود و برش را روی صفحه یوتیوب قرار می‌دهد و اپلیکیشن دسکتاپ کار را در پس‌زمینه انجام می‌دهد.
 
 <div align="center">
-<img src="screenshots/scraper.png" width="880" alt="صفحه Scraper">
+<img src="screenshots/scraper.png?v=ocean" width="880" alt="صفحه Scraper">
 </div>
 
 ## دانلود و نصب
@@ -102,15 +102,15 @@ YouTube Hunter یک فضای کار دسکتاپ برای افرادی است ک
 
 | Niche Finder | Video Cutter |
 |---|---|
-| ![Niche Finder](screenshots/niche-finder.png) | ![Video Cutter](screenshots/video-cutter.png) |
+| ![Niche Finder](screenshots/niche-finder.png?v=ocean) | ![Video Cutter](screenshots/video-cutter.png?v=ocean) |
 
 | Content Lab | Settings |
 |---|---|
-| ![Content Lab](screenshots/content-lab.png) | ![Settings](screenshots/settings.png) |
+| ![Content Lab](screenshots/content-lab.png?v=ocean) | ![Settings](screenshots/settings.png?v=ocean) |
 
 | Niche Scan | Scraper |
 |---|---|
-| ![Niche Scan](screenshots/niche-scan.png) | ![Scraper](screenshots/scraper.png) |
+| ![Niche Scan](screenshots/niche-scan.png?v=ocean) | ![Scraper](screenshots/scraper.png?v=ocean) |
 
 ## ویندوزهای پشتیبانی‌شده
 
