@@ -266,13 +266,24 @@ C.GlassPanel {
                 glyph: row.isChannel === true ? "user" : "movie"
             }
 
-            // picture + scrims in one layer, rounded by a single mask
+            // picture + scrims, clipped to the media box
+            // v1.0.3 perf: no layer, no mask, no MultiEffect. Each card used
+            // to render this block into an offscreen texture, render a
+            // rounded mask into a SECOND texture and composite the two
+            // through a shader: 24 cards = 48 FBOs + 24 effect passes on
+            // every page, and the hover zoom re-rendered the whole chain
+            // every frame. Now the picture is drawn straight to the scene
+            // with a plain rectangular clip, and the rounded corners are
+            // "cut" by the cap ring below (card-coloured, which works because
+            // the card surface is opaque in both palettes).
             Item {
                 id: mediaSrc
                 anchors.fill: parent
-                visible: false
                 clip: true
-                layer.enabled: true
+                opacity: card._pictureOn ? 1 : 0
+                visible: opacity > 0.001
+                // v3.53: the picture lands in 180 ms instead of 320.
+                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 Image {
                     id: thumbImg
                     anchors.fill: parent
@@ -339,28 +350,21 @@ C.GlassPanel {
                     Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
                 }
             }
-            Item {
-                id: mediaMask
+            // corner caps: a card-coloured ring whose INNER edge is the
+            // media's rounded rect. Its 4 px of overhang stays inside the
+            // card's 6 px inset, clear of the panel border and its 1 px
+            // specular top line. One antialiased rectangle, batched with
+            // the rest of the card — the cheapest rounded clip there is.
+            Rectangle {
+                readonly property real _k: 4
                 anchors.fill: parent
-                visible: false
-                layer.enabled: true
-                Rectangle {
-                    anchors.fill: parent
-                    color: "white"
-                    radius: card._r
-                }
-            }
-            MultiEffect {
-                anchors.fill: parent
-                source: mediaSrc
-                maskEnabled: true
-                maskSource: mediaMask
-                opacity: card._pictureOn ? 1 : 0
-                // v3.53: the picture lands in 180 ms instead of 320. Paging a
-                // grid means 24 of these cross-fades at once — at durSlow the
-                // page spent a third of a second looking half-loaded, which
-                // reads as "heavy" even at 60 fps.
-                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                anchors.margins: -_k
+                radius: card._r + _k
+                color: "transparent"
+                border.width: _k
+                border.color: card.color
+                antialiasing: true
+                visible: mediaSrc.visible
             }
             // inner hairline: the tile reads as a lit glass object, not a pasted image
             Rectangle {
@@ -790,22 +794,24 @@ C.GlassPanel {
                             radius: width / 2
                             color: U.withAlpha(Theme.primary, 0.14)
                         }
+                        // v1.0.3 perf: the provider hands back an already
+                        // round, transparent-cornered avatar ("circle/" ids,
+                        // see image_provider.py), so it is drawn directly —
+                        // no mask layer + MultiEffect per card any more.
+                        // Requested at 2x for crisp edges on HiDPI screens.
                         Image {
                             id: avatar
                             anchors.fill: parent
-                            visible: false
-                            source: (row.channelThumbId && row.channelThumbId.length) ? "image://thumbs/" + row.channelThumbId : ""
-                            fillMode: Image.PreserveAspectCrop
+                            source: (row.channelThumbId && row.channelThumbId.length) ? "image://thumbs/circle/" + row.channelThumbId : ""
+                            fillMode: Image.PreserveAspectFit
                             asynchronous: true
-                            sourceSize.width: card._isChan ? 42 : 30
-                            sourceSize.height: card._isChan ? 42 : 30
-                        }
-                        Item {
-                            id: avatarMask
-                            anchors.fill: parent
-                            visible: false
-                            layer.enabled: true
-                            Rectangle { anchors.fill: parent; radius: width / 2; color: "white" }
+                            cache: true
+                            smooth: true
+                            mipmap: true
+                            sourceSize.width: (card._isChan ? 42 : 30) * 2
+                            sourceSize.height: (card._isChan ? 42 : 30) * 2
+                            opacity: status === Image.Ready ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
                         }
                         C.AppText {
                             anchors.centerIn: parent
@@ -814,15 +820,6 @@ C.GlassPanel {
                             weight: Tokens.weightBold
                             font.pixelSize: card._isChan ? Tokens.fontLabel : Tokens.fontBody
                             color: Theme.primary
-                        }
-                        MultiEffect {
-                            anchors.fill: parent
-                            visible: (row.channelThumbId || "") !== ""
-                            source: avatar
-                            maskEnabled: true
-                            maskSource: avatarMask
-                            opacity: avatar.status === Image.Ready ? 1 : 0
-                            Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
                         }
                         // faint full orbit under the comet
                         Rectangle {
@@ -837,46 +834,63 @@ C.GlassPanel {
                             antialiasing: true
                         }
                         // comet arc: painted once, only rotated while hovered
-                        Canvas {
-                            id: comet
+                        // v1.0.3 perf: built on demand. 24 Canvases (each its
+                        // own image texture + a JS paint) were created with
+                        // every grid; most are never hovered. Armed the first
+                        // time the pointer enters the CARD, so it already
+                        // exists — and fades — by the time it reaches the row.
+                        Loader {
+                            id: cometLoader
                             anchors.fill: parent
                             anchors.margins: -4
-                            antialiasing: true
-                            smooth: true
-                            opacity: chanBlock.hot ? 1 : 0
-                            scale: chanBlock.hot ? 1 : 0.82
-                            Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
-                            Behavior on scale { NumberAnimation { duration: 460; easing.type: Easing.OutBack; easing.overshoot: 1.8 } }
-                            property color tint: Theme.primary
-                            onTintChanged: requestPaint()
-                            onWidthChanged: requestPaint()
-                            onPaint: {
-                                var ctx = getContext("2d")
-                                ctx.reset()
-                                var cx = width / 2, cy = height / 2, r = width / 2 - 1.25
-                                if (r <= 0) return
-                                var R = Math.round(tint.r * 255), G = Math.round(tint.g * 255), B = Math.round(tint.b * 255)
-                                var steps = 40, span = Math.PI * 1.45
-                                ctx.lineWidth = 2
-                                ctx.lineCap = "round"
-                                for (var k = 0; k < steps; k++) {
-                                    var a0 = -k * span / steps, a1 = -(k + 1) * span / steps
-                                    ctx.strokeStyle = "rgba(" + R + "," + G + "," + B + "," + Math.pow(1 - k / steps, 1.4).toFixed(3) + ")"
-                                    ctx.beginPath()
-                                    ctx.arc(cx, cy, r, a1, a0 + 0.02, false)
-                                    ctx.stroke()
+                            property bool armed: false
+                            active: armed
+                            Connections {
+                                target: card
+                                function onHoveredChanged() {
+                                    if (card.hovered && card.scrollIdle) cometLoader.armed = true
                                 }
-                                // the comet's head
-                                ctx.fillStyle = "rgba(" + R + "," + G + "," + B + ",0.35)"
-                                ctx.beginPath(); ctx.arc(cx + r, cy, 3.6, 0, Math.PI * 2); ctx.fill()
-                                ctx.fillStyle = "rgba(255,255,255,0.95)"
-                                ctx.beginPath(); ctx.arc(cx + r, cy, 1.4, 0, Math.PI * 2); ctx.fill()
                             }
-                            RotationAnimator on rotation {
-                                running: chanBlock.hot && comet.visible
-                                from: -90; to: 270
-                                duration: 1500
-                                loops: Animation.Infinite
+                            sourceComponent: Canvas {
+                                id: comet
+                                anchors.fill: parent
+                                antialiasing: true
+                                smooth: true
+                                opacity: chanBlock.hot ? 1 : 0
+                                scale: chanBlock.hot ? 1 : 0.82
+                                Behavior on opacity { NumberAnimation { duration: Tokens.durMed } }
+                                Behavior on scale { NumberAnimation { duration: 460; easing.type: Easing.OutBack; easing.overshoot: 1.8 } }
+                                property color tint: Theme.primary
+                                onTintChanged: requestPaint()
+                                onWidthChanged: requestPaint()
+                                onPaint: {
+                                    var ctx = getContext("2d")
+                                    ctx.reset()
+                                    var cx = width / 2, cy = height / 2, r = width / 2 - 1.25
+                                    if (r <= 0) return
+                                    var R = Math.round(tint.r * 255), G = Math.round(tint.g * 255), B = Math.round(tint.b * 255)
+                                    var steps = 40, span = Math.PI * 1.45
+                                    ctx.lineWidth = 2
+                                    ctx.lineCap = "round"
+                                    for (var k = 0; k < steps; k++) {
+                                        var a0 = -k * span / steps, a1 = -(k + 1) * span / steps
+                                        ctx.strokeStyle = "rgba(" + R + "," + G + "," + B + "," + Math.pow(1 - k / steps, 1.4).toFixed(3) + ")"
+                                        ctx.beginPath()
+                                        ctx.arc(cx, cy, r, a1, a0 + 0.02, false)
+                                        ctx.stroke()
+                                    }
+                                    // the comet's head
+                                    ctx.fillStyle = "rgba(" + R + "," + G + "," + B + ",0.35)"
+                                    ctx.beginPath(); ctx.arc(cx + r, cy, 3.6, 0, Math.PI * 2); ctx.fill()
+                                    ctx.fillStyle = "rgba(255,255,255,0.95)"
+                                    ctx.beginPath(); ctx.arc(cx + r, cy, 1.4, 0, Math.PI * 2); ctx.fill()
+                                }
+                                RotationAnimator on rotation {
+                                    running: chanBlock.hot && comet.visible
+                                    from: -90; to: 270
+                                    duration: 1500
+                                    loops: Animation.Infinite
+                                }
                             }
                         }
                     }

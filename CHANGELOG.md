@@ -7,6 +7,25 @@ Version numbering restarted at **1.0.0** for the public release.
 
 ---
 
+## v1.0.3 "Daybreak" — a new theme switch, and the archive flash fixed at its root
+
+- **The theme switch is now a daybreak.** The title-bar control blooms into a
+  hero copy of itself, the thumb flips across (the old glyph spins out, the new
+  one spins in, its face turning into the incoming palette), ripples and stars
+  ring the landing, and the new palette floods out of the thumb as an iris.
+  Same API, same rule: only render-thread animators move.
+- **The black flash on a section open is fixed at its root.** The deck used to
+  count itself ready while the section's rows were still being read — no rows
+  meant nothing to wait for — so the skeleton left an empty slot (black in the
+  dark theme) until the worker finished. Readiness now requires the rows, and
+  the reveal timers start when data lands, never on an empty deck.
+- **Search Archive is faster.** The first filter + sort pass runs on the open
+  worker, the skeleton grid is built once with the deck instead of inside the
+  click, cards lost their offscreen layer/mask passes (plain clip plus a
+  card-coloured corner cap), channel avatars come pre-cut as round images, the
+  comet is painted on a card's first hover only, and the picture/reveal caps
+  are 900/320 ms. The card changes also apply to the Niche Finder grid.
+
 ## Unreleased — Archive: no blank frame on entry, none when a section opens
 
 - Entering Search Archive used to fade the whole page stack in from opacity 0,

@@ -2401,7 +2401,27 @@ Item {
                     property bool picturesReleased: true
                     property int _shownId: -2
                     property string _firstKey: ""
+                    // v1.0.3: the deck may only count as "ready" once the
+                    // section's rows have actually landed. While the worker
+                    // was still reading them, page._rows was empty, the loop
+                    // below saw no cards and returned TRUE, so the deck was
+                    // "revealed" with nothing in it — the stand-in skeletons
+                    // left and the slot sat empty (black in the dark theme)
+                    // until the read finished. That was the black flash on
+                    // every section open.
+                    readonly property bool _dataReady: Archive.isDetail
+                                                       && !Archive.detailLoading
+                                                       && page._rows.length > 0
+                    on_DataReadyChanged: {
+                        if (!_dataReady || revealed) return
+                        // the reveal cap counts from the moment the cards
+                        // have something to show, not from the click
+                        revealTimer.restart()
+                        pictureCap.restart()
+                        Qt.callLater(grid._tryReveal)
+                    }
                     function _screenReady() {
+                        if (!grid._dataReady) return false
                         const n = Math.min(page._rows.length, deckRep.count)
                         let seen = 0
                         for (let i = 0; i < n; ++i) {
@@ -2436,17 +2456,30 @@ Item {
                     }
                     function _rearm() {
                         revealed = false
-                        revealTimer.restart()
+                        // armed only when there is data; otherwise
+                        // on_DataReadyChanged starts it when the rows land
+                        if (grid._dataReady) revealTimer.restart()
+                        else revealTimer.stop()
                         _rearmPictures()
                     }
                     Timer {
                         id: revealTimer
-                        interval: 450
-                        onTriggered: { grid.revealed = true; grid._tryReveal() }
+                        // v1.0.3: 450 → 320 ms. The stand-in covers the wait,
+                        // and the text of every card is ready at once.
+                        interval: 320
+                        onTriggered: {
+                            // never reveal an empty deck (see _dataReady)
+                            if (!grid._dataReady) return
+                            grid.revealed = true
+                            grid._tryReveal()
+                        }
                     }
                     Timer {
                         id: pictureCap
-                        interval: 1500
+                        // v1.0.3: 1500 → 900 ms. Thumbnails come from the
+                        // three-layer cache; the slow tail is network, and
+                        // holding every picture for it read as lag.
+                        interval: 900
                         onTriggered: grid.picturesReleased = true
                     }
                     Component.onCompleted: {
@@ -2668,17 +2701,26 @@ Item {
                 opacity: _show ? 1 : 0
                 visible: opacity > 0.01
                 Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                active: _show || opacity > 0.01
+                // v1.0.3: built once, together with the deck, and then only
+                // shown / hidden. It used to be created INSIDE the click that
+                // opened a section (up to 12 layered skeleton cards, built
+                // synchronously), which stalled exactly the frame that had to
+                // show it.
+                active: deckLoader.active || _show
                 sourceComponent: Grid {
                     width: deckStandIn.width
                     columns: deckLoader._cols
                     columnSpacing: Tokens.space4
                     rowSpacing: Tokens.space5
                     Repeater {
-                        // the first screen's worth: at most two rows
-                        model: Math.max(1, Math.min(deckLoader._cols * 2,
-                                                    page._rows.length > 0 ? page._rows.length : deckLoader._cols * 2))
+                        // the first screen's worth: at most two rows. A FIXED
+                        // model (v1.0.3): it used to follow page._rows.length,
+                        // so the skeletons were destroyed and rebuilt in the
+                        // very frame the rows landed. A short section just
+                        // hides the extra bones.
+                        model: Math.max(1, deckLoader._cols * 2)
                         C.VideoCardSkeleton {
+                            visible: page._rows.length === 0 || index < page._rows.length
                             width: deckLoader._cardW
                             cardWidth: deckLoader._cardW
                             running: deckStandIn._show

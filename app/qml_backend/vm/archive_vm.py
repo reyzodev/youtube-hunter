@@ -74,6 +74,85 @@ from app.qml_backend.desktop_notifier import announce, announce_download
 _SORTS = NICHE_SORTS_UI
 
 
+def _visible_sorts_for(mode):
+    """Indices into _SORTS a section of this mode offers (pure, thread-safe)."""
+    if mode == "channel":
+        return [i for i, row in enumerate(_SORTS)
+                if row[1] not in _CHANNEL_HIDDEN_SORTS]
+    return list(range(len(_SORTS)))
+
+
+def _run_pipeline(raw, state):
+    """Filter + sort one open section. Pure (reads only `raw` and the
+    snapshot from ArchiveVM._filter_state), so it runs on the GUI thread for
+    toolbar changes and on the open-section worker for the first pass.
+
+    Returns (videos, rows): the filtered VIDEO set (what analysis / export
+    read) and what the grid pages through (channel aggregates in the
+    Channels view, the same videos otherwise)."""
+    fav_only, _sig, text, timeframe, sort, channels_view, mode, rng = state
+    rows = list(raw)
+    if fav_only:
+        rows = [r for r in rows if r.get("_is_favorite")]
+
+    # range + text + timeframe, all in one in-memory pass
+    filters = {k: rng.get(k) for k in _RANGE_NUM_KEYS
+               + ("mult_min", "outlier_min", "vel_min", "format",
+                  "sort_views", "sort_subs")}
+    eng = rng.get("eng_min")
+    filters["eng_min"] = eng / 100.0 if eng is not None else None
+    dur = NICHE_DURATIONS[_pick_index(NICHE_DURATIONS, rng.get("duration"))]
+    filters["dur_min_s"], filters["dur_max_s"] = dur[1], dur[2]
+    filters["channel_max_age_days"] = NICHE_CHANNEL_AGES[
+        _pick_index(NICHE_CHANNEL_AGES, rng.get("channel_age"))][1]
+    filters["ch_videos_max"] = NICHE_CHANNEL_UPLOADS[
+        _pick_index(NICHE_CHANNEL_UPLOADS, rng.get("uploads"))][1]
+    per_channel = NICHE_PER_CHANNEL[
+        _pick_index(NICHE_PER_CHANNEL, rng.get("per_channel"))][1]
+    filters["text"] = text
+    tf = NICHE_TIMEFRAMES[timeframe][1] if 0 <= timeframe < len(NICHE_TIMEFRAMES) else None
+    filters["days"] = tf
+    # A saved section can be weeks old and its rows come from mixed
+    # sources: a row whose publish date couldn't be read must NOT pass
+    # "Last 24 Hours" just because its age is unknown (it used to).
+    filters["strict_days"] = True
+    if mode == "channel":
+        # one channel → subscriber bounds/sorts mean nothing (the flyout
+        # hides them; this keeps a stale value from leaking through)
+        for k in _CHANNEL_ONLY_KEYS + ("channel_max_age_days", "ch_videos_max"):
+            filters.pop(k, None)
+        per_channel = 0
+    rows = apply_niche_filters(rows, filters)
+
+    sort_views = filters.get("sort_views")
+    sort_subs = filters.get("sort_subs")
+    sort_i = sort if sort in _visible_sorts_for(mode) else 0
+    key = _SORTS[sort_i][1]
+    if sort_views or sort_subs:
+        rows = sort_archive_quick(rows, sort_subs, sort_views)
+    else:
+        rows = sort_niche_rows(rows, key)
+    # after the sort, so each channel keeps its BEST rows — a keyword
+    # section merged over many runs piles up one prolific channel
+    if per_channel:
+        rows = cap_per_channel(rows, per_channel)
+
+    # Analysis / export of the VIDEO set must stay possible while the
+    # Channels view is on: aggregation is a presentation step, and the
+    # aggregates are not valid inputs for a video-level report.
+    videos = rows
+    if channels_view:
+        rows = aggregate_by_channel(rows)
+        # Re-sort the aggregates by the SAME user choice: channel-level
+        # multiplier / views / subscribers, not the order the constituent
+        # videos happened to have.
+        if sort_views or sort_subs:
+            rows = sort_archive_quick(rows, sort_subs, sort_views)
+        else:
+            rows = sort_niche_rows(rows, key)
+    return videos, rows
+
+
 def _scan_downloaded_ids():
     """Video ids whose finished download still exists on disk.
 
@@ -222,6 +301,8 @@ class ArchiveVM(QObject):
         self._raw_by_key = {}        # video_id / archive key → raw row
         self._detail_loading = False
         self._detail_token = 0
+        # (token, state, videos, filtered) precomputed by the open worker
+        self._detail_pre = None
         self._fav_only = False
         # Videos / Channels is a VIEW of the open section, not a filter on the
         # saved rows: switching it rolls the same matched videos up per channel
@@ -294,10 +375,7 @@ class ArchiveVM(QObject):
     # Translated, so NOT constant: the UI language can change while running.
     def _visible_sorts(self):
         """Indices into _SORTS the open section's Sort menu offers."""
-        if (self._group or {}).get("mode") == "channel":
-            return [i for i, row in enumerate(_SORTS)
-                    if row[1] not in _CHANNEL_HIDDEN_SORTS]
-        return list(range(len(_SORTS)))
+        return _visible_sorts_for((self._group or {}).get("mode"))
 
     @Property("QStringList", notify=sortsChanged)
     def sortOptions(self):
@@ -835,16 +913,36 @@ class ArchiveVM(QObject):
         self._live_token += 1
         self._live_state = "idle"
 
+        # v1.0.3: the first filter + sort pass runs on the worker as well.
+        # On a big section it was the last heavy step left on the GUI thread
+        # (thousands of rows sorted inside the frame that had to show the
+        # cards). The state is snapshotted now; if the user touches a filter
+        # before the read lands, the snapshot no longer matches and the
+        # landing falls back to the normal GUI-side pass.
+        state = self._filter_state()
+        self._detail_pre = None
+
         def worker():
+            pre = None
             try:
                 fresh = archive_get_rows(gid)
                 # multiplier / velocity / age_hours / engagement are not stored
                 # on the raw archive row; compute them once, exactly like the
                 # live grid does after a search (pure arithmetic).
                 compute_niche_metrics(fresh)
+                if fresh:
+                    try:
+                        videos, filtered = _run_pipeline(fresh, state)
+                        pre = (token, state, videos, filtered)
+                    except Exception as exc:  # noqa: BLE001 — GUI pass retries
+                        log_crash("archive pre-sort failed:\n" + repr(exc))
+                        pre = None
             except Exception as exc:      # noqa: BLE001 — keep the page usable
                 log_crash("archive open failed:\n" + repr(exc))
                 fresh = []
+            # plain attribute store (atomic under the GIL), read by the GUI
+            # thread only after the queued signal below has arrived
+            self._detail_pre = pre
             try:
                 self._detailLoaded.emit(gid, token, fresh)
             except RuntimeError:
@@ -859,7 +957,15 @@ class ArchiveVM(QObject):
             return                    # a newer section superseded this read
         self._detail_loading = False
         self._detail_raw = rows or []
-        if self._detail_raw:
+        pre, self._detail_pre = getattr(self, "_detail_pre", None), None
+        if (self._detail_raw and pre is not None and pre[0] == token
+                and pre[1] == self._filter_state()):
+            # the worker already filtered + sorted with the current state
+            self._detail_filtered_videos = pre[2]
+            self._detail_filtered = pre[3]
+            self._page = 0
+            self._publish_page()
+        elif self._detail_raw:
             self._render_detail()
         else:
             self._detail_filtered = []
@@ -1655,6 +1761,23 @@ class ArchiveVM(QObject):
         else:
             self._set_live("live")
 
+    def _filter_state(self):
+        """Immutable snapshot of everything the filter + sort pass reads, so
+        the pass can run on a worker thread (see openGroup)."""
+        rng = dict(self._range or {})
+        return (
+            bool(self._fav_only),
+            tuple(sorted((k, repr(v)) for k, v in rng.items())),
+            self._detail_text or "",
+            int(self._timeframe),
+            int(self._sort),
+            bool(self._channels_view),
+            (self._group or {}).get("mode"),
+            # the live values themselves ride along (not compared: the repr
+            # tuple above already is) so the pipeline never touches `self`
+            rng,
+        )
+
     def _render_detail(self, keep_page=False):
         """Filter + sort the open section, then flatten the current page for
         QML. keep_page=True keeps the pager where it is (favorite toggles and
@@ -1665,68 +1788,8 @@ class ArchiveVM(QObject):
         filters (apply_niche_filters) → sort. The range flyout's Views/Subs
         low↔high buttons override the sort combo when either is set (see
         sort_archive_quick), exactly as they do on the live grid."""
-        rows = list(self._detail_raw)
-        if self._fav_only:
-            rows = [r for r in rows if r.get("_is_favorite")]
-
-        # range + text + timeframe, all in one in-memory pass
-        rng = self._range
-        filters = {k: rng.get(k) for k in _RANGE_NUM_KEYS
-                   + ("mult_min", "outlier_min", "vel_min", "format",
-                      "sort_views", "sort_subs")}
-        eng = rng.get("eng_min")
-        filters["eng_min"] = eng / 100.0 if eng is not None else None
-        dur = NICHE_DURATIONS[_pick_index(NICHE_DURATIONS, rng.get("duration"))]
-        filters["dur_min_s"], filters["dur_max_s"] = dur[1], dur[2]
-        filters["channel_max_age_days"] = NICHE_CHANNEL_AGES[
-            _pick_index(NICHE_CHANNEL_AGES, rng.get("channel_age"))][1]
-        filters["ch_videos_max"] = NICHE_CHANNEL_UPLOADS[
-            _pick_index(NICHE_CHANNEL_UPLOADS, rng.get("uploads"))][1]
-        per_channel = NICHE_PER_CHANNEL[
-            _pick_index(NICHE_PER_CHANNEL, rng.get("per_channel"))][1]
-        filters["text"] = self._detail_text
-        tf = NICHE_TIMEFRAMES[self._timeframe][1] if 0 <= self._timeframe < len(NICHE_TIMEFRAMES) else None
-        filters["days"] = tf
-        # A saved section can be weeks old and its rows come from mixed
-        # sources: a row whose publish date couldn't be read must NOT pass
-        # "Last 24 Hours" just because its age is unknown (it used to).
-        filters["strict_days"] = True
-        is_channel = (self._group or {}).get("mode") == "channel"
-        if is_channel:
-            # one channel → subscriber bounds/sorts mean nothing (the flyout
-            # hides them; this keeps a stale value from leaking through)
-            for k in _CHANNEL_ONLY_KEYS + ("channel_max_age_days", "ch_videos_max"):
-                filters.pop(k, None)
-            per_channel = 0
-        rows = apply_niche_filters(rows, filters)
-
-        sort_views = filters.get("sort_views")
-        sort_subs = filters.get("sort_subs")
-        sort_i = self._sort if self._sort in self._visible_sorts() else 0
-        key = _SORTS[sort_i][1]
-        if sort_views or sort_subs:
-            rows = sort_archive_quick(rows, sort_subs, sort_views)
-        else:
-            rows = sort_niche_rows(rows, key)
-        # after the sort, so each channel keeps its BEST rows — a keyword
-        # section merged over many runs piles up one prolific channel
-        if per_channel:
-            rows = cap_per_channel(rows, per_channel)
-
-        # Analysis / export of the VIDEO set must stay possible while the
-        # Channels view is on: aggregation is a presentation step, and the
-        # aggregates are not valid inputs for a video-level report.
-        self._detail_filtered_videos = rows
-        if self._channels_view:
-            rows = aggregate_by_channel(rows)
-            # Re-sort the aggregates by the SAME user choice: channel-level
-            # multiplier / views / subscribers, not the order the constituent
-            # videos happened to have.
-            if sort_views or sort_subs:
-                rows = sort_archive_quick(rows, sort_subs, sort_views)
-            else:
-                rows = sort_niche_rows(rows, key)
-
+        videos, rows = _run_pipeline(self._detail_raw, self._filter_state())
+        self._detail_filtered_videos = videos
         self._detail_filtered = rows
         if not keep_page:
             self._page = 0

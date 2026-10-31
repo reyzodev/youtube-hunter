@@ -13,12 +13,20 @@ off the GUI thread, which is exactly why the provider builds a QImage here and
 lets the render thread turn it into a texture.
 
 In QML:  Image { source: url ? "image://thumbs/" + Qt.btoa(url) : "" }
+
+v1.0.3: `image://thumbs/circle/<b64url>` serves the same picture cropped to
+an antialiased circle on a transparent square. Round avatars used to be a
+layered Image + mask + MultiEffect per card (two offscreen textures and a
+shader pass each); a pre-cut image is drawn like any other picture. The
+prefix can never collide with a real id: every id is base64 of an http(s)
+URL, which always starts with "aHR0".
 """
 
 import base64
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRunnable, QThreadPool, Qt
-from PySide6.QtGui import QImage, QImageReader
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QRectF,
+                            QRunnable, QThreadPool, Qt)
+from PySide6.QtGui import QImage, QImageReader, QPainter, QPainterPath
 from PySide6.QtQuick import (
     QQuickAsyncImageProvider, QQuickImageResponse, QQuickTextureFactory)
 
@@ -55,6 +63,36 @@ def _decode(raw, size):
     return img
 
 
+_CIRCLE_PREFIX = "circle/"
+
+
+def _circle(img, size):
+    """Centre-crop `img` to a square and cut it to an antialiased circle on
+    transparency. QImage + QPainter are safe off the GUI thread."""
+    if img.isNull():
+        return img
+    side = min(img.width(), img.height())
+    if size.width() > 0 and size.height() > 0:
+        side = min(side, max(size.width(), size.height())) or side
+    side = max(1, side)
+    out = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        path = QPainterPath()
+        path.addEllipse(QRectF(0, 0, side, side))
+        p.setClipPath(path)
+        # cover: scale the short edge to `side`, centre the long one
+        k = side / float(min(img.width(), img.height()))
+        w, h = img.width() * k, img.height() * k
+        p.drawImage(QRectF((side - w) / 2.0, (side - h) / 2.0, w, h), img)
+    finally:
+        p.end()
+    return out
+
+
 class _ThumbResponse(QQuickImageResponse, QRunnable):
     """One in-flight image request. Runs on the pool, then signals QML."""
 
@@ -67,9 +105,13 @@ class _ThumbResponse(QQuickImageResponse, QRunnable):
         self.setAutoDelete(False)
 
     def run(self):
+        b64 = self._b64_url or ""
+        circle = b64.startswith(_CIRCLE_PREFIX)
+        if circle:
+            b64 = b64[len(_CIRCLE_PREFIX):]
         try:
             # QML's Qt.btoa() produces standard (not URL-safe) base64.
-            url = base64.b64decode(self._b64_url.encode("ascii")).decode("utf-8")
+            url = base64.b64decode(b64.encode("ascii")).decode("utf-8")
         except Exception:
             url = ""
         if url:
@@ -81,6 +123,11 @@ class _ThumbResponse(QQuickImageResponse, QRunnable):
                 raw = None
             if raw:
                 self._image = _decode(raw, self._size)
+                if circle:
+                    try:
+                        self._image = _circle(self._image, self._size)
+                    except Exception:   # noqa: BLE001 — square beats nothing
+                        pass
         self.finished.emit()
 
     def textureFactory(self):

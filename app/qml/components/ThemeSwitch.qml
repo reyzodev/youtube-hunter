@@ -30,6 +30,13 @@ import "../Utils.js" as U
 // colour, so the palette can be republished behind the curtain without a
 // single ColorAnimation. The thumb answers the CLICK (_pendingDark), not
 // Theme.isDark.
+// v1.0.3 — "Daybreak" refresh. The thumb is now a raised DISC (the way a
+// physical toggle is), carrying the sun / crescent on its face, so the switch
+// reads as one solid object and matches the hero copy of itself the theme
+// curtain plays (ThemeWipe). At night the track fills with a soft accent
+// gradient under the stars; by day it stays the title bar's own material.
+// Hover lifts the thumb's glow; press squashes it. Same motion rules: only
+// Animators move, no colour ever animates.
 AbstractButton {
     id: root
     implicitWidth: 60
@@ -102,6 +109,20 @@ AbstractButton {
             Behavior on opacity { OpacityAnimator { duration: Tokens.durMed } }
         }
 
+        // ── night: an accent dusk fills the track from the thumb's side ──
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: height / 2
+            opacity: root._showDark ? 1 : 0
+            Behavior on opacity { OpacityAnimator { duration: 420; easing.type: Easing.OutCubic } }
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: U.withAlpha(Theme.primary, 0.02) }
+                GradientStop { position: 1.0; color: U.withAlpha(Theme.primary, 0.20) }
+            }
+        }
+
         // ── light: rangefinder ticks on the free (right) side ──
         Item {
             anchors.fill: parent
@@ -155,7 +176,7 @@ AbstractButton {
 
     contentItem: Item { }
 
-    // ── the thumb: sun ↔ eclipse ──
+    // ── the thumb: a raised disc, sun ↔ crescent on its face ──
     Item {
         id: thumb
         width: 24; height: 24
@@ -165,15 +186,38 @@ AbstractButton {
         scale: root.pressed ? 0.86 : root._hot ? 1.06 : 1
         Behavior on scale { ScaleAnimator { duration: 200; easing.type: Easing.OutCubic } }
 
-        // halo: accent light behind whichever body is showing
+        // accent glow behind the disc
         Rectangle {
-            id: halo
             anchors.centerIn: parent
-            width: 26; height: 26; radius: 13
+            width: 32; height: 32; radius: 16
             color: Theme.primary
-            opacity: root._showDark ? (root._hot ? 0.20 : 0.12)
-                                    : (root._hot ? 0.24 : 0.14)
+            opacity: root._hot ? 0.22 : 0.10
             Behavior on opacity { OpacityAnimator { duration: 260 } }
+        }
+        // drop
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 1.5
+            width: 24; height: 24; radius: 12
+            color: Qt.rgba(0, 0, 0, Theme.isDark ? 0.45 : 0.14)
+        }
+        // the disc: white by day, raised graphite at night
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: Theme.isDark ? Theme.surface_highest : "#FFFFFF"
+            border.width: 1
+            border.color: root._hot ? U.withAlpha(Theme.primary, 0.55)
+                                    : (Theme.isDark ? U.withAlpha("#FFFFFF", 0.08) : Theme.border)
+            antialiasing: true
+            // 1 px top light: a lit object, not a flat dot
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: 1
+                width: 12; height: 1; radius: 0.5
+                color: "#FFFFFF"
+                opacity: Theme.isDark ? 0.14 : 0.0
+            }
         }
 
         // ── SUN ──────────────────────────────────────────────────────
@@ -196,11 +240,11 @@ AbstractButton {
                     rotation: index * 45
                     Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        y: 1
-                        width: 2; height: 4; radius: 1
+                        y: 3
+                        width: 1.6; height: 3; radius: 0.8
                         color: Theme.primary
-                        // the diagonal rays are a touch quieter: reads as glow
-                        opacity: index % 2 === 0 ? 1 : 0.7
+                        opacity: index % 2 === 0 ? 1 : 0.65
+                        antialiasing: true
                     }
                 }
             }
@@ -219,48 +263,28 @@ AbstractButton {
             Rectangle {
                 id: sunCore
                 anchors.centerIn: parent
-                width: 12; height: 12; radius: 6
+                width: 9; height: 9; radius: 4.5
+                antialiasing: true
                 gradient: Gradient {
-                    GradientStop { position: 0.0; color: Theme.primary_deep }
-                    GradientStop { position: 1.0; color: Theme.primary }
+                    GradientStop { position: 0.0; color: Qt.lighter(Theme.primary, 1.25) }
+                    GradientStop { position: 1.0; color: Theme.primary_deep }
                 }
                 opacity: root._showDark ? 0 : 1
                 scale: root._showDark ? 1.5 : 1
                 Behavior on opacity { OpacityAnimator { duration: 240 } }
                 Behavior on scale { ScaleAnimator { duration: 360; easing.type: Easing.OutCubic } }
-                // specular dot: makes the core read as a lit sphere, not a sticker
-                Rectangle {
-                    x: 3; y: 2.5
-                    width: 3.5; height: 3.5; radius: 1.75
-                    color: "#FFFFFF"
-                    opacity: 0.55
-                }
             }
         }
 
-        // ── ECLIPSE ──────────────────────────────────────────────────
-        // corona: a hairline accent ring around the crescent
-        Rectangle {
-            anchors.centerIn: parent
-            width: 22; height: 22; radius: 11
-            color: "transparent"
-            border.width: 1
-            border.color: Theme.primary
-            opacity: root._showDark ? (root._hot ? 0.65 : 0.38) : 0
-            scale: root._showDark ? 1 : 0.6
-            Behavior on opacity { OpacityAnimator { duration: 320; easing.type: Easing.OutCubic } }
-            Behavior on scale { ScaleAnimator { duration: 420; easing.type: Easing.OutCubic } }
-        }
-        // the crescent itself: an 18px accent disc with a 7.4px-radius bite
-        // taken out of its upper right (two arcs, static geometry, only the
-        // item's opacity / rotation / scale ever animate)
+        // ── CRESCENT ─────────────────────────────────────────────────
+        // a 14px accent crescent (the 18-unit path, scaled) on the disc
         Item {
             id: crescent
             width: 18; height: 18
             anchors.centerIn: parent
             opacity: root._showDark ? 1 : 0
-            scale: root._showDark ? 1 : 0.5
-            rotation: root._showDark ? 0 : -70
+            scale: root._showDark ? (root._hot ? 0.86 : 0.78) : 0.4
+            rotation: root._showDark ? (root._hot ? -14 : 0) : -70
             Behavior on opacity { OpacityAnimator { duration: 300; easing.type: Easing.OutCubic } }
             Behavior on scale { ScaleAnimator { duration: 420; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
             Behavior on rotation { RotationAnimator { duration: 460; easing.type: Easing.OutCubic } }
@@ -271,7 +295,7 @@ AbstractButton {
                     strokeColor: "transparent"
                     fillGradient: LinearGradient {
                         x1: 0; y1: 18; x2: 18; y2: 0
-                        GradientStop { position: 0.0; color: Theme.primary }
+                        GradientStop { position: 0.0; color: Qt.lighter(Theme.primary, 1.15) }
                         GradientStop { position: 1.0; color: Theme.primary_deep }
                     }
                     startX: 7.567; startY: 0.115
